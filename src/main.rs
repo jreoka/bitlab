@@ -256,7 +256,8 @@ async fn landing_handler(headers: HeaderMap) -> impl IntoResponse {
             font-family: 'Outfit', sans-serif;
             background-color: #000000;
             color: #ffffff;
-            min-height: 100vh;
+            box-sizing: border-box;
+            min-height: 100dvh;
             display: flex;
             align-items: center;
             justify-content: center;
