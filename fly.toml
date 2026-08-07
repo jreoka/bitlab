@@ -9,6 +9,10 @@ primary_region = 'ord'
 [build]
   dockerfile = 'Dockerfile'
 
+[env]
+  # Block stream requests from non-VPN IPs; set to false to disable
+  REQUIRE_VPN = 'true'
+
 [http_service]
   internal_port = 3000
   force_https = true

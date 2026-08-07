@@ -1,10 +1,11 @@
 mod cinemeta;
 mod scraper;
 mod stremio;
+mod vpn;
 
 use axum::{
     Router,
-    extract::{Path, Request, State},
+    extract::{ConnectInfo, Path, Request, State},
     http::{HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{Html, IntoResponse, Json, Response},
@@ -24,6 +25,7 @@ struct AppState {
     meta_cache: Arc<RwLock<HashMap<String, (String, Option<String>)>>>,
     stream_cache: Arc<RwLock<HashMap<String, (Vec<Stream>, std::time::Instant)>>>,
     torrent_files_cache: Arc<RwLock<HashMap<String, Vec<scraper::TorrentFile>>>>,
+    vpn_cache: vpn::VpnCache,
 }
 
 #[tokio::main]
@@ -46,7 +48,14 @@ async fn main() {
         meta_cache: Arc::new(RwLock::new(HashMap::new())),
         stream_cache: Arc::new(RwLock::new(HashMap::new())),
         torrent_files_cache: Arc::new(RwLock::new(HashMap::new())),
+        vpn_cache: vpn::new_cache(),
     };
+
+    if vpn_required() {
+        println!(
+            "VPN check enabled: stream requests from non-VPN IPs will be blocked (set REQUIRE_VPN=false to disable)"
+        );
+    }
 
     // Spawn background cache pruner task to prevent memory leaks/indefinite growth
     let state_clone = state.clone();
@@ -77,6 +86,14 @@ async fn main() {
                     cache.clear();
                 }
             }
+
+            // 4. Prune expired VPN lookups
+            {
+                let mut cache = state_clone.vpn_cache.write().await;
+                cache.retain(|_, (_, timestamp)| {
+                    timestamp.elapsed().as_secs() < vpn::VPN_CACHE_TTL_SECS
+                });
+            }
         }
     });
 
@@ -91,6 +108,7 @@ async fn main() {
         .route("/", get(landing_handler))
         .route("/manifest.json", get(manifest_handler))
         .route("/stream/:type/:id", get(stream_handler))
+        .route("/vpn-required.mp4", get(vpn_required_video_handler))
         .route("/favicon.ico", get(favicon_handler))
         .route("/favicon.svg", get(favicon_handler))
         .layer(middleware::from_fn(host_validation_middleware))
@@ -109,7 +127,9 @@ async fn main() {
     );
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+        .await
+        .unwrap();
 }
 
 async fn favicon_handler() -> impl IntoResponse {
@@ -120,6 +140,20 @@ async fn favicon_handler() -> impl IntoResponse {
             (axum::http::header::CACHE_CONTROL, "public, max-age=86400"),
         ],
         svg,
+    )
+}
+
+async fn vpn_required_video_handler() -> impl IntoResponse {
+    let video = include_bytes!("../assets/vpn-required.mp4").to_vec();
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "video/mp4"),
+            (
+                axum::http::header::CACHE_CONTROL,
+                "public, max-age=86400",
+            ),
+        ],
+        video,
     )
 }
 
@@ -141,9 +175,34 @@ async fn manifest_handler() -> impl IntoResponse {
 async fn stream_handler(
     Path((r#type, id)): Path<(String, String)>,
     State(state): State<AppState>,
+    req_headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> impl IntoResponse {
     let clean_id = id.strip_suffix(".json").unwrap_or(&id);
     println!("Stream requested: type={}, id={}", r#type, clean_id);
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "Cache-Control",
+        "max-age=0, no-cache, no-store, must-revalidate"
+            .parse()
+            .unwrap(),
+    );
+
+    if vpn_required() {
+        let ip = vpn::client_ip(&req_headers, &addr.ip());
+        if !vpn::is_vpn(&state.client, &state.vpn_cache, &ip).await {
+            println!("Blocked stream request from non-VPN IP {}", ip);
+            let base_url = addon_base_url(&req_headers);
+            return (
+                headers,
+                Json(StreamResponse {
+                    streams: vec![vpn_required_stream(&base_url)],
+                }),
+            )
+                .into_response();
+        }
+    }
 
     let streams = match r#type.as_str() {
         "movie" => {
@@ -208,15 +267,49 @@ async fn stream_handler(
         _ => Vec::new(),
     };
 
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        "Cache-Control",
-        "max-age=0, no-cache, no-store, must-revalidate"
-            .parse()
-            .unwrap(),
-    );
-
     (headers, Json(StreamResponse { streams })).into_response()
+}
+
+fn vpn_required() -> bool {
+    std::env::var("REQUIRE_VPN").map_or(true, |v| {
+        !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off")
+    })
+}
+
+/// Absolute base URL of the addon, honoring the ALLOWED_URL override used by
+/// the landing page (which may point at the canonical domain behind a proxy).
+fn addon_base_url(req_headers: &HeaderMap) -> String {
+    if let Ok(allowed) = std::env::var("ALLOWED_URL") {
+        return allowed.trim_end_matches('/').to_string();
+    }
+    let host = req_headers
+        .get("x-forwarded-host")
+        .or_else(|| req_headers.get("host"))
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("localhost:3000");
+    let proto = req_headers
+        .get("x-forwarded-proto")
+        .and_then(|p| p.to_str().ok())
+        .unwrap_or("http");
+    format!("{}://{}", proto, host)
+}
+
+fn vpn_required_stream(base_url: &str) -> Stream {
+    Stream {
+        name: "VPN Required".to_string(),
+        title: "⚠️ Please enable your VPN\nBitlab requires an active VPN connection to stream."
+            .to_string(),
+        url: Some(format!("{}/vpn-required.mp4", base_url)),
+        info_hash: None,
+        file_idx: None,
+        sources: None,
+        behavior_hints: Some(stremio::BehaviorHints {
+            not_video: None,
+            proxy_headers: None,
+            binge_group: None,
+            filename: Some("vpn-required.mp4".to_string()),
+        }),
+    }
 }
 
 fn is_valid_imdb_id(id: &str) -> bool {
@@ -315,6 +408,43 @@ async fn landing_handler(headers: HeaderMap) -> impl IntoResponse {
             background: #00ff66 !important;
             color: #000000 !important;
         }}
+        .notice {{
+            margin-top: 20px;
+            background: linear-gradient(135deg, rgba(0, 255, 102, 0.08), rgba(0, 177, 64, 0.04));
+            border: 1px solid rgba(0, 255, 102, 0.25);
+            border-radius: 12px;
+            padding: 16px 18px;
+            display: flex;
+            align-items: flex-start;
+            gap: 14px;
+        }}
+        .notice-icon {{
+            flex-shrink: 0;
+            width: 38px;
+            height: 38px;
+            border-radius: 10px;
+            background: #00ff66;
+            color: #000000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.15rem;
+        }}
+        .notice-title {{
+            font-size: 1rem;
+            font-weight: 800;
+            margin: 0 0 4px 0;
+            color: #00ff66;
+        }}
+        .notice-text {{
+            font-size: 0.85rem;
+            line-height: 1.5;
+            color: #a1a1aa;
+            margin: 0;
+        }}
+        .notice-text strong {{
+            color: #ffffff;
+        }}
     </style>
 </head>
 <body>
@@ -323,6 +453,13 @@ async fn landing_handler(headers: HeaderMap) -> impl IntoResponse {
         <div class="url-box">
             <span class="url-text" id="manifest-url">{manifest_url}</span>
             <button class="btn-copy" onclick="copyManifestUrl()" id="copy-btn">Copy URL</button>
+        </div>
+        <div class="notice">
+            <div class="notice-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg></div>
+            <div>
+                <p class="notice-title">VPN Required</p>
+                <p class="notice-text">Bitlab requires an active VPN connection to stream. <strong>Any VPN provider will do</strong>.</p>
+            </div>
         </div>
     </div>
 

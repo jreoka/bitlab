@@ -18,6 +18,7 @@ RUN rm -rf src
 
 # Copy actual source files and build the production binary
 COPY src ./src
+COPY assets ./assets
 RUN touch src/main.rs
 RUN cargo build --release
 
