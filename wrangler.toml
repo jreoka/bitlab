@@ -1,0 +1,14 @@
+name = "bitlab"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+
+# Serves /vpn-required.mp4 as a static file
+[assets]
+directory = "./assets"
+
+# Optional environment variables:
+# - REQUIRE_VPN: set to "false" to disable the VPN requirement (enabled by default)
+# - ALLOWED_URL: restrict access to requests matching this origin, e.g. "https://bitlab.example.workers.dev"
+# [vars]
+# REQUIRE_VPN = "true"
+# ALLOWED_URL = "https://bitlab.example.workers.dev"
