@@ -39,8 +39,8 @@ func (s *Server) searchAll(ctx context.Context, queries []string, typ string, se
 	if len(queries) == 0 {
 		return nil, []string{"empty query"}
 	}
-	if len(queries) > 4 {
-		queries = queries[:4]
+	if len(queries) > 6 {
+		queries = queries[:6]
 	}
 	indexers, err := s.store.ListIndexers()
 	if err != nil {
@@ -63,10 +63,11 @@ func (s *Server) searchAll(ctx context.Context, queries []string, typ string, se
 	}
 	// Every query runs against every indexer: anime needs all of its names
 	// (romaji, English, synonyms) because release titles use any of them.
+	// Small indexers rate-limit hard (nyaa answers 429), so they get fewer.
 	ch := make(chan out, len(enabled)*len(queries))
 	var wg sync.WaitGroup
 	for _, ix := range enabled {
-		for _, q := range queries {
+		for _, q := range queriesFor(ix.Kind, queries) {
 			wg.Add(1)
 			go func(ix Indexer, q string) {
 				defer wg.Done()
@@ -138,7 +139,41 @@ func dropDead(rs []Result) []Result {
 	return live
 }
 
+// queriesFor trims the fan-out for indexers that throttle.
+func queriesFor(kind string, queries []string) []string {
+	switch kind {
+	case "nyaa", "apibay":
+		if len(queries) > 3 {
+			return queries[:3]
+		}
+	}
+	return queries
+}
+
+type ixCacheEntry struct {
+	res []Result
+	exp time.Time
+}
+
+// searchIndexer caches each (indexer, query) briefly. Paging through episodes
+// repeats most queries, and small indexers answer 429 when hammered.
 func (s *Server) searchIndexer(ctx context.Context, ix Indexer, q string, typ string, season, ep int, imdbID string) ([]Result, error) {
+	ck := ix.Kind + "|" + ix.URL + "|" + typ + "|" + strconv.Itoa(season) + "|" + strconv.Itoa(ep) + "|" + strings.ToLower(q)
+	if v, ok := s.ixCache.Load(ck); ok {
+		e := v.(ixCacheEntry)
+		if time.Now().Before(e.exp) {
+			return e.res, nil
+		}
+		s.ixCache.Delete(ck)
+	}
+	res, err := s.searchIndexerUncached(ctx, ix, q, typ, season, ep, imdbID)
+	if err == nil && len(res) > 0 {
+		s.ixCache.Store(ck, ixCacheEntry{res: res, exp: time.Now().Add(3 * time.Minute)})
+	}
+	return res, err
+}
+
+func (s *Server) searchIndexerUncached(ctx context.Context, ix Indexer, q string, typ string, season, ep int, imdbID string) ([]Result, error) {
 	switch ix.Kind {
 	case "nyaa":
 		return nyaaSearch(ctx, s.http, ix, q)
@@ -350,10 +385,16 @@ func scoreResult(r Result, typ string, season, ep int) float64 {
 	// 1.5 Mbps per seeder, capped at what the link will do.
 	if r.Size > 0 {
 		duration := 7200.0 // a feature
+		size := r.Size
 		if typ == "series" {
 			duration = 3000 // ~50 minute episode
+			// A batch is one episode's worth of streaming per file, so judge it
+			// by a twelfth of its size rather than the whole season.
+			if reSeason.MatchString(r.Title) && !reSxxExx.MatchString(r.Title) {
+				size /= 12
+			}
 		}
-		needMbps := float64(r.Size) * 8 / duration / 1e6
+		needMbps := float64(size) * 8 / duration / 1e6
 		haveMbps := math.Min(float64(r.Seeders)*1.5, 60)
 		if needMbps > haveMbps {
 			score -= (needMbps - haveMbps) * 150
@@ -372,13 +413,11 @@ func scoreResult(r Result, typ string, season, ep int) float64 {
 	}
 	if typ == "series" && season > 0 {
 		if reSeason.MatchString(r.Title) && !reSxxExx.MatchString(r.Title) {
-			score -= 350 // a pack: playable, but not the episode itself
+			score -= 150 // a pack: playable (we pick the episode file), slightly dearer
 		}
 		tag := fmt.Sprintf("s%02de%02d", season, ep)
 		if strings.Contains(strings.ToLower(strings.ReplaceAll(r.Title, " ", "")), tag) {
 			score += 400
-		} else if regexp.MustCompile(`(?i)\bS\d{2}(E\d{2})?\b`).MatchString(r.Title) {
-			score -= 600 // a different episode or a season pack
 		}
 	}
 	return score

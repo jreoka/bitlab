@@ -39,6 +39,7 @@ type Server struct {
 	sessionKey []byte
 	bytesOut   int64
 	hints      sync.Map // infohash -> []string trackers, learned from search results
+	ixCache    sync.Map // indexer+query -> cached results for a few minutes
 }
 
 // ---- addon protocol types ----
@@ -123,15 +124,21 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 
 	queries := []string{query}
 	if typ == "series" && season > 0 {
+		// Older seasons are usually only available as a batch, which is never
+		// titled "S01E01" — ask for the season as well as the episode.
+		queries = append(queries, fmt.Sprintf("%s S%02d", title, season))
 		aliases := s.animeAliases(ctx, title)
 		for i, alias := range aliases {
 			if i >= 2 {
 				break
 			}
 			queries = append(queries, fmt.Sprintf("%s S%02dE%02d", alias, season, ep))
+			if i == 0 {
+				queries = append(queries, fmt.Sprintf("%s S%02d", alias, season))
+			}
 		}
 		// Release groups write anime as "Show - 04" far more often than "SxxE04",
-		// so one alias is searched by name alone and filtered by episode later.
+		// so aliases are also searched by name alone and filtered by episode later.
 		if len(aliases) > 0 {
 			queries = append(queries, aliases[0])
 		}
@@ -167,9 +174,13 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			// Tells the play handler which file to pick inside a season pack.
 			link += fmt.Sprintf("&s=%d&e=%d", season, ep)
 		}
-		if _, _, files, ok := s.store.GetMedia(res.InfoHash); ok {
-			if idx, ok := bestCachedFile(files); ok {
-				link += "&f=" + strconv.Itoa(idx)
+		// Only movies get a cached file hint: for a series the episode decides
+		// the file, and "largest file" would point at the wrong episode in a pack.
+		if typ == "movie" {
+			if _, _, files, ok := s.store.GetMedia(res.InfoHash); ok {
+				if idx, ok := bestCachedFile(files); ok {
+					link += "&f=" + strconv.Itoa(idx)
+				}
 			}
 		}
 		bits := []string{}
