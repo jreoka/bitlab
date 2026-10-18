@@ -1,4 +1,4 @@
-module github.com/jreoka/marlin
+module github.com/jreoka/bitlab
 
 go 1.27.2
 

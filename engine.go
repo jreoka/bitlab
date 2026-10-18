@@ -389,7 +389,7 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", name))
 	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Marlin-File", strconv.Itoa(idx))
+	w.Header().Set("X-Bitlab-File", strconv.Itoa(idx))
 
 	cw := &countingWriter{ResponseWriter: w, n: &s.bytesOut}
 	// ServeContent probes the size with Seek(0, End) before writing anything.

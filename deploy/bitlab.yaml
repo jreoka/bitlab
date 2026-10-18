@@ -1,13 +1,13 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: marlin
+  name: bitlab
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: marlin-data
-  namespace: marlin
+  name: bitlab-data
+  namespace: bitlab
 spec:
   accessModes: ["ReadWriteOnce"]
   storageClassName: ssd
@@ -19,10 +19,10 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: marlin
-  namespace: marlin
+  name: bitlab
+  namespace: bitlab
   labels:
-    app: marlin
+    app: bitlab
 spec:
   replicas: 1
   # One writer to the data volume, and the BitTorrent client must not be
@@ -32,11 +32,11 @@ spec:
   revisionHistoryLimit: 3
   selector:
     matchLabels:
-      app: marlin
+      app: bitlab
   template:
     metadata:
       labels:
-        app: marlin
+        app: bitlab
     spec:
       # Inbound peers matter on thin swarms: hostNetwork lets the torrent client
       # accept connections on 51413 instead of being outbound-only.
@@ -49,7 +49,7 @@ spec:
         fsGroup: 65532
       terminationGracePeriodSeconds: 30
       initContainers:
-        # Marlin is a static binary; fetching it from the release keeps the
+        # Bitlab is a static binary; fetching it from the release keeps the
         # cluster free of a registry dependency and the digest pinned.
         - name: fetch
           image: alpine:3.20
@@ -57,15 +57,15 @@ spec:
           args:
             - |
               set -eu
-              wget -qO /work/marlin "$BINARY_URL"
-              echo "$BINARY_SHA  /work/marlin" | sha256sum -c -
-              chmod 0755 /work/marlin
-              /work/marlin --version 2>/dev/null || true
+              wget -qO /work/bitlab "$BINARY_URL"
+              echo "$BINARY_SHA  /work/bitlab" | sha256sum -c -
+              chmod 0755 /work/bitlab
+              /work/bitlab --version 2>/dev/null || true
           env:
             - name: BINARY_URL
-              value: https://github.com/jreoka/marlin/releases/download/v1.7.1/marlin-linux-amd64
+              value: https://github.com/jreoka/marlin/releases/download/v2.0.0/bitlab-linux-amd64
             - name: BINARY_SHA
-              value: 66eb0a98029eed4e0453bdfe3ac0751109f2f581e1726b456a8648c6d8857170
+              value: 7a40ff7889b2c7b3c26d5742d959ed31db70d23beeb7270317988ebac0865228
           volumeMounts:
             - name: bin
               mountPath: /work
@@ -73,30 +73,30 @@ spec:
             requests: {cpu: 10m, memory: 16Mi}
             limits: {cpu: 200m, memory: 128Mi}
       containers:
-        - name: marlin
+        - name: bitlab
           image: alpine:3.20
-          command: ["/work/marlin"]
+          command: ["/work/bitlab"]
           env:
-            - name: MARLIN_ADDR
+            - name: BITLAB_ADDR
               value: ":8090"
-            - name: MARLIN_DATA
+            - name: BITLAB_DATA
               value: /data
-            - name: MARLIN_BASE_URL
+            - name: BITLAB_BASE_URL
               value: https://stream.dill.moe
-            - name: MARLIN_CACHE_GB
+            - name: BITLAB_CACHE_GB
               value: "16"
-            - name: MARLIN_IDLE_MINUTES
+            - name: BITLAB_IDLE_MINUTES
               value: "20"
-            - name: MARLIN_READAHEAD_MB
+            - name: BITLAB_READAHEAD_MB
               value: "64"
-            - name: MARLIN_PREBUFFER_MB
+            - name: BITLAB_PREBUFFER_MB
               value: "8"
-            - name: MARLIN_TORRENT_PORT
+            - name: BITLAB_TORRENT_PORT
               value: "51413"
-            - name: MARLIN_ADMIN_PASSWORD
+            - name: BITLAB_ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: marlin-secrets
+                  name: bitlab-secrets
                   key: admin-password
           ports:
             - name: http
@@ -122,18 +122,18 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim:
-            claimName: marlin-data
+            claimName: bitlab-data
         - name: bin
           emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: marlin
-  namespace: marlin
+  name: bitlab
+  namespace: bitlab
 spec:
   selector:
-    app: marlin
+    app: bitlab
   ports:
     - name: http
       port: 8090
@@ -142,8 +142,8 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: marlin
-  namespace: marlin
+  name: bitlab
+  namespace: bitlab
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
     # Streaming must not be buffered or cut off by the proxy.
@@ -157,7 +157,7 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts: ["stream.dill.moe"]
-      secretName: marlin-tls
+      secretName: bitlab-tls
   rules:
     - host: stream.dill.moe
       http:
@@ -166,6 +166,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: marlin
+                name: bitlab
                 port:
                   number: 8090

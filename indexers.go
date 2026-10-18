@@ -276,7 +276,7 @@ func torznabSearch(ctx context.Context, hc *http.Client, ix Indexer, q string, t
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "marlin/1.0")
+	req.Header.Set("User-Agent", "bitlab/1.0")
 	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, err
@@ -338,7 +338,7 @@ func apibaySearch(ctx context.Context, hc *http.Client, ix Indexer, q string) ([
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) marlin/1.0")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) bitlab/1.0")
 	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, err
@@ -622,7 +622,7 @@ func nyaaSearch(ctx context.Context, hc *http.Client, ix Indexer, q string) ([]R
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) marlin/1.0")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) bitlab/1.0")
 	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, err
@@ -787,7 +787,7 @@ func eztvSearch(ctx context.Context, hc *http.Client, ix Indexer, typ string, se
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) marlin/1.0")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) bitlab/1.0")
 	req.Header.Set("Accept", "application/json")
 	resp, err := hc.Do(req)
 	if err != nil {
@@ -886,7 +886,7 @@ func ytsSearch(ctx context.Context, hc *http.Client, ix Indexer, typ string, imd
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) marlin/1.0")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) bitlab/1.0")
 	req.Header.Set("Accept", "application/json")
 	resp, err := hc.Do(req)
 	if err != nil {
@@ -1035,7 +1035,7 @@ func animeToshoSearch(ctx context.Context, hc *http.Client, ix Indexer, q string
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) marlin/1.0")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) bitlab/1.0")
 	req.Header.Set("Accept", "application/json")
 	resp, err := hc.Do(req)
 	if err != nil {

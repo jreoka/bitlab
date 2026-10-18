@@ -207,7 +207,7 @@ func sessionName(ua string) string {
 func (s *Server) issueCookie(w http.ResponseWriter, r *http.Request, sess Session) {
 	exp := time.Unix(sess.ExpiresAt, 0)
 	http.SetCookie(w, &http.Cookie{
-		Name:     "marlin_session",
+		Name:     "bitlab_session",
 		Value:    sess.ID + "." + s.sessionMAC(sess.ID),
 		Path:     "/",
 		HttpOnly: true,
@@ -225,7 +225,7 @@ func (s *Server) sessionMAC(id string) string {
 
 // currentSession resolves the cookie to a live, server-side session record.
 func (s *Server) currentSession(r *http.Request) (Session, bool) {
-	c, err := r.Cookie("marlin_session")
+	c, err := r.Cookie("bitlab_session")
 	if err != nil {
 		return Session{}, false
 	}
@@ -261,7 +261,7 @@ func (s *Server) handle2FABegin(w http.ResponseWriter, r *http.Request) {
 	}
 	secret := newTOTPSecret()
 	s.store.SetSetting("totp_pending", secret)
-	uri := otpauthURI(secret, "Marlin", "admin")
+	uri := otpauthURI(secret, "Bitlab", "admin")
 	qr, err := qrDataURI(uri)
 	if err != nil {
 		httpError(w, 500, err.Error())
@@ -317,7 +317,7 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if cur, ok := s.currentSession(r); ok && cur.ID == id {
-		http.SetCookie(w, &http.Cookie{Name: "marlin_session", Value: "", Path: "/", MaxAge: -1})
+		http.SetCookie(w, &http.Cookie{Name: "bitlab_session", Value: "", Path: "/", MaxAge: -1})
 	}
 	s.log.Printf("session %s revoked", id[:8])
 	writeJSON(w, 200, map[string]any{"ok": true})

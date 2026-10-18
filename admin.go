@@ -135,7 +135,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if sess, ok := s.currentSession(r); ok {
 		s.store.DeleteSession(sess.ID)
 	}
-	http.SetCookie(w, &http.Cookie{Name: "marlin_session", Value: "", Path: "/", MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{Name: "bitlab_session", Value: "", Path: "/", MaxAge: -1})
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -190,7 +190,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		CacheBytes: s.engine.CacheBytes(),
 		CacheMax:   s.engine.maxCacheBytes,
 		Uptime:     int64(time.Since(s.start).Seconds()),
-		Version:    "1.7.1",
+		Version:    "2.0.0",
 		BaseURL:    s.cfg.BaseURL,
 		KeyCount:   s.store.ActiveKeyCount(),
 		MediaRows:  s.store.MediaCacheCount(),

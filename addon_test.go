@@ -43,7 +43,7 @@ func TestManifestLifecycle(t *testing.T) {
 	if err := jsonUnmarshal(rec.Body.Bytes(), &m); err != nil {
 		t.Fatalf("manifest json: %v", err)
 	}
-	if m.ID != "org.marlin."+k.ID || len(m.Resources) != 1 || m.Resources[0] != "stream" {
+	if m.ID != "org.bitlab."+k.ID || len(m.Resources) != 1 || m.Resources[0] != "stream" {
 		t.Fatalf("bad manifest: %+v", m)
 	}
 
@@ -81,7 +81,7 @@ func TestManifestLifecycle(t *testing.T) {
 func TestUnknownAndExpiredKeys(t *testing.T) {
 	s, mux := newTestServer(t)
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/k/mln_nope/manifest.json", nil))
+	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/k/bit_nope/manifest.json", nil))
 	if rec.Code != 401 {
 		t.Fatalf("unknown key: want 401, got %d", rec.Code)
 	}
@@ -140,7 +140,7 @@ func TestSessionCookieAndRevocation(t *testing.T) {
 	}
 	withCookie := func(v string) *http.Request {
 		r := httptest.NewRequest("GET", "/admin", nil)
-		r.AddCookie(&http.Cookie{Name: "marlin_session", Value: v})
+		r.AddCookie(&http.Cookie{Name: "bitlab_session", Value: v})
 		return r
 	}
 	if _, ok := s.currentSession(withCookie(sess.ID + "." + s.sessionMAC(sess.ID))); !ok {

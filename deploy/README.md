@@ -1,22 +1,22 @@
-# Deploying Marlin on Kubernetes
+# Deploying Bitlab on Kubernetes
 
-`marlin.yaml` contains everything: namespace, 20Gi cache volume, Deployment,
+`bitlab.yaml` contains everything: namespace, 20Gi cache volume, Deployment,
 Service and an nginx Ingress for `stream.dill.moe`.
 
-The container image is only used as a shell — the Marlin binary itself is
+The container image is only used as a shell — the Bitlab binary itself is
 fetched from the pinned GitHub release in an initContainer and verified against
 its SHA-256, so the cluster needs no registry credentials.
 
 ```bash
 # 1. admin password (kept out of the repo)
-kubectl -n marlin create secret generic marlin-secrets \
+kubectl -n bitlab create secret generic bitlab-secrets \
   --from-literal=admin-password="$(openssl rand -base64 18)"
 
 # 2. apply
-kubectl apply -f deploy/marlin.yaml
+kubectl apply -f deploy/bitlab.yaml
 
 # 3. point DNS at the node, then wait for the certificate
-kubectl -n marlin get certificate marlin-tls -w
+kubectl -n bitlab get certificate bitlab-tls -w
 ```
 
 Assumptions to check on a fresh cluster:

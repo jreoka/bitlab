@@ -1,15 +1,15 @@
 services:
-  marlin:
+  bitlab:
     build: .
-    image: ghcr.io/jreoka/marlin:latest
-    container_name: marlin
+    image: ghcr.io/jreoka/bitlab:latest
+    container_name: bitlab
     restart: unless-stopped
     ports:
       - "8090:8090"
     environment:
-      MARLIN_ADMIN_PASSWORD: ${MARLIN_ADMIN_PASSWORD:-change-me}
-      MARLIN_BASE_URL: ${MARLIN_BASE_URL:-}
-      MARLIN_CACHE_GB: ${MARLIN_CACHE_GB:-40}
-      MARLIN_IDLE_MINUTES: ${MARLIN_IDLE_MINUTES:-20}
+      BITLAB_ADMIN_PASSWORD: ${BITLAB_ADMIN_PASSWORD:-change-me}
+      BITLAB_BASE_URL: ${BITLAB_BASE_URL:-}
+      BITLAB_CACHE_GB: ${BITLAB_CACHE_GB:-40}
+      BITLAB_IDLE_MINUTES: ${BITLAB_IDLE_MINUTES:-20}
     volumes:
       - ./data:/data

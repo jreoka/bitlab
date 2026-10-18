@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const version = "1.7.1"
+const version = "2.0.0"
 
 var defaultTrackers = []string{
 	// HTTP(S) first: some hosts block outbound UDP, which kills both DHT and
@@ -51,31 +51,31 @@ func envInt(k string, def int) int {
 }
 
 func loadConfig() Config {
-	dataDir := env("MARLIN_DATA", "./data")
+	dataDir := env("BITLAB_DATA", "./data")
 	cfg := Config{
-		Addr:           env("MARLIN_ADDR", ":8090"),
+		Addr:           env("BITLAB_ADDR", ":8090"),
 		DataDir:        dataDir,
-		BaseURL:        env("MARLIN_BASE_URL", ""),
-		CacheMaxBytes:  int64(envInt("MARLIN_CACHE_GB", 40)) << 30,
-		IdleTimeout:    time.Duration(envInt("MARLIN_IDLE_MINUTES", 20)) * time.Minute,
-		InfoTimeout:    time.Duration(envInt("MARLIN_INFO_TIMEOUT", 45)) * time.Second,
-		ReadaheadBytes: int64(envInt("MARLIN_READAHEAD_MB", 64)) << 20,
-		PrebufferMB:    int64(envInt("MARLIN_PREBUFFER_MB", 8)),
-		TorrentPort:    envInt("MARLIN_TORRENT_PORT", 0),
-		AdminPassword:  env("MARLIN_ADMIN_PASSWORD", ""),
+		BaseURL:        env("BITLAB_BASE_URL", ""),
+		CacheMaxBytes:  int64(envInt("BITLAB_CACHE_GB", 40)) << 30,
+		IdleTimeout:    time.Duration(envInt("BITLAB_IDLE_MINUTES", 20)) * time.Minute,
+		InfoTimeout:    time.Duration(envInt("BITLAB_INFO_TIMEOUT", 45)) * time.Second,
+		ReadaheadBytes: int64(envInt("BITLAB_READAHEAD_MB", 64)) << 20,
+		PrebufferMB:    int64(envInt("BITLAB_PREBUFFER_MB", 8)),
+		TorrentPort:    envInt("BITLAB_TORRENT_PORT", 0),
+		AdminPassword:  env("BITLAB_ADMIN_PASSWORD", ""),
 	}
-	if t := os.Getenv("MARLIN_TRACKERS"); t != "" {
+	if t := os.Getenv("BITLAB_TRACKERS"); t != "" {
 		for _, s := range strings.Split(t, ",") {
 			if s = strings.TrimSpace(s); s != "" {
 				cfg.Trackers = append(cfg.Trackers, s)
 			}
 		}
 	}
-	if raw := os.Getenv("MARLIN_INDEXERS"); raw != "" {
+	if raw := os.Getenv("BITLAB_INDEXERS"); raw != "" {
 		// Declarative indexer config, applied on every boot:
 		// [{"kind":"torznab","name":"prowlarr","url":"http://prowlarr:9696/1/api","api_key":"..."}]
 		if err := json.Unmarshal([]byte(raw), &cfg.Indexers); err != nil {
-			fmt.Fprintf(os.Stderr, "MARLIN_INDEXERS is not valid JSON: %v\n", err)
+			fmt.Fprintf(os.Stderr, "BITLAB_INDEXERS is not valid JSON: %v\n", err)
 		}
 	}
 	if len(cfg.Trackers) == 0 {
@@ -88,7 +88,7 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "-version", "--version", "version":
-			fmt.Printf("marlin %s\n", version)
+			fmt.Printf("bitlab %s\n", version)
 			return
 		}
 	}
@@ -102,7 +102,7 @@ func main() {
 		cfg.AdminPassword = bootstrapAdminPassword(cfg.DataDir, lg)
 	}
 
-	store, err := OpenStore(filepath.Join(cfg.DataDir, "marlin.db"))
+	store, err := OpenStore(filepath.Join(cfg.DataDir, "bitlab.db"))
 	if err != nil {
 		lg.Fatalf("store: %v", err)
 	}
@@ -118,13 +118,13 @@ func main() {
 				lg.Printf("indexer %q: %v", ix.Name, err)
 				continue
 			}
-			lg.Printf("indexer from MARLIN_INDEXERS: %s (%s)", ix.Name, ix.Kind)
+			lg.Printf("indexer from BITLAB_INDEXERS: %s (%s)", ix.Name, ix.Kind)
 		}
 	}
 
-	// An explicit MARLIN_INDEXERS list is the whole configuration: do not add
+	// An explicit BITLAB_INDEXERS list is the whole configuration: do not add
 	// public defaults on top of it.
-	if len(cfg.Indexers) == 0 && env("MARLIN_SEED_INDEXER", "on") != "off" {
+	if len(cfg.Indexers) == 0 && env("BITLAB_SEED_INDEXER", "on") != "off" {
 		// knaben on first run, then the public extras once each: anime needs its
 		// own index, and EZTV/YTS carry TV and movie releases that knaben's
 		// single remaining TPB feed does not.
@@ -224,7 +224,7 @@ func main() {
 	}()
 
 	go func() {
-		lg.Printf("marlin %s listening on %s (data=%s, cache=%s)", version, cfg.Addr, cfg.DataDir, humanBytes(cfg.CacheMaxBytes))
+		lg.Printf("bitlab %s listening on %s (data=%s, cache=%s)", version, cfg.Addr, cfg.DataDir, humanBytes(cfg.CacheMaxBytes))
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			lg.Fatalf("listen: %v", err)
 		}

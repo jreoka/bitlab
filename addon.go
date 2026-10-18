@@ -70,9 +70,9 @@ type StreamResponse struct {
 
 func (s *Server) manifestFor(k Key) Manifest {
 	return Manifest{
-		ID:          "org.marlin." + k.ID,
-		Version:     "1.7.1",
-		Name:        "Marlin",
+		ID:          "org.bitlab." + k.ID,
+		Version:     "2.0.0",
+		Name:        "Bitlab",
 		Description: "Self-hosted streaming hub. Manifest: " + k.Label,
 		Resources:   []string{"stream"},
 		Types:       []string{"movie", "series"},
@@ -195,7 +195,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			Title: detail,
 			URL:   link,
 			BehaviorHints: map[string]any{
-				"bingeGroup":  "marlin-" + q,
+				"bingeGroup":  "bitlab-" + q,
 				"notWebReady": false,
 			},
 		})
@@ -288,7 +288,7 @@ func (s *Server) resolveMeta(ctx context.Context, typ, imdbID string) (string, i
 	if err != nil {
 		return "", 0, err
 	}
-	req.Header.Set("User-Agent", "marlin/1.0")
+	req.Header.Set("User-Agent", "bitlab/1.0")
 	resp, err := s.http.Do(req)
 	if err != nil {
 		return "", 0, err

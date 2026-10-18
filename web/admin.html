@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Marlin — console</title>
+<title>Bitlab — console</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <meta name="theme-color" content="#090b0f">
 <meta name="color-scheme" content="dark">
@@ -248,8 +248,8 @@ tr:last-child td{border-bottom:0}
 <div id="login" class="auth hidden">
   <div class="auth-card">
     <div class="brand">
-      <div class="mark">M</div>
-      <div><div class="name">Marlin</div><div class="ver">Admin console</div></div>
+      <div class="mark">B</div>
+      <div><div class="name">Bitlab</div><div class="ver">Admin console</div></div>
     </div>
     <h1>Sign in</h1>
     <p class="sub">Manage manifest keys and the streaming engine.</p>
@@ -270,9 +270,9 @@ tr:last-child td{border-bottom:0}
 <div id="app" class="shell hidden">
   <aside class="sidebar">
     <div class="brand">
-      <div class="mark">M</div>
+      <div class="mark">B</div>
       <div>
-        <div class="name">Marlin</div>
+        <div class="name">Bitlab</div>
         <div class="ver"><span id="ver">—</span></div>
       </div>
     </div>
@@ -485,7 +485,7 @@ async function logout(){ await fetch('/admin/api/logout',{method:'POST'}); locat
 function tab(name){
   document.querySelectorAll('.nav').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
   ['keys','activity','security'].forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== name));
-  const t = titles[name] || ['Marlin',''];
+  const t = titles[name] || ['Bitlab',''];
   $('#page-title').textContent = t[0]; $('#page-sub').textContent = t[1];
   if (name === 'security') loadSecurity();
 }

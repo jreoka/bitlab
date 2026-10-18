@@ -187,7 +187,7 @@ func (s *Store) CreateKey(label, note string, ttl time.Duration) (Key, error) {
 		label = "unnamed"
 	}
 	id := randHex(6)
-	token := "mln_" + randToken(20)
+	token := "bit_" + randToken(20)
 	var exp int64
 	if ttl > 0 {
 		exp = time.Now().Add(ttl).Unix()
@@ -430,7 +430,7 @@ func (s *Store) SaveIndexer(i Indexer) (Indexer, error) {
 }
 
 // UpsertIndexerByName inserts or updates an indexer identified by kind+name,
-// which is how MARLIN_INDEXERS is applied on every boot without duplicating rows.
+// which is how BITLAB_INDEXERS is applied on every boot without duplicating rows.
 func (s *Store) UpsertIndexerByName(ix Indexer) error {
 	var id string
 	err := s.db.QueryRow(`SELECT id FROM indexers WHERE kind=? AND name=?`, ix.Kind, ix.Name).Scan(&id)
