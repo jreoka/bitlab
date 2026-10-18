@@ -41,6 +41,7 @@ type Server struct {
 	bytesOut   int64
 	hints      sync.Map // infohash -> []string trackers, learned from search results
 	ixCache    sync.Map // indexer+query -> cached results for a few minutes
+	probeSem   chan struct{}
 }
 
 // ---- addon protocol types ----
@@ -71,7 +72,7 @@ type StreamResponse struct {
 func (s *Server) manifestFor(k Key) Manifest {
 	return Manifest{
 		ID:          "org.bitlab." + k.ID,
-		Version:     "2.0.0",
+		Version:     "2.1.0",
 		Name:        "Bitlab",
 		Description: "Self-hosted streaming hub. Manifest: " + k.Label,
 		Resources:   []string{"stream"},
@@ -90,6 +91,39 @@ func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Cache-Control", "max-age=300")
 	json.NewEncoder(w).Encode(s.manifestFor(k))
+}
+
+// streamQueries is the query set for one title. Anime is indexed under several
+// names, and older seasons usually exist only as a batch, which is never titled
+// "S01E01" — so both the episode and the season are asked for.
+func (s *Server) streamQueries(ctx context.Context, typ, title string, year, season, ep int) []string {
+	query := title
+	if typ == "series" && season > 0 {
+		query = fmt.Sprintf("%s S%02dE%02d", title, season, ep)
+	} else if year > 0 {
+		query = fmt.Sprintf("%s %d", title, year)
+	}
+	queries := []string{query}
+	if typ != "series" || season <= 0 {
+		return queries
+	}
+	queries = append(queries, fmt.Sprintf("%s S%02d", title, season))
+	aliases := s.animeAliases(ctx, title)
+	for i, alias := range aliases {
+		if i >= 2 {
+			break
+		}
+		queries = append(queries, fmt.Sprintf("%s S%02dE%02d", alias, season, ep))
+		if i == 0 {
+			queries = append(queries, fmt.Sprintf("%s S%02d", alias, season))
+		}
+	}
+	// Release groups write anime as "Show - 04" far more often than "SxxE04",
+	// so aliases are also searched by name alone and filtered by episode later.
+	if len(aliases) > 0 {
+		queries = append(queries, aliases[0])
+	}
+	return queries
 }
 
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
@@ -116,61 +150,37 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := title
-	if typ == "series" && season > 0 {
-		query = fmt.Sprintf("%s S%02dE%02d", title, season, ep)
-	} else if year > 0 {
-		query = fmt.Sprintf("%s %d", title, year)
-	}
-
-	queries := []string{query}
-	if typ == "series" && season > 0 {
-		// Older seasons are usually only available as a batch, which is never
-		// titled "S01E01" — ask for the season as well as the episode.
-		queries = append(queries, fmt.Sprintf("%s S%02d", title, season))
-		aliases := s.animeAliases(ctx, title)
-		for i, alias := range aliases {
-			if i >= 2 {
-				break
-			}
-			queries = append(queries, fmt.Sprintf("%s S%02dE%02d", alias, season, ep))
-			if i == 0 {
-				queries = append(queries, fmt.Sprintf("%s S%02d", alias, season))
-			}
-		}
-		// Release groups write anime as "Show - 04" far more often than "SxxE04",
-		// so aliases are also searched by name alone and filtered by episode later.
-		if len(aliases) > 0 {
-			queries = append(queries, aliases[0])
-		}
-	}
+	queries := s.streamQueries(ctx, typ, title, year, season, ep)
 	results, errs := s.searchAll(ctx, queries, typ, season, ep, baseID)
 	for _, e := range errs {
 		s.log.Printf("stream %s: %s", rawID, e)
 	}
 	if len(results) == 0 {
-		s.log.Printf("stream %s: no results for %q", rawID, query)
+		s.log.Printf("stream %s: no results for %q", rawID, queries[0])
 		writeJSON(w, 200, StreamResponse{Streams: []Stream{}})
 		return
 	}
 
 	base := s.baseURL(r)
-	streams := make([]Stream, 0, len(results))
+	// First line is the bold one in the player: show the title being watched,
+	// not the addon name, with the resolution as the differentiator.
+	display := title
+	if typ == "series" && season > 0 {
+		display = fmt.Sprintf("%s S%02dE%02d", title, season, ep)
+	} else if year > 0 {
+		display = fmt.Sprintf("%s (%d)", title, year)
+	}
+	streams := make([]Stream, 0, len(results)+1)
+	// Auto sits on top; the full list stays below it as the override.
+	streams = append(streams, s.autoRow(base, k, typ, rawID, display))
 	for i, res := range results {
 		if len(res.Trackers) > 0 {
 			s.hints.Store(res.InfoHash, res.Trackers)
 		}
 		label, q := releaseLabel(res.Title)
 		src := strings.TrimSpace(strings.TrimPrefix(label, q))
-		// First line is the bold one in the player: show the title being watched,
-		// not the addon name, with the resolution as the differentiator.
-		display := title
-		if typ == "series" && season > 0 {
-			display = fmt.Sprintf("%s S%02dE%02d", title, season, ep)
-		} else if year > 0 {
-			display = fmt.Sprintf("%s (%d)", title, year)
-		}
-		link := fmt.Sprintf("%s/k/%s/play/%s?n=%s", base, k.Token, res.InfoHash, url.QueryEscape(truncate(res.Title, 120)))
+		link := fmt.Sprintf("%s/k/%s/play/%s?n=%s&m=%s", base, k.Token, res.InfoHash,
+			url.QueryEscape(truncate(res.Title, 120)), url.QueryEscape(rawID))
 		if typ == "series" && season > 0 {
 			// Tells the play handler which file to pick inside a season pack.
 			link += fmt.Sprintf("&s=%d&e=%d", season, ep)
@@ -200,13 +210,18 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			},
 		})
 		// Warm the head of the plausible picks: deeper for the top rows, which
-		// are the ones actually clicked, and shallow for the rest.
+		// are the ones actually clicked, and shallow for the rest. The probe
+		// rides along on the same warmed torrent, so auto knows the real tracks
+		// and throughput before anything is clicked.
 		if i < 6 {
 			mb := int64(6)
 			if i < 3 {
 				mb = s.cfg.PrebufferMB * 3
 			}
 			s.engine.Warm(res.InfoHash, res.Title, nil, mb)
+		}
+		if i < 4 {
+			go s.warmProbe(res)
 		}
 	}
 	writeJSON(w, 200, StreamResponse{Streams: streams})

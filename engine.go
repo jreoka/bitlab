@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -298,7 +299,6 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 		httpError(w, 400, "bad infohash")
 		return
 	}
-	hint := r.URL.Query().Get("n")
 	wantIdx := -1
 	if f := r.URL.Query().Get("f"); f != "" {
 		if n, err := strconv.Atoi(f); err == nil {
@@ -312,12 +312,18 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 	if v := r.URL.Query().Get("e"); v != "" {
 		epWanted, _ = strconv.Atoi(v)
 	}
+	s.serveTorrent(w, r, key, ih, r.URL.Query().Get("n"), r.URL.Query()["tr"],
+		wantIdx, seasonWanted, epWanted, r.URL.Query().Get("m"))
+}
 
+// serveTorrent streams one release to a player. handlePlay reaches it from a
+// concrete row; handleAuto reaches it after resolving the pick at click time.
+func (s *Server) serveTorrent(w http.ResponseWriter, r *http.Request, key Key, ih, hint string, trackers []string, wantIdx, seasonWanted, epWanted int, mediaID string) {
 	var extra []string
 	if v, ok := s.hints.Load(ih); ok {
 		extra = v.([]string)
 	}
-	t, err := s.engine.ensure(ih, hint, append(extra, r.URL.Query()["tr"]...))
+	t, err := s.engine.ensure(ih, hint, append(extra, trackers...))
 	if err != nil {
 		httpError(w, 500, "torrent: "+err.Error())
 		return
@@ -363,8 +369,24 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 	reader := f.NewReader()
 	reader.SetReadahead(s.cfg.ReadaheadBytes)
 	reader.SetResponsive()
-	reader.SetContext(ctx)
+	// The watchdog gets its own cancellable context: that is the only way to end
+	// a stream whose swarm has stopped delivering.
+	playCtx, stopPlay := context.WithCancel(r.Context())
+	defer stopPlay()
+	reader.SetContext(playCtx)
 	defer reader.Close()
+
+	mon := &playMonitor{}
+	typ := "movie"
+	if seasonWanted > 0 || strings.Contains(mediaID, ":") {
+		typ = "series"
+	}
+	dur := 7200.0
+	if typ == "series" {
+		dur = 3000 // one episode, even inside a season pack
+	}
+	need := float64(f.Length()) * 8 / dur / 1e6
+	go s.watchPlayback(playCtx, stopPlay, mon, ih, mediaID, need, reader)
 
 	name := filepath.Base(f.DisplayPath())
 	ct := mime.TypeByExtension(filepath.Ext(name))
@@ -391,11 +413,11 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Bitlab-File", strconv.Itoa(idx))
 
-	cw := &countingWriter{ResponseWriter: w, n: &s.bytesOut}
+	cw := &countingWriter{ResponseWriter: w, n: &s.bytesOut, m: mon}
 	// ServeContent probes the size with Seek(0, End) before writing anything.
 	// Answering that arithmetically avoids telling the torrent client to
 	// prioritise the tail of the file, which delays the first byte.
-	http.ServeContent(cw, r, name, time.Time{}, &sizedReader{r: reader, size: f.Length()})
+	http.ServeContent(cw, r, name, time.Time{}, &sizedReader{r: reader, size: f.Length(), m: mon})
 	s.store.AddKeyBytes(key.ID, cw.written)
 	s.log.Printf("play %s key=%s file=%d served=%s range=%q", ih[:8], key.ID, idx, humanBytes(cw.written), r.Header.Get("Range"))
 }
@@ -404,12 +426,70 @@ type countingWriter struct {
 	http.ResponseWriter
 	n       *int64
 	written int64
+	m       *playMonitor
 }
 
 func (c *countingWriter) Write(p []byte) (int, error) {
+	if c.m != nil {
+		c.m.inWrite.Store(true)
+		defer c.m.inWrite.Store(false)
+	}
 	n, err := c.ResponseWriter.Write(p)
 	c.written += int64(n)
+	if c.m != nil {
+		c.m.served.Add(int64(n))
+	}
 	return n, err
+}
+
+// watchPlayback is the stall watchdog. It cannot switch releases mid-stream —
+// byte offsets belong to one release, so splicing another would corrupt the
+// stream — so its job is narrower and honest: recover a starved swarm when it
+// can, and when it cannot, end the stream instead of hanging forever and
+// remember the release so the next auto attempt chooses differently.
+func (s *Server) watchPlayback(ctx context.Context, stop context.CancelFunc, mon *playMonitor, ih, mediaID string, needMbps float64, r torrent.Reader) {
+	const tick = 5 * time.Second
+	tk := time.NewTicker(tick)
+	defer tk.Stop()
+	start := time.Now()
+	var last int64
+	starved := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tk.C:
+			cur := mon.served.Load()
+			moved := cur != last
+			last = cur
+			// No progress while blocked writing to the player means the player
+			// stopped consuming (pause, seek, slow decoder). That is not ours.
+			if moved || mon.inWrite.Load() || !mon.inRead.Load() {
+				starved = 0
+				continue
+			}
+			starved++
+			switch {
+			case starved == 2:
+				// A bursty swarm recovers if we stop racing it piece by piece.
+				// SetReadahead takes the reader's lock, so this is safe while a
+				// read is in flight.
+				r.SetReadahead(s.cfg.ReadaheadBytes * 3)
+				s.log.Printf("play %s: no data for %s, readahead raised to %s",
+					ih[:8], (time.Duration(starved) * tick).Round(time.Second),
+					humanBytes(s.cfg.ReadaheadBytes*3))
+			case starved >= 6:
+				elapsed := time.Since(start).Round(time.Second)
+				s.log.Printf("play %s: stalled (%s in %s, needs %.1f Mbps); ending stream",
+					ih[:8], humanBytes(cur), elapsed, needMbps)
+				if mediaID != "" {
+					s.store.RecordStall(ih, mediaID)
+				}
+				stop()
+				return
+			}
+		}
+	}
 }
 
 // janitor drops idle torrents and keeps the disk cache under budget.
@@ -591,6 +671,16 @@ type sizedReader struct {
 	r    io.ReadSeeker
 	size int64
 	pos  int64
+	m    *playMonitor // optional: lets the watchdog see where we are blocked
+}
+
+// playMonitor separates "the swarm owes us data" from "the player is not
+// consuming". A paused player blocks us in Write, not in Read, so a stall can
+// be told apart from a pause without any player cooperation.
+type playMonitor struct {
+	served  atomic.Int64
+	inRead  atomic.Bool
+	inWrite atomic.Bool
 }
 
 func (s *sizedReader) Read(p []byte) (int, error) {
@@ -599,6 +689,10 @@ func (s *sizedReader) Read(p []byte) (int, error) {
 	}
 	if int64(len(p)) > s.size-s.pos {
 		p = p[:s.size-s.pos]
+	}
+	if s.m != nil {
+		s.m.inRead.Store(true)
+		defer s.m.inRead.Store(false)
 	}
 	n, err := s.r.Read(p)
 	s.pos += int64(n)

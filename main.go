@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const version = "2.0.0"
+const version = "2.1.0"
 
 var defaultTrackers = []string{
 	// HTTP(S) first: some hosts block outbound UDP, which kills both DHT and
@@ -197,6 +197,9 @@ func main() {
 		log:        lg,
 		start:      time.Now(),
 		sessionKey: []byte(secret),
+		// Auto probes several candidates at once; the cap keeps one click from
+		// opening a dozen torrents.
+		probeSem: make(chan struct{}, 4),
 	}
 
 	mux := http.NewServeMux()
@@ -260,6 +263,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /k/{token}/stream/{type}/{id}", s.handleStream)
 	mux.HandleFunc("GET /k/{token}/play/{infohash}", s.handlePlay)
 	mux.HandleFunc("GET /k/{token}/play/{infohash}/{fname}", s.handlePlay)
+	// Auto resolves its pick when the player asks, not when the list is drawn.
+	mux.HandleFunc("GET /k/{token}/auto/{type}/{id}", s.handleAuto)
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"ok": true, "version": version, "uptime": int64(time.Since(s.start).Seconds())})

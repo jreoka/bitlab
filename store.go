@@ -135,6 +135,39 @@ CREATE TABLE IF NOT EXISTS meta_cache (
 	if err != nil {
 		return err
 	}
+	// Container probe results, stall memory and the last auto pick. A probe is
+	// keyed by infohash alone: a torrent's track layout cannot change.
+	if _, err := s.db.Exec(`
+CREATE TABLE IF NOT EXISTS track_probes (
+  infohash TEXT PRIMARY KEY,
+  file_idx INTEGER NOT NULL DEFAULT -1,
+  width INTEGER NOT NULL DEFAULT 0,
+  height INTEGER NOT NULL DEFAULT 0,
+  video INTEGER NOT NULL DEFAULT 0,
+  audio INTEGER NOT NULL DEFAULT 0,
+  subs INTEGER NOT NULL DEFAULT 0,
+  langs TEXT NOT NULL DEFAULT '',
+  codecs TEXT NOT NULL DEFAULT '',
+  container TEXT NOT NULL DEFAULT '',
+  mbps REAL NOT NULL DEFAULT 0,
+  probed_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS stalls (
+  infohash TEXT NOT NULL,
+  media_id TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (infohash, media_id)
+);
+CREATE TABLE IF NOT EXISTS auto_picks (
+  media_id TEXT PRIMARY KEY,
+  infohash TEXT NOT NULL,
+  label TEXT NOT NULL DEFAULT '',
+  score REAL NOT NULL DEFAULT 0,
+  picked_at INTEGER NOT NULL
+);
+`); err != nil {
+		return err
+	}
 	// `status` replaces the old boolean `revoked`; revoking now deletes the key,
 	// so any key that was revoked under the old scheme goes away.
 	if !s.hasColumn("keys", "status") {
@@ -531,4 +564,94 @@ func boolInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// ---- probe cache, stall memory, auto history ----
+
+// Probe is a cached container probe: the tracks a release really has, plus the
+// throughput observed while reading its header.
+type Probe struct {
+	InfoHash string `json:"infohash"`
+	FileIdx  int    `json:"file_idx"`
+	TrackInfo
+	ProbedAt int64 `json:"probed_at"`
+}
+
+func (s *Store) SaveProbe(ih string, fileIdx int, ti TrackInfo) {
+	_, err := s.db.Exec(`INSERT INTO track_probes(infohash,file_idx,width,height,video,audio,subs,langs,codecs,container,mbps,probed_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(infohash) DO UPDATE SET file_idx=excluded.file_idx, width=excluded.width, height=excluded.height,
+		video=excluded.video, audio=excluded.audio, subs=excluded.subs, langs=excluded.langs,
+		codecs=excluded.codecs, container=excluded.container, mbps=excluded.mbps, probed_at=excluded.probed_at`,
+		ih, fileIdx, ti.Width, ti.Height, ti.Video, ti.Audio, ti.Subs,
+		strings.Join(ti.Langs, ","), strings.Join(ti.AudioCodecs, ","), ti.Container, ti.Mbps, time.Now().Unix())
+	if err != nil {
+		return
+	}
+}
+
+// GetProbe returns a cached probe younger than a day. Track layout is stable,
+// so the only thing that expires is how much we trust the throughput sample.
+func (s *Store) GetProbe(ih string) (Probe, bool) {
+	var p Probe
+	var langs, codecs string
+	err := s.db.QueryRow(`SELECT infohash,file_idx,width,height,video,audio,subs,langs,codecs,container,mbps,probed_at
+		FROM track_probes WHERE infohash=? AND probed_at > ?`, ih, time.Now().Add(-24*time.Hour).Unix()).
+		Scan(&p.InfoHash, &p.FileIdx, &p.Width, &p.Height, &p.Video, &p.Audio, &p.Subs,
+			&langs, &codecs, &p.Container, &p.Mbps, &p.ProbedAt)
+	if err != nil {
+		return Probe{}, false
+	}
+	p.Langs = splitNonEmpty(langs)
+	p.AudioCodecs = splitNonEmpty(codecs)
+	return p, true
+}
+
+func splitNonEmpty(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, ",")
+}
+
+// RecordStall marks a release as having failed to stream for this title, so the
+// next auto attempt picks something else instead of retrying it.
+func (s *Store) RecordStall(ih, mediaID string) {
+	_, err := s.db.Exec(`INSERT INTO stalls(infohash,media_id,created_at) VALUES(?,?,?)
+		ON CONFLICT(infohash,media_id) DO UPDATE SET created_at=excluded.created_at`,
+		ih, mediaID, time.Now().Unix())
+	if err != nil {
+		return
+	}
+}
+
+// StalledHashes is the set of releases demoted for this title within window.
+func (s *Store) StalledHashes(mediaID string, window time.Duration) map[string]bool {
+	out := map[string]bool{}
+	cutoff := time.Now().Add(-window).Unix()
+	rows, err := s.db.Query(`SELECT infohash FROM stalls WHERE media_id=? AND created_at > ?`, mediaID, cutoff)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ih string
+		if rows.Scan(&ih) == nil {
+			out[ih] = true
+		}
+	}
+	s.db.Exec(`DELETE FROM stalls WHERE created_at < ?`, time.Now().Add(-7*24*time.Hour).Unix())
+	return out
+}
+
+func (s *Store) SaveAutoPick(mediaID, ih, label string, score float64) {
+	s.db.Exec(`INSERT INTO auto_picks(media_id,infohash,label,score,picked_at) VALUES(?,?,?,?,?)
+		ON CONFLICT(media_id) DO UPDATE SET infohash=excluded.infohash, label=excluded.label,
+		score=excluded.score, picked_at=excluded.picked_at`, mediaID, ih, label, score, time.Now().Unix())
+}
+
+func (s *Store) GetAutoPick(mediaID string) (ih, label string, at int64, ok bool) {
+	err := s.db.QueryRow(`SELECT infohash,label,picked_at FROM auto_picks WHERE media_id=?`, mediaID).
+		Scan(&ih, &label, &at)
+	return ih, label, at, err == nil
 }
