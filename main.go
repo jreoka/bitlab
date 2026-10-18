@@ -14,9 +14,15 @@ import (
 	"time"
 )
 
-const version = "1.6.0"
+const version = "1.6.1"
 
 var defaultTrackers = []string{
+	// HTTP(S) first: some hosts block outbound UDP, which kills both DHT and
+	// every udp:// announce — then an HTTP tracker is the only way to find peers.
+	"http://nyaa.tracker.wf:7777/announce",
+	"http://tracker.opentrackr.org:1337/announce",
+	"http://tracker.openbittorrent.com:80/announce",
+	"https://tracker.tamersunion.org:443/announce",
 	"udp://tracker.opentrackr.org:1337/announce",
 	"udp://open.stealth.si:80/announce",
 	"udp://tracker.torrent.eu.org:451/announce",

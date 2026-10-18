@@ -24,13 +24,14 @@ import (
 var errInfoTimeout = errors.New("timed out waiting for torrent metadata (no peers?)")
 
 type activity struct {
-	readers    int
-	lastAccess time.Time
-	label      string
-	size       int64
-	rate       float64
-	prevBytes  int64
-	prevAt     time.Time
+	readers       int
+	lastAccess    time.Time
+	label         string
+	size          int64
+	rate          float64
+	prevBytes     int64
+	prevAt        time.Time
+	warnedNoPeers bool
 }
 
 // Engine owns the BitTorrent client and turns it into an HTTP byte source.
@@ -444,6 +445,10 @@ func (e *Engine) janitor() {
 			readers := a.readers
 			e.mu.Unlock()
 
+			if readers > 0 && a.size > 0 && t.Stats().ActivePeers == 0 && now.Sub(a.lastAccess) > 15*time.Second && !a.warnedNoPeers {
+				a.warnedNoPeers = true
+				e.log.Printf("no peers for %s after %s (trackers=%d)", ih[:8], time.Since(a.lastAccess).Round(time.Second), len(e.trackers))
+			}
 			if readers == 0 && idle > e.idleTimeout {
 				e.log.Printf("drop idle torrent %s (%s idle)", ih[:8], idle.Round(time.Second))
 				t.Drop()

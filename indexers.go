@@ -572,6 +572,8 @@ func nyaaSearch(ctx context.Context, hc *http.Client, ix Indexer, q string) ([]R
 			Size:     parseSize(it.Size),
 			Seeders:  it.Seeders,
 			Indexer:  ix.Name,
+			// nyaa's RSS gives no magnet, and its swarms live on its own tracker.
+			Trackers: []string{"http://nyaa.tracker.wf:7777/announce"},
 		})
 	}
 	return out, nil
