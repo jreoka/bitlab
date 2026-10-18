@@ -108,6 +108,16 @@ input,select{
 }
 input::placeholder{color:#4f5867}
 input:focus,select:focus{border-color:#3a6cbf;box-shadow:0 0 0 3px rgba(91,140,255,.12)}
+/* native select arrows sit hard against the border and vary per platform */
+select{
+  appearance:none;-webkit-appearance:none;-moz-appearance:none;
+  padding:10px 34px 10px 12px;line-height:1.2;
+  background-color:#0a0e13;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2398a2b3' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;
+  background-position:right 12px center;
+}
+select:hover{background-color:#0d1218}
 label{display:block;font-size:11.5px;color:var(--faint);margin:0 0 6px;letter-spacing:.04em;text-transform:uppercase;font-weight:600}
 .row{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));align-items:end}
 .muted{color:var(--faint)}
@@ -125,7 +135,7 @@ label{display:block;font-size:11.5px;color:var(--faint);margin:0 0 6px;letter-sp
 /* ---------- keys toolbar + pager ---------- */
 .keys-toolbar{display:flex;gap:10px;margin:0 0 14px;align-items:center}
 .keys-toolbar input{flex:1;min-width:0}
-.keys-toolbar select{width:auto;min-width:96px}
+.keys-toolbar select{width:auto;min-width:122px}
 .pager{display:flex;align-items:center;gap:10px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line-soft)}
 .pager .spacer{flex:1}
 .pager button{background:none;border:0;color:var(--dim);padding:6px 8px}
