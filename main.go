@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const version = "1.5.6"
+const version = "1.5.7"
 
 var defaultTrackers = []string{
 	"udp://tracker.opentrackr.org:1337/announce",
@@ -207,7 +207,14 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /manifest.json", func(w http.ResponseWriter, r *http.Request) {
 		httpError(w, 401, "use your personal manifest URL: /k/<key>/manifest.json")
 	})
-	mux.HandleFunc("GET /", s.handleLanding)
+	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		// No public landing page: the root is just a door to the console.
+		http.Redirect(w, r, "/admin", http.StatusFound)
+	})
 
 	// admin
 	mux.HandleFunc("GET /admin", s.handleAdminPage)
@@ -249,42 +256,3 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
-
-func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
-	// Deliberately does not list manifest keys: they are credentials, and this
-	// page is public.
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	fmt.Fprint(w, landingHTML)
-}
-
-const landingHTML = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Marlin</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-:root{color-scheme:dark}
-*{box-sizing:border-box}
-body{margin:0;min-height:100vh;display:grid;place-items:center;padding:32px;background:#0a0b0d;color:#e9ebef;
- font:13.5px/1.65 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
-.wrap{width:100%;max-width:360px}
-.brand{display:flex;align-items:baseline;gap:9px;margin-bottom:30px}
-.mark{color:#5b8cff;font-weight:700;font-size:17px;letter-spacing:-.03em}
-.name{font-size:13.5px;font-weight:600}
-.ver{font-size:10px;color:#5d646f;text-transform:uppercase;letter-spacing:.09em}
-h1{margin:0 0 8px;font-size:16px;font-weight:600;letter-spacing:-.01em}
-p{margin:0 0 20px;color:#8b929e;font-size:12.5px;max-width:34ch}
-ul{margin:0 0 26px;padding:0;list-style:none;font-size:12.2px;color:#5d646f;display:grid;gap:5px}
-li::before{content:"— ";color:#3c424b}
-a{color:#5b8cff;text-decoration:none;font-size:12.5px}
-a:hover{text-decoration:underline}
-</style></head><body><div class="wrap">
- <div class="brand"><span class="mark">M</span><span class="name">Marlin</span><span class="ver">hub</span></div>
- <h1>Private add-on server</h1>
- <p>Manifest keys are issued from the console. Install one in Stremio or Nuvio to start streaming.</p>
- <ul><li>per-device keys — pause, expire or revoke</li><li>no debrid — Marlin fetches and streams itself</li></ul>
- <a href="/admin">Open the console →</a>
-</div></body></html>`

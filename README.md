@@ -100,7 +100,7 @@ manifest hands out `https://` links.
 
 **Nuvio**: Addons → Add repository → paste the same URL.
 
-The landing page at `/` lists every active key's manifest URL, so you can copy it from a phone.
+There is no public landing page — `/` redirects to the console.
 
 ## Admin API
 
