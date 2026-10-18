@@ -423,6 +423,30 @@ func TestParseMP4TruncatedMoovKeepsVideo(t *testing.T) {
 	}
 }
 
+// A moov cut short by a slow swarm says nothing about how many audio tracks a
+// release has, so it must not be scored as if it had none.
+func TestPartialProbeDoesNotPenaliseOptions(t *testing.T) {
+	full := movieCand("Movie.2024.1080p.WEB-DL.H.264", 1080, 8, 40)
+	full.probed = true
+	full.tracks = TrackInfo{Video: 1, Audio: 0, Subs: 0, Partial: true}
+
+	same := movieCand("Movie.2024.1080p.WEB-DL.H.264-GRP", 1080, 8, 40)
+	same.probed = true
+	same.tracks = TrackInfo{Video: 1, Audio: 0, Subs: 0, Partial: true}
+
+	full.evaluate()
+	same.evaluate()
+	if full.score != same.score {
+		t.Fatalf("partial probes scored differently: %v vs %v", full.score, same.score)
+	}
+	// And the neutral options weight is what an unprobed candidate gets.
+	unprobed := movieCand("Movie.2024.1080p.WEB-DL.H.264-X", 1080, 8, 40)
+	unprobed.evaluate()
+	if got, want := full.score, unprobed.score; got != want {
+		t.Fatalf("partial probe scored %v, unprobed scored %v", got, want)
+	}
+}
+
 // ---- auto row ----
 func TestAutoRowIsAStableBingeGroup(t *testing.T) {
 	s := &Server{store: testStore(t)}

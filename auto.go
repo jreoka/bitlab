@@ -182,7 +182,7 @@ func (c *autoCand) evaluate() {
 	// Options: audio and subtitle tracks, but only once we have measured them.
 	// Unprobed candidates sit mid-table rather than being flattered or punished.
 	options := 0.40
-	if c.probed {
+	if c.probed && !c.tracks.Partial {
 		options = 0.65*clamp01(float64(c.tracks.Audio)/3) + 0.35*clamp01(float64(c.tracks.Subs)/6)
 	}
 
@@ -455,6 +455,19 @@ func (s *Server) warmProbe(res Result) {
 	if _, ok := s.store.GetProbe(res.InfoHash); ok {
 		return
 	}
+	// Two list requests arriving together must not open the same torrent twice.
+	s.probeMu.Lock()
+	if s.probeBusy[res.InfoHash] {
+		s.probeMu.Unlock()
+		return
+	}
+	s.probeBusy[res.InfoHash] = true
+	s.probeMu.Unlock()
+	defer func() {
+		s.probeMu.Lock()
+		delete(s.probeBusy, res.InfoHash)
+		s.probeMu.Unlock()
+	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	ti, ok := s.probeAndSave(ctx, res)
@@ -475,7 +488,7 @@ func (c *autoCand) Label() string {
 	}
 	parts = append(parts, c.tier.label())
 	bits := []string{strings.Join(parts, " ")}
-	if c.probed {
+	if c.probed && !c.tracks.Partial {
 		if c.tracks.Audio > 0 {
 			bits = append(bits, fmt.Sprintf("%d audio", c.tracks.Audio))
 		}

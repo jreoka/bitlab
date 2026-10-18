@@ -25,6 +25,10 @@ type TrackInfo struct {
 	Langs       []string
 	AudioCodecs []string
 	Mbps        float64
+	// Partial means the header was cut short by a slow swarm: the video track
+	// was read but the audio and subtitle tracks may not have been. A partial
+	// probe must not be read as "this release has no extra tracks".
+	Partial bool
 }
 
 // heightLabel maps a container's pixel height to the "quality rung" a user
@@ -478,10 +482,12 @@ func (s *Server) probeRelease(ctx context.Context, res Result) (TrackInfo, bool)
 	// a video trak's sample tables alone run to megabytes — so the box has to be
 	// read whole rather than guessed at with a fixed window.
 	if ti.Video == 0 {
-		if moov, n := readMoov(r, f.Length()); moov != nil {
-			read += n
+		moov, n, complete := readMoov(r, f.Length())
+		read += n
+		if moov != nil {
 			if info, ok := parseMP4(moov); ok {
 				ti = info
+				ti.Partial = !complete
 			}
 		}
 	}
@@ -511,9 +517,9 @@ func (s *Server) probeRelease(ctx context.Context, res Result) (TrackInfo, bool)
 // readMoov locates the MP4 `moov` box and returns it whole, so the audio and
 // subtitle traks behind the video one are not cut off. It looks at the head
 // first (faststart files), then the tail, then reads the box at its real size.
-func readMoov(r torrent.Reader, fileSize int64) ([]byte, int64) {
+func readMoov(r torrent.Reader, fileSize int64) ([]byte, int64, bool) {
 	if fileSize < 16 {
-		return nil, 0
+		return nil, 0, false
 	}
 	var read int64
 	headN := int64(probeChunk * 4)
@@ -524,7 +530,7 @@ func readMoov(r torrent.Reader, fileSize int64) ([]byte, int64) {
 	base := int64(0)
 	n, _ := readAt(r, win, 0)
 	if n <= 0 {
-		return nil, 0
+		return nil, 0, false
 	}
 	read += int64(n)
 	win = win[:n]
@@ -538,13 +544,13 @@ func readMoov(r torrent.Reader, fileSize int64) ([]byte, int64) {
 		tail := make([]byte, tailN)
 		m, _ := readAt(r, tail, fileSize-tailN)
 		if m <= 0 {
-			return nil, read
+			return nil, read, false
 		}
 		read += int64(m)
 		win, base = tail[:m], fileSize-tailN
 		bs = findMoovBox(win)
 		if bs < 0 {
-			return nil, read
+			return nil, read, false
 		}
 	}
 
@@ -555,7 +561,7 @@ func readMoov(r torrent.Reader, fileSize int64) ([]byte, int64) {
 		hdr = 16
 	}
 	if bs+sz <= len(win) {
-		return win[bs : bs+sz], read
+		return win[bs : bs+sz], read, true
 	}
 	// Only part of the box is in the window: fetch the rest of it, capped so a
 	// pathological moov cannot eat the whole probe budget.
@@ -565,13 +571,14 @@ func readMoov(r torrent.Reader, fileSize int64) ([]byte, int64) {
 	box := make([]byte, sz)
 	m, _ := readAt(r, box, base+int64(bs))
 	if m <= hdr {
-		return nil, read
+		return nil, read, false
 	}
 	read += int64(m)
+	complete := m >= sz
 	// Rewrite the declared size to what we actually hold, so parseMP4 clamps
 	// instead of rejecting a header that overruns the buffer.
 	binary.BigEndian.PutUint32(box[:4], uint32(m))
-	return box[:m], read
+	return box[:m], read, complete
 }
 
 // findMoovBox returns the offset of a `moov` box header whose declared size is

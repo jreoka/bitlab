@@ -42,6 +42,8 @@ type Server struct {
 	hints      sync.Map // infohash -> []string trackers, learned from search results
 	ixCache    sync.Map // indexer+query -> cached results for a few minutes
 	probeSem   chan struct{}
+	probeMu    sync.Mutex
+	probeBusy  map[string]bool
 }
 
 // ---- addon protocol types ----
@@ -72,7 +74,7 @@ type StreamResponse struct {
 func (s *Server) manifestFor(k Key) Manifest {
 	return Manifest{
 		ID:          "org.bitlab." + k.ID,
-		Version:     "2.1.1",
+		Version:     "2.1.2",
 		Name:        "Bitlab",
 		Description: "Self-hosted streaming hub. Manifest: " + k.Label,
 		Resources:   []string{"stream"},

@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const version = "2.1.1"
+const version = "2.1.2"
 
 var defaultTrackers = []string{
 	// HTTP(S) first: some hosts block outbound UDP, which kills both DHT and
@@ -199,7 +199,8 @@ func main() {
 		sessionKey: []byte(secret),
 		// Auto probes several candidates at once; the cap keeps one click from
 		// opening a dozen torrents.
-		probeSem: make(chan struct{}, 4),
+		probeSem:  make(chan struct{}, 4),
+		probeBusy: map[string]bool{},
 	}
 
 	mux := http.NewServeMux()
