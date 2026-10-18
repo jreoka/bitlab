@@ -74,7 +74,7 @@ type StreamResponse struct {
 func (s *Server) manifestFor(k Key) Manifest {
 	return Manifest{
 		ID:          "org.bitlab." + k.ID,
-		Version:     "2.1.6",
+		Version:     "2.2.0",
 		Name:        "Bitlab",
 		Description: "Self-hosted streaming hub. Manifest: " + k.Label,
 		Resources:   []string{"stream"},
@@ -163,58 +163,13 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	base := s.baseURL(r)
-	// First line is the bold one in the player: show the title being watched,
-	// not the addon name, with the resolution as the differentiator.
-	display := title
-	if typ == "series" && season > 0 {
-		display = fmt.Sprintf("%s S%02dE%02d", title, season, ep)
-	} else if year > 0 {
-		display = fmt.Sprintf("%s (%d)", title, year)
-	}
-	streams := make([]Stream, 0, len(results)+1)
-	// Auto sits on top; the full list stays below it as the override.
-	streams = append(streams, s.autoRow(base, k, typ, rawID, display))
+	// One row, and the system chooses. The results are still walked here: the
+	// top candidates are warmed and probed so the click that follows does not
+	// wait on a cold swarm, but they are no longer offered as alternatives.
 	for i, res := range results {
 		if len(res.Trackers) > 0 {
 			s.hints.Store(res.InfoHash, res.Trackers)
 		}
-		label, q := releaseLabel(res.Title)
-		src := strings.TrimSpace(strings.TrimPrefix(label, q))
-		link := fmt.Sprintf("%s/k/%s/play/%s?n=%s&m=%s", base, k.Token, res.InfoHash,
-			url.QueryEscape(truncate(res.Title, 120)), url.QueryEscape(rawID))
-		if typ == "series" && season > 0 {
-			// Tells the play handler which file to pick inside a season pack.
-			link += fmt.Sprintf("&s=%d&e=%d", season, ep)
-		}
-		// Only movies get a cached file hint: for a series the episode decides
-		// the file, and "largest file" would point at the wrong episode in a pack.
-		if typ == "movie" {
-			if _, _, files, ok := s.store.GetMedia(res.InfoHash); ok {
-				if idx, ok := bestCachedFile(files); ok {
-					link += "&f=" + strconv.Itoa(idx)
-				}
-			}
-		}
-		bits := []string{}
-		if src != "" {
-			bits = append(bits, src)
-		}
-		bits = append(bits, "💾 "+humanBytes(res.Size), fmt.Sprintf("👥 %d", res.Seeders), res.Indexer)
-		detail := strings.Join(bits, " · ")
-		streams = append(streams, Stream{
-			Name:  fmt.Sprintf("%s · %s", display, q),
-			Title: detail,
-			URL:   link,
-			BehaviorHints: map[string]any{
-				"bingeGroup":  "bitlab-" + q,
-				"notWebReady": false,
-			},
-		})
-		// Warm the head of the plausible picks: deeper for the top rows, which
-		// are the ones actually clicked, and shallow for the rest. The probe
-		// rides along on the same warmed torrent, so auto knows the real tracks
-		// and throughput before anything is clicked.
 		if i < 6 {
 			mb := int64(6)
 			if i < 3 {
@@ -226,7 +181,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			go s.warmProbe(res)
 		}
 	}
-	writeJSON(w, 200, StreamResponse{Streams: streams})
+	writeJSON(w, 200, StreamResponse{Streams: []Stream{s.autoRow(s.baseURL(r), k, typ, rawID)}})
 }
 
 func bestCachedFile(files []CachedFile) (int, bool) {

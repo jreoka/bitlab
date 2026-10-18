@@ -563,15 +563,16 @@ func (s *Server) handleAuto(w http.ResponseWriter, r *http.Request) {
 	s.serveTorrent(w, r, k, pick.InfoHash, pick.Title, pick.Trackers, -1, season, ep, rawID)
 }
 
-// autoRow is the list entry. It is a plain HTTP URL, so it works in any player.
-func (s *Server) autoRow(base string, k Key, typ, rawID, display string) Stream {
+// autoRow is the only list entry. It is a plain HTTP URL, so it works in any
+// player, and it resolves its release when the player asks for it.
+func (s *Server) autoRow(base string, k Key, typ, rawID string) Stream {
 	detail := "picks for this swarm at play time"
 	if ih, label, at, ok := s.store.GetAutoPick(rawID); ok && time.Since(time.Unix(at, 0)) < 24*time.Hour {
 		_ = ih
 		detail = "last: " + label
 	}
 	return Stream{
-		Name:  display + " · Auto",
+		Name:  "Auto",
 		Title: detail,
 		URL:   fmt.Sprintf("%s/k/%s/auto/%s/%s", base, k.Token, typ, url.PathEscape(rawID)),
 		BehaviorHints: map[string]any{

@@ -475,8 +475,8 @@ func TestRangeStart(t *testing.T) {
 // ---- auto row ----
 func TestAutoRowIsAStableBingeGroup(t *testing.T) {
 	s := &Server{store: testStore(t)}
-	row := s.autoRow("https://stream.example", Key{Token: "bit_abc"}, "series", "tt123:1:2", "Show S01E02")
-	if row.Name != "Show S01E02 · Auto" {
+	row := s.autoRow("https://stream.example", Key{Token: "bit_abc"}, "series", "tt123:1:2")
+	if row.Name != "Auto" {
 		t.Errorf("name = %q", row.Name)
 	}
 	if want := "https://stream.example/k/bit_abc/auto/series/tt123:1:2"; row.URL != want {
