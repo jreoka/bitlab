@@ -168,8 +168,24 @@ type overview struct {
 }
 
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
-	keys, _ := s.store.ListKeys()
-	ix, _ := s.store.ListIndexers()
+	keys, err := s.store.ListKeys()
+	if err != nil {
+		s.log.Printf("overview: list keys: %v", err)
+		httpError(w, 500, "store unavailable")
+		return
+	}
+	ix, err := s.store.ListIndexers()
+	if err != nil {
+		s.log.Printf("overview: list indexers: %v", err)
+		httpError(w, 500, "store unavailable")
+		return
+	}
+	if keys == nil {
+		keys = []Key{}
+	}
+	if ix == nil {
+		ix = []Indexer{}
+	}
 	idle := int(s.engine.idleTimeout.Minutes())
 	writeJSON(w, 200, overview{
 		Keys:       keys,
