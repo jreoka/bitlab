@@ -1,0 +1,162 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: marlin
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: marlin-data
+  namespace: marlin
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: ssd
+  resources:
+    requests:
+      storage: 40Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marlin
+  namespace: marlin
+  labels:
+    app: marlin
+spec:
+  replicas: 1
+  # One writer to the data volume, and the BitTorrent client must not be
+  # duplicated (two pods would fragment the cache).
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: marlin
+  template:
+    metadata:
+      labels:
+        app: marlin
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        # Marlin is a static binary; fetching it from the release keeps the
+        # cluster free of a registry dependency and the digest pinned.
+        - name: fetch
+          image: alpine:3.20
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              wget -qO /work/marlin "$BINARY_URL"
+              echo "$BINARY_SHA  /work/marlin" | sha256sum -c -
+              chmod 0755 /work/marlin
+              /work/marlin --version 2>/dev/null || true
+          env:
+            - name: BINARY_URL
+              value: https://github.com/jreoka/marlin/releases/download/v1.4.0/marlin-linux-amd64
+            - name: BINARY_SHA
+              value: bcae026d4a1a5e24f0cd671b0e7f78ff4f5ae4349602c894085d20997f75a2bc
+          volumeMounts:
+            - name: bin
+              mountPath: /work
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+      containers:
+        - name: marlin
+          image: alpine:3.20
+          command: ["/work/marlin"]
+          env:
+            - name: MARLIN_ADDR
+              value: ":8090"
+            - name: MARLIN_DATA
+              value: /data
+            - name: MARLIN_BASE_URL
+              value: https://stream.dill.moe
+            - name: MARLIN_CACHE_GB
+              value: "32"
+            - name: MARLIN_IDLE_MINUTES
+              value: "20"
+            - name: MARLIN_READAHEAD_MB
+              value: "64"
+            - name: MARLIN_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: marlin-secrets
+                  key: admin-password
+          ports:
+            - name: http
+              containerPort: 8090
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: "2", memory: 2Gi}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: bin
+              mountPath: /work
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: marlin-data
+        - name: bin
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: marlin
+  namespace: marlin
+spec:
+  selector:
+    app: marlin
+  ports:
+    - name: http
+      port: 8090
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: marlin
+  namespace: marlin
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    # Streaming must not be buffered or cut off by the proxy.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: ["stream.dill.moe"]
+      secretName: marlin-tls
+  rules:
+    - host: stream.dill.moe
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: marlin
+                port:
+                  number: 8090

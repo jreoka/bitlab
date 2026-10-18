@@ -70,6 +70,13 @@ func loadConfig() Config {
 }
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "-version", "--version", "version":
+			fmt.Printf("marlin %s\n", version)
+			return
+		}
+	}
 	lg := log.New(os.Stdout, "", log.LstdFlags|log.LUTC)
 	cfg := loadConfig()
 

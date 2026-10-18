@@ -116,6 +116,13 @@ DELETE /admin/api/torrents/{infohash}
 POST   /admin/api/play               {"magnet":"magnet:?xt=..."} → direct stream URL
 ```
 
+## Kubernetes
+
+`deploy/marlin.yaml` is a complete manifest (namespace, cache PVC, Deployment,
+Service, nginx Ingress with streaming-safe annotations). The binary is pulled
+from the pinned GitHub release and checksum-verified in an initContainer, so no
+registry credentials are needed. See `deploy/README.md`.
+
 ## Operational notes
 
 - **Disk** grows to the cache budget and no further; the cache holds partial files while streaming,
