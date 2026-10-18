@@ -195,6 +195,12 @@ func (c *autoCand) evaluate() {
 const (
 	gateHeadroom = 1.25
 	probeLimit   = 5
+	// autoPickTTL is how long a pick is honoured before auto is willing to
+	// reconsider. Long enough that a player's byte offset stays valid, short
+	// enough that a release which has gone cold is eventually left behind.
+	autoPickTTL = 2 * time.Hour
+	// stallWindow is how long a demoted release stays demoted for that title.
+	stallWindow = 6 * time.Hour
 )
 
 // neededMbps is the sustained bitrate a release must deliver to play without
@@ -229,6 +235,19 @@ type autoPick struct {
 // release auto would play. Probes are the expensive part, so they are limited
 // to the top few by cheap score and run in parallel under one deadline.
 func (s *Server) pickAuto(ctx context.Context, typ, rawID, baseID string, season, ep int) (autoPick, error) {
+	// A pick that is still good is reused. The player holds a byte offset into
+	// the file it was handed, so re-deciding on every request can change the
+	// release underneath it: the offset then points past the end of a smaller
+	// file and playback strands there. Only a stall (recorded by the watchdog,
+	// or by a range past EOF) makes auto choose again.
+	if ih, label, at, ok := s.store.GetAutoPick(rawID); ok {
+		if age := time.Since(time.Unix(at, 0)); age < autoPickTTL && !s.store.StalledHashes(rawID, stallWindow)[ih] {
+			s.log.Printf("auto %s: reusing %s (%s, picked %s ago)", rawID, ih[:8], label, age.Round(time.Minute))
+			name, _, _, _ := s.store.GetMedia(ih) // a magnet dn hint, if we have one
+			return autoPick{InfoHash: ih, Title: name, Label: label}, nil
+		}
+	}
+
 	title, year, err := s.resolveMeta(ctx, typ, baseID)
 	if err != nil {
 		return autoPick{}, fmt.Errorf("meta: %w", err)
@@ -242,7 +261,7 @@ func (s *Server) pickAuto(ctx context.Context, typ, rawID, baseID string, season
 		return autoPick{}, fmt.Errorf("no releases for %q", title)
 	}
 
-	stalled := s.store.StalledHashes(rawID, 6*time.Hour)
+	stalled := s.store.StalledHashes(rawID, stallWindow)
 	cands := make([]*autoCand, 0, len(results))
 	skippedCam, skippedStall := 0, 0
 	for _, r := range results {

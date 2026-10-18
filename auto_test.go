@@ -447,6 +447,29 @@ func TestPartialProbeDoesNotPenaliseOptions(t *testing.T) {
 	}
 }
 
+func TestRangeStart(t *testing.T) {
+	cases := []struct {
+		h    string
+		want int64
+		ok   bool
+	}{
+		{"bytes=0-", 0, true},
+		{"bytes=1874183985-", 1874183985, true},
+		{"bytes=0-262143", 0, true},
+		{"bytes=1048576-2097151", 1048576, true},
+		{"bytes=500-600,700-800", 500, true},
+		{"bytes=-500", 0, false}, // suffix range: no start offset
+		{"", 0, false},
+		{"items=0-", 0, false},
+	}
+	for _, c := range cases {
+		got, ok := rangeStart(c.h)
+		if ok != c.ok || (ok && got != c.want) {
+			t.Errorf("rangeStart(%q) = %d,%v want %d,%v", c.h, got, ok, c.want, c.ok)
+		}
+	}
+}
+
 // ---- auto row ----
 func TestAutoRowIsAStableBingeGroup(t *testing.T) {
 	s := &Server{store: testStore(t)}

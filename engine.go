@@ -353,6 +353,18 @@ func (s *Server) serveTorrent(w http.ResponseWriter, r *http.Request, key Key, i
 	}
 	f := allFiles[idx]
 
+	// A range past the end cannot be served, and the reason is worth saying out
+	// loud: the player is still holding a byte offset from a different release
+	// (auto re-picking, or a click on another row). Demote the release so the
+	// next request chooses again instead of repeating this.
+	if start, ok := rangeStart(r.Header.Get("Range")); ok && start >= f.Length() {
+		s.log.Printf("play %s: range starts at %d but the file is %s — the player is holding an offset from another release",
+			ih[:8], start, humanBytes(f.Length()))
+		if mediaID != "" {
+			s.store.RecordStall(ih, mediaID)
+		}
+	}
+
 	act := s.engine.activity(ih)
 	s.engine.mu.Lock()
 	act.readers++
@@ -420,6 +432,27 @@ func (s *Server) serveTorrent(w http.ResponseWriter, r *http.Request, key Key, i
 	http.ServeContent(cw, r, name, time.Time{}, &sizedReader{r: reader, size: f.Length(), m: mon})
 	s.store.AddKeyBytes(key.ID, cw.written)
 	s.log.Printf("play %s key=%s file=%d served=%s range=%q", ih[:8], key.ID, idx, humanBytes(cw.written), r.Header.Get("Range"))
+}
+
+// rangeStart reads the first byte offset out of a Range header.
+func rangeStart(h string) (int64, bool) {
+	h = strings.TrimSpace(h)
+	if !strings.HasPrefix(h, "bytes=") {
+		return 0, false
+	}
+	spec := strings.TrimSpace(strings.TrimPrefix(h, "bytes="))
+	if i := strings.IndexByte(spec, ','); i >= 0 {
+		spec = spec[:i] // a player asking for several ranges gets the first
+	}
+	dash := strings.IndexByte(spec, '-')
+	if dash <= 0 {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(spec[:dash]), 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 type countingWriter struct {
