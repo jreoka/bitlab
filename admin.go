@@ -190,12 +190,42 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		CacheBytes: s.engine.CacheBytes(),
 		CacheMax:   s.engine.maxCacheBytes,
 		Uptime:     int64(time.Since(s.start).Seconds()),
-		Version:    "1.6.3",
+		Version:    "1.6.4",
 		BaseURL:    s.cfg.BaseURL,
 		KeyCount:   s.store.ActiveKeyCount(),
 		MediaRows:  s.store.MediaCacheCount(),
 		IdleMin:    idle,
 	})
+}
+
+func (s *Server) handleListKeys(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	page := atoiDefault(r.URL.Query().Get("page"), 1)
+	if page < 1 {
+		page = 1
+	}
+	per := atoiDefault(r.URL.Query().Get("per"), 25)
+	if per < 5 {
+		per = 5
+	}
+	if per > 100 {
+		per = 100
+	}
+	keys, total, err := s.store.ListKeysPage(q, per, (page-1)*per)
+	if err != nil {
+		s.log.Printf("list keys: %v", err)
+		httpError(w, 500, "store unavailable")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"keys": keys, "total": total, "page": page, "per": per, "query": q})
+}
+
+func atoiDefault(s string, def int) int {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return def
+	}
+	return n
 }
 
 func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {

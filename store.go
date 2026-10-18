@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -215,6 +216,37 @@ func (s *Store) ListKeys() ([]Key, error) {
 		out = append(out, k)
 	}
 	return out, rows.Err()
+}
+
+// ListKeysPage returns one page of keys, optionally filtered by a substring of
+// label/note/id, plus the total matching count.
+func (s *Store) ListKeysPage(q string, limit, offset int) ([]Key, int, error) {
+	where := ""
+	var args []any
+	if q = strings.TrimSpace(q); q != "" {
+		where = " WHERE (label LIKE ? OR note LIKE ? OR id LIKE ?)"
+		like := "%" + q + "%"
+		args = append(args, like, like, like)
+	}
+	var total int
+	if err := s.db.QueryRow("SELECT count(*) FROM keys"+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	pageArgs := append(append([]any{}, args...), limit, offset)
+	rows, err := s.db.Query("SELECT "+keyCols+" FROM keys"+where+" ORDER BY created_at DESC LIMIT ? OFFSET ?", pageArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []Key{}
+	for rows.Next() {
+		k, err := scanKey(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, k)
+	}
+	return out, total, rows.Err()
 }
 
 func (s *Store) KeyByToken(token string) (Key, error) {
