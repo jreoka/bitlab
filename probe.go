@@ -7,8 +7,6 @@ import (
 	"io"
 	"strings"
 	"time"
-
-	"github.com/anacrolix/torrent"
 )
 
 // TrackInfo is what a release's container header actually says — resolution,
@@ -352,35 +350,7 @@ func parseMP4(b []byte) (TrackInfo, bool) {
 	return ti, ti.Video > 0 || ti.Audio > 0
 }
 
-func parseMP4Track(p []byte, ti *TrackInfo) {
-	handler := ""
-	w, h := 0, 0
-	iterBoxes(p, func(typ string, payload []byte) bool {
-		switch typ {
-		case "tkhd":
-			w, h = tkhdDims(payload)
-		case "mdia":
-			iterBoxes(payload, func(t2 string, p2 []byte) bool {
-				if t2 == "hdlr" && len(p2) >= 12 {
-					handler = string(p2[8:12])
-				}
-				return false
-			})
-		}
-		return false
-	})
-	switch handler {
-	case "vide":
-		ti.Video++
-		if w > 0 {
-			ti.Width, ti.Height = w, h
-		}
-	case "soun":
-		ti.Audio++
-	case "subt", "sbtl", "text":
-		ti.Subs++
-	}
-}
+func parseMP4Track(p []byte, ti *TrackInfo) { countMP4TrackPrefix(p, ti) }
 
 // tkhdDims reads the 16.16 fixed-point width/height that close the tkhd box.
 // The offset moved between spec revisions, so accept the first plausible pair.
@@ -482,12 +452,22 @@ func (s *Server) probeRelease(ctx context.Context, res Result) (TrackInfo, bool)
 	// a video trak's sample tables alone run to megabytes — so the box has to be
 	// read whole rather than guessed at with a fixed window.
 	if ti.Video == 0 {
-		moov, n, complete := readMoov(r, f.Length())
-		read += n
-		if moov != nil {
-			if info, ok := parseMP4(moov); ok {
+		if start, size, hdrLen, n, ok := locateMoov(r, f.Length()); ok {
+			read += n
+			// Sparse first: the handlers live in the first bytes of each trak,
+			// and skipping the sample tables by size is the difference between
+			// reading 200 KiB and 20 MiB.
+			info, n2, complete := sparseMP4(r, start, size, hdrLen)
+			read += n2
+			if complete || info.Video > 0 || info.Audio > 0 {
 				ti = info
 				ti.Partial = !complete
+			} else if moov, n3, complete3 := readMoovBox(r, start, size, hdrLen); moov != nil {
+				read += n3
+				if info, ok := parseMP4(moov); ok {
+					ti = info
+					ti.Partial = !complete3
+				}
 			}
 		}
 	}
@@ -514,71 +494,169 @@ func (s *Server) probeRelease(ctx context.Context, res Result) (TrackInfo, bool)
 	return ti, ti.Video > 0 || ti.Audio > 0
 }
 
-// readMoov locates the MP4 `moov` box and returns it whole, so the audio and
-// subtitle traks behind the video one are not cut off. It looks at the head
-// first (faststart files), then the tail, then reads the box at its real size.
-func readMoov(r torrent.Reader, fileSize int64) ([]byte, int64, bool) {
+// locateMoov finds the MP4 `moov` box without reading it: the head first
+// (faststart files), then the tail, widening the tail window only when a
+// smaller one misses. A big multi-audio MP4 can keep several megabytes of moov
+// at the end, but most keep far less, and a fixed 16 MiB tail read would cost
+// more swarm time than the tracks are worth.
+func locateMoov(r byteSource, fileSize int64) (start int64, size, hdrLen int, read int64, ok bool) {
 	if fileSize < 16 {
-		return nil, 0, false
+		return 0, 0, 0, 0, false
 	}
-	var read int64
 	headN := int64(probeChunk * 4)
 	if headN > fileSize {
 		headN = fileSize
 	}
 	win := make([]byte, headN)
-	base := int64(0)
 	n, _ := readAt(r, win, 0)
 	if n <= 0 {
-		return nil, 0, false
+		return 0, 0, 0, 0, false
 	}
 	read += int64(n)
+	base := int64(0)
 	win = win[:n]
 
 	bs := findMoovBox(win)
 	if bs < 0 {
-		tailN := int64(probeTailBytes)
-		if tailN > fileSize {
-			tailN = fileSize
+		for _, tailN := range []int64{1 << 20, 4 << 20, maxMoovBytes} {
+			if tailN > fileSize {
+				tailN = fileSize
+			}
+			if tailN <= int64(len(win)) && base == 0 {
+				continue // the head window already covered this much
+			}
+			tail := make([]byte, tailN)
+			m, _ := readAt(r, tail, fileSize-tailN)
+			if m <= 0 {
+				return 0, 0, 0, read, false
+			}
+			read += int64(m)
+			win, base = tail[:m], fileSize-tailN
+			if bs = findMoovBox(win); bs >= 0 {
+				break
+			}
 		}
-		tail := make([]byte, tailN)
-		m, _ := readAt(r, tail, fileSize-tailN)
-		if m <= 0 {
-			return nil, read, false
-		}
-		read += int64(m)
-		win, base = tail[:m], fileSize-tailN
-		bs = findMoovBox(win)
 		if bs < 0 {
-			return nil, read, false
+			return 0, 0, 0, read, false
 		}
 	}
 
-	sz := int(binary.BigEndian.Uint32(win[bs:]))
-	hdr := 8
-	if sz == 1 {
-		sz = int(binary.BigEndian.Uint64(win[bs+8:]))
-		hdr = 16
+	size = int(binary.BigEndian.Uint32(win[bs:]))
+	hdrLen = 8
+	if size == 1 {
+		size = int(binary.BigEndian.Uint64(win[bs+8:]))
+		hdrLen = 16
 	}
-	if bs+sz <= len(win) {
-		return win[bs : bs+sz], read, true
+	start = base + int64(bs)
+	// Clamp a declared size that runs past the end of the file: some muxers
+	// write 0 or a stale length.
+	if avail := fileSize - start; start+int64(size) > fileSize || size <= hdrLen {
+		size = int(avail)
 	}
-	// Only part of the box is in the window: fetch the rest of it, capped so a
-	// pathological moov cannot eat the whole probe budget.
-	if sz > maxMoovBytes {
-		sz = maxMoovBytes
+	return start, size, hdrLen, read, size > hdrLen
+}
+
+// readMoovBox reads a located moov whole, capped so a pathological box cannot
+// eat the probe budget. complete is false when the cap or a slow swarm cut it.
+func readMoovBox(r byteSource, start int64, size, hdrLen int) ([]byte, int64, bool) {
+	if size > maxMoovBytes {
+		size = maxMoovBytes
 	}
-	box := make([]byte, sz)
-	m, _ := readAt(r, box, base+int64(bs))
-	if m <= hdr {
-		return nil, read, false
+	box := make([]byte, size)
+	m, _ := readAt(r, box, start)
+	if m <= hdrLen {
+		return nil, int64(m), false
 	}
-	read += int64(m)
-	complete := m >= sz
 	// Rewrite the declared size to what we actually hold, so parseMP4 clamps
 	// instead of rejecting a header that overruns the buffer.
 	binary.BigEndian.PutUint32(box[:4], uint32(m))
-	return box[:m], read, complete
+	return box[:m], int64(m), m >= size
+}
+
+// sparseMP4 walks the moov's top-level boxes, reading only each box header and,
+// for a trak, the first 512 bytes — where tkhd and the mdia handler live. The
+// sample tables that follow are what make a moov tens of megabytes.
+func sparseMP4(r byteSource, start int64, size, hdrLen int) (TrackInfo, int64, bool) {
+	ti := TrackInfo{Container: "mp4"}
+	var read int64
+	off := start + int64(hdrLen)
+	end := start + int64(size)
+	complete := true
+	for off+8 <= end {
+		var hb [16]byte
+		n, _ := readAt(r, hb[:], off)
+		if n < 8 {
+			complete = false
+			break
+		}
+		read += int64(n)
+		sz := int(binary.BigEndian.Uint32(hb[:4]))
+		typ := string(hb[4:8])
+		ch := 8
+		if sz == 1 {
+			if n < 16 {
+				complete = false
+				break
+			}
+			sz = int(binary.BigEndian.Uint64(hb[8:16]))
+			ch = 16
+		}
+		if sz < ch {
+			complete = false
+			break
+		}
+		if typ == "trak" {
+			want := sz - ch
+			if want > 512 {
+				want = 512
+			}
+			buf := make([]byte, want)
+			m, _ := readAt(r, buf, off+int64(ch))
+			read += int64(m)
+			if m < want {
+				complete = false // the trak header itself was cut short
+			}
+			if m > 0 {
+				countMP4TrackPrefix(buf[:m], &ti)
+			}
+		}
+		off += int64(sz)
+	}
+	if off < end {
+		complete = false
+	}
+	return ti, read, complete
+}
+
+// countMP4TrackPrefix counts one trak from its opening bytes.
+func countMP4TrackPrefix(p []byte, ti *TrackInfo) {
+	handler := ""
+	w, h := 0, 0
+	iterBoxes(p, func(typ string, payload []byte) bool {
+		switch typ {
+		case "tkhd":
+			w, h = tkhdDims(payload)
+		case "mdia":
+			iterBoxes(payload, func(t2 string, p2 []byte) bool {
+				if t2 == "hdlr" && len(p2) >= 12 {
+					handler = string(p2[8:12])
+				}
+				return false
+			})
+		}
+		return false
+	})
+	switch handler {
+	case "vide":
+		ti.Video++
+		if w > 0 {
+			ti.Width, ti.Height = w, h
+		}
+	case "soun":
+		ti.Audio++
+	case "subt", "sbtl", "text":
+		ti.Subs++
+	}
 }
 
 // findMoovBox returns the offset of a `moov` box header whose declared size is
@@ -610,9 +688,20 @@ func findMoovBox(win []byte) int {
 	}
 }
 
-// readAt is Seek+Read: torrent.Reader is an io.ReadSeeker, not an io.ReaderAt,
-// so random access to a container header is two calls.
-func readAt(r torrent.Reader, p []byte, off int64) (int, error) {
+// byteSource is the read side of one file inside a torrent. It is deliberately
+// narrower than torrent.Reader so a container header can be parsed from a plain
+// in-memory buffer in tests.
+type byteSource interface {
+	io.ReadSeeker
+	io.Closer
+	SetReadahead(int64)
+	SetResponsive()
+	SetContext(context.Context)
+}
+
+// readAt is Seek+Read: the reader is an io.ReadSeeker, not an io.ReaderAt, so
+// random access to a container header is two calls.
+func readAt(r byteSource, p []byte, off int64) (int, error) {
 	if _, err := r.Seek(off, io.SeekStart); err != nil {
 		return 0, err
 	}
