@@ -303,11 +303,25 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 	defer reader.Close()
 
 	name := filepath.Base(f.DisplayPath())
-	if ct := mime.TypeByExtension(filepath.Ext(name)); ct != "" {
-		w.Header().Set("Content-Type", ct)
-	} else {
-		w.Header().Set("Content-Type", "application/octet-stream")
+	ct := mime.TypeByExtension(filepath.Ext(name))
+	if ct == "" || ct == "application/octet-stream" {
+		// Many releases ship files without an extension. Sniff the container so
+		// players pick the right decoder instead of falling back to octet-stream.
+		hdr := make([]byte, 16)
+		if _, rerr := io.ReadFull(reader, hdr); rerr == nil {
+			if ext, sniffed := sniffContainer(hdr); sniffed != "" {
+				ct = sniffed
+				if filepath.Ext(name) == "" {
+					name += ext
+				}
+			}
+		}
+		reader.Seek(0, io.SeekStart)
 	}
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", name))
 	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Cache-Control", "no-store")
@@ -548,4 +562,41 @@ func (s *sizedReader) Seek(off int64, whence int) (int64, error) {
 		s.pos = target
 	}
 	return s.pos, nil
+}
+
+// sniffContainer identifies a video container from its first bytes.
+func sniffContainer(b []byte) (ext, mimeType string) {
+	if len(b) >= 8 && string(b[4:8]) == "ftyp" {
+		brand := strings.TrimSpace(string(b[8:min(12, len(b))]))
+		if strings.HasPrefix(brand, "qt") {
+			return ".mov", "video/quicktime"
+		}
+		return ".mp4", "video/mp4"
+	}
+	if len(b) >= 4 && b[0] == 0x1a && b[1] == 0x45 && b[2] == 0xdf && b[3] == 0xa3 {
+		return ".mkv", "video/x-matroska"
+	}
+	if len(b) >= 12 && string(b[0:4]) == "RIFF" && string(b[8:12]) == "AVI " {
+		return ".avi", "video/x-msvideo"
+	}
+	if len(b) >= 4 && string(b[0:4]) == "OggS" {
+		return ".ogv", "video/ogg"
+	}
+	if len(b) >= 4 && string(b[0:3]) == "FLV" {
+		return ".flv", "video/x-flv"
+	}
+	if len(b) >= 1 && b[0] == 0x47 {
+		return ".ts", "video/mp2t"
+	}
+	if len(b) >= 4 && b[0] == 0x00 && b[1] == 0x00 && b[2] == 0x01 && (b[3] == 0xba || b[3] == 0xb3) {
+		return ".mpg", "video/mpeg"
+	}
+	return "", ""
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

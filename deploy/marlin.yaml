@@ -13,7 +13,8 @@ spec:
   storageClassName: ssd
   resources:
     requests:
-      storage: 40Gi
+      # Rackspace Spot volumes max out at 20Gi, so the cache budget sits below it.
+      storage: 20Gi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -58,9 +59,9 @@ spec:
               /work/marlin --version 2>/dev/null || true
           env:
             - name: BINARY_URL
-              value: https://github.com/jreoka/marlin/releases/download/v1.4.0/marlin-linux-amd64
+              value: https://github.com/jreoka/marlin/releases/download/v1.4.1/marlin-linux-amd64
             - name: BINARY_SHA
-              value: bcae026d4a1a5e24f0cd671b0e7f78ff4f5ae4349602c894085d20997f75a2bc
+              value: 3a1e13d204c6506c9efaa97dfa0c196482f5fb35e33157d698b725a5c3c4530f
           volumeMounts:
             - name: bin
               mountPath: /work
@@ -79,7 +80,7 @@ spec:
             - name: MARLIN_BASE_URL
               value: https://stream.dill.moe
             - name: MARLIN_CACHE_GB
-              value: "32"
+              value: "16"
             - name: MARLIN_IDLE_MINUTES
               value: "20"
             - name: MARLIN_READAHEAD_MB

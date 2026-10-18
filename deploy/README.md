@@ -1,6 +1,6 @@
 # Deploying Marlin on Kubernetes
 
-`marlin.yaml` contains everything: namespace, 40Gi cache volume, Deployment,
+`marlin.yaml` contains everything: namespace, 20Gi cache volume, Deployment,
 Service and an nginx Ingress for `stream.dill.moe`.
 
 The container image is only used as a shell — the Marlin binary itself is
@@ -22,7 +22,8 @@ kubectl -n marlin get certificate marlin-tls -w
 Assumptions to check on a fresh cluster:
 
 - a default `ssd` StorageClass (`kubectl get sc`) — otherwise set
-  `spec.storageClassName` on the PVC;
+  `spec.storageClassName` on the PVC. Rackspace Spot rejects volumes outside
+  5–20 GiB, which is why the cache budget defaults to 16 GiB;
 - an nginx IngressClass plus cert-manager with a `letsencrypt-prod`
   ClusterIssuer. Without cert-manager, drop the `tls:` block from the Ingress
   and terminate TLS at your proxy.

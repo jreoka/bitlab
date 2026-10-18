@@ -68,7 +68,7 @@ type StreamResponse struct {
 func (s *Server) manifestFor(k Key) Manifest {
 	return Manifest{
 		ID:          "org.marlin." + k.ID,
-		Version:     "1.4.0",
+		Version:     "1.4.1",
 		Name:        "Marlin",
 		Description: "Self-hosted streaming hub. Manifest: " + k.Label,
 		Resources:   []string{"stream"},

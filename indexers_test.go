@@ -166,3 +166,20 @@ func TestHumanBytes(t *testing.T) {
 		t.Fatalf("humanBytes = %q", got)
 	}
 }
+
+func TestSniffContainer(t *testing.T) {
+	mp4 := []byte("\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isom")
+	if ext, mt := sniffContainer(mp4); ext != ".mp4" || mt != "video/mp4" {
+		t.Errorf("mp4: %q %q", ext, mt)
+	}
+	mkv := []byte("\x1a\x45\xdf\xa3\xa3\x42\x86\x81\x01\x42\xf7\x81\x01")
+	if ext, mt := sniffContainer(mkv); ext != ".mkv" || mt != "video/x-matroska" {
+		t.Errorf("mkv: %q %q", ext, mt)
+	}
+	if ext, _ := sniffContainer([]byte("RIFF\x00\x00\x00\x00AVI LIST")); ext != ".avi" {
+		t.Errorf("avi: %q", ext)
+	}
+	if ext, _ := sniffContainer([]byte("nonsense bytes")); ext != "" {
+		t.Errorf("unknown should be empty, got %q", ext)
+	}
+}
