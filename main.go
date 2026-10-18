@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const version = "1.6.7"
+const version = "1.7.0"
 
 var defaultTrackers = []string{
 	// HTTP(S) first: some hosts block outbound UDP, which kills both DHT and
@@ -125,26 +125,38 @@ func main() {
 	// An explicit MARLIN_INDEXERS list is the whole configuration: do not add
 	// public defaults on top of it.
 	if len(cfg.Indexers) == 0 && env("MARLIN_SEED_INDEXER", "on") != "off" {
-		// knaben on first run, then nyaa once (anime needs its own index).
+		// knaben on first run, then the public extras once each: anime needs its
+		// own index, and EZTV/YTS carry TV and movie releases that knaben's
+		// single remaining TPB feed does not.
 		list, _ := store.ListIndexers()
 		if len(list) == 0 {
 			if _, err := store.SaveIndexer(Indexer{Kind: "knaben", Name: "knaben", Enabled: true}); err != nil {
 				lg.Printf("seed indexer: %v", err)
 			}
 		}
-		if store.GetSetting("seeded:nyaa", "") == "" {
-			haveNyaa := false
+		for _, def := range []Indexer{
+			{Kind: "nyaa", Name: "nyaa"},
+			{Kind: "eztv", Name: "eztv"},
+			{Kind: "yts", Name: "yts"},
+			{Kind: "animetosho", Name: "animetosho"},
+		} {
+			key := "seeded:" + def.Kind
+			if store.GetSetting(key, "") != "" {
+				continue
+			}
+			have := false
 			for _, ix := range list {
-				if ix.Kind == "nyaa" {
-					haveNyaa = true
+				if ix.Kind == def.Kind {
+					have = true
 				}
 			}
-			if !haveNyaa {
-				if _, err := store.SaveIndexer(Indexer{Kind: "nyaa", Name: "nyaa", Enabled: true}); err == nil {
-					lg.Printf("added nyaa indexer for anime")
+			if !have {
+				def.Enabled = true
+				if _, err := store.SaveIndexer(def); err == nil {
+					lg.Printf("added %s indexer for wider coverage", def.Name)
 				}
 			}
-			store.SetSetting("seeded:nyaa", "1")
+			store.SetSetting(key, "1")
 		}
 	}
 

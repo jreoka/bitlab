@@ -12,7 +12,7 @@ Stremio / Nuvio
    │  GET /k/<key>/stream/movie/tt0111161.json      → ranked releases
    │  GET /k/<key>/play/<infohash>                  → 206 Partial Content, video/mp4
    ▼
-Marlin ──► Cinemeta (title lookup) ──► indexers (knaben / torznab)
+Marlin ──► Cinemeta (title lookup) ──► indexers (knaben / nyaa / eztv / yts / torznab)
    └─────► BitTorrent client ──► local disk cache ──► HTTP byte stream
 ```
 
@@ -37,8 +37,11 @@ Marlin ──► Cinemeta (title lookup) ──► indexers (knaben / torznab)
   CAM/TS rips are pushed to the bottom, and for series the requested `SxxExx` is preferred over
   season packs.
 - **Indexers** are configuration, not UI: `knaben` (public meta-index, seeded on first run), `nyaa`
-  (anime), `torznab` (Prowlarr, Jackett, nZEDb) and `apibay`. Declare extra ones with
-  `MARLIN_INDEXERS`; results are merged, deduped by infohash and ranked by streamability.
+  (anime), `animetosho` (anime, aggregates nyaa/AniDex/NekoBT), `eztv` (recent TV, imdb lookup),
+  `yts` (movies, every quality/size rung), `torznab` (Prowlarr, Jackett, nZEDb) and `apibay`.
+  Declare extra ones with `MARLIN_INDEXERS`; results are merged, deduped by infohash and ranked
+  by streamability. EZTV only serves the latest ~100 torrents per show, so it adds recent episodes,
+  not deep back catalogues.
 
 ## Quick start
 
@@ -51,7 +54,8 @@ MARLIN_ADMIN_PASSWORD=change-me ./marlin
 ```
 
 On first run without `MARLIN_ADMIN_PASSWORD`, a random password is written to `data/ADMIN_PASSWORD`
-(mode 0600). A `knaben` indexer is seeded so the addon returns results immediately.
+(mode 0600). A `knaben` indexer is seeded so the addon returns results immediately, and `nyaa`,
+`animetosho`, `eztv` and `yts` are added by the same first-run seeding.
 
 ### Docker
 
@@ -103,7 +107,8 @@ MARLIN_INDEXERS: |
   [{"kind":"torznab","name":"prowlarr","url":"http://prowlarr:9696/1/api","api_key":"abc123"}]
 ```
 
-`kind` is one of `torznab`, `knaben`, `nyaa`, `apibay`; the public ones ignore `url`/`api_key`.
+`kind` is one of `torznab`, `knaben`, `nyaa`, `animetosho`, `eztv`, `yts`, `apibay`; the public
+ones ignore `url`/`api_key`.
 
 ## Install
 

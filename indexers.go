@@ -142,7 +142,13 @@ func dropDead(rs []Result) []Result {
 // queriesFor trims the fan-out for indexers that throttle.
 func queriesFor(kind string, queries []string) []string {
 	switch kind {
-	case "nyaa", "apibay":
+	case "eztv", "yts":
+		// Both answer an imdb id, so every extra query would be the same
+		// request again. Anime aliases buy nothing here either.
+		if len(queries) > 1 {
+			return queries[:1]
+		}
+	case "nyaa", "apibay", "animetosho":
 		if len(queries) > 3 {
 			return queries[:3]
 		}
@@ -181,6 +187,12 @@ func (s *Server) searchIndexerUncached(ctx context.Context, ix Indexer, q string
 		return knabenSearch(ctx, s.http, ix, q)
 	case "apibay":
 		return apibaySearch(ctx, s.http, ix, q)
+	case "eztv":
+		return eztvSearch(ctx, s.http, ix, typ, season, ep, imdbID)
+	case "yts":
+		return ytsSearch(ctx, s.http, ix, typ, imdbID, q)
+	case "animetosho":
+		return animeToshoSearch(ctx, s.http, ix, q)
 	case "torznab", "":
 		return torznabSearch(ctx, s.http, ix, q, typ, season, ep, imdbID)
 	default:
@@ -694,4 +706,348 @@ func episodeSignal(title string, season, ep int) int {
 		return -1
 	}
 	return 0
+}
+
+// ---------- EZTV (TV only, no key, imdb-id lookup) ----------
+
+// flexInt64 accepts both "123" and 123: EZTV quotes size_bytes, and a quoted
+// number would make encoding/json reject the whole payload.
+type flexInt64 int64
+
+func (f *flexInt64) UnmarshalJSON(b []byte) error {
+	s := strings.Trim(strings.TrimSpace(string(b)), `"`)
+	if s == "" || s == "null" {
+		*f = 0
+		return nil
+	}
+	n, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return err
+	}
+	*f = flexInt64(n)
+	return nil
+}
+
+type eztvTorrent struct {
+	Hash     string    `json:"hash"`
+	Filename string    `json:"filename"`
+	Title    string    `json:"title"`
+	Magnet   string    `json:"magnet_url"`
+	Season   string    `json:"season"`
+	Episode  string    `json:"episode"`
+	Seeds    int       `json:"seeds"`
+	Size     flexInt64 `json:"size_bytes"`
+}
+
+// eztvSearch answers with an imdb lookup only. EZTV indexes television
+// exclusively and has no text search, so movies and title-only calls return
+// nothing instead of paying for a request that cannot match.
+func eztvSearch(ctx context.Context, hc *http.Client, ix Indexer, typ string, season, ep int, imdbID string) ([]Result, error) {
+	if typ != "series" || imdbID == "" {
+		return nil, nil
+	}
+	base := strings.TrimRight(ix.URL, "/")
+	if base == "" {
+		base = "https://eztvx.to"
+	}
+	// EZTV wants the numeric id; a "tt" prefix makes it ignore the filter and
+	// answer with the whole "latest torrents" feed.
+	u := base + "/api/get-torrents?limit=100&imdb_id=" + url.QueryEscape(strings.TrimPrefix(imdbID, "tt"))
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) marlin/1.0")
+	req.Header.Set("Accept", "application/json")
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("http %d", resp.StatusCode)
+	}
+	body, err := readAllLimit(resp.Body, 8<<20)
+	if err != nil {
+		return nil, err
+	}
+	var feed struct {
+		Torrents []eztvTorrent `json:"torrents"`
+	}
+	if err := json.Unmarshal(body, &feed); err != nil {
+		return nil, fmt.Errorf("bad json: %w", err)
+	}
+	var res []Result
+	for _, t := range feed.Torrents {
+		ih := strings.ToLower(strings.TrimSpace(t.Hash))
+		if len(ih) != 40 {
+			continue
+		}
+		s, _ := strconv.Atoi(strings.TrimSpace(t.Season))
+		e, _ := strconv.Atoi(strings.TrimSpace(t.Episode))
+		if season > 0 {
+			if s != season {
+				continue
+			}
+			// Episode "0" is a season pack on EZTV: keep it, the play handler
+			// picks the file. Anything else must be the episode we asked for.
+			if ep > 0 && e != 0 && e != ep {
+				continue
+			}
+		}
+		title := strings.TrimSpace(t.Title)
+		if title == "" {
+			title = strings.TrimSpace(t.Filename)
+		}
+		if title == "" {
+			continue
+		}
+		res = append(res, Result{
+			Title:    title,
+			InfoHash: ih,
+			Size:     int64(t.Size),
+			Seeders:  t.Seeds,
+			Indexer:  ix.Name,
+			Magnet:   t.Magnet,
+			Trackers: trackersFromMagnet(t.Magnet),
+		})
+	}
+	return res, nil
+}
+
+// ---------- YTS (movies only, no key) ----------
+
+type ytsTorrent struct {
+	Hash      string `json:"hash"`
+	Quality   string `json:"quality"`
+	Type      string `json:"type"`
+	VideoCode string `json:"video_codec"`
+	Seeds     int    `json:"seeds"`
+	Peers     int    `json:"peers"`
+	SizeBytes int64  `json:"size_bytes"`
+}
+
+type ytsMovie struct {
+	Title    string       `json:"title"`
+	Year     int          `json:"year"`
+	IMDBCode string       `json:"imdb_code"`
+	Torrents []ytsTorrent `json:"torrents"`
+}
+
+// ytsSearch walks the movie's quality/size ladder. YTS has no TV catalogue, and
+// its query_term takes an imdb id, which is far more reliable than a title.
+func ytsSearch(ctx context.Context, hc *http.Client, ix Indexer, typ string, imdbID, q string) ([]Result, error) {
+	if typ != "movie" {
+		return nil, nil
+	}
+	term := strings.TrimSpace(imdbID)
+	if term == "" {
+		term = q
+	}
+	if term == "" {
+		return nil, nil
+	}
+	base := strings.TrimRight(ix.URL, "/")
+	if base == "" {
+		base = "https://yts.lt"
+	}
+	u := base + "/api/v2/list_movies.json?query_term=" + url.QueryEscape(term) + "&limit=20&sort_by=seeds&order_by=desc"
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) marlin/1.0")
+	req.Header.Set("Accept", "application/json")
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("http %d", resp.StatusCode)
+	}
+	body, err := readAllLimit(resp.Body, 8<<20)
+	if err != nil {
+		return nil, err
+	}
+	var feed struct {
+		Data struct {
+			Movies []ytsMovie `json:"movies"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &feed); err != nil {
+		return nil, fmt.Errorf("bad json: %w", err)
+	}
+	var res []Result
+	for _, m := range feed.Data.Movies {
+		if imdbID != "" && m.IMDBCode != "" && !strings.EqualFold(m.IMDBCode, imdbID) {
+			continue // YTS matches loosely; keep only the title we asked for
+		}
+		for _, t := range m.Torrents {
+			ih := strings.ToLower(strings.TrimSpace(t.Hash))
+			if len(ih) != 40 {
+				continue
+			}
+			src := strings.ToUpper(strings.TrimSpace(t.Type)) // bluray, web
+			if src == "BLURAY" {
+				src = "BluRay"
+			}
+			bits := []string{m.Title}
+			if m.Year > 0 {
+				bits = append(bits, strconv.Itoa(m.Year))
+			}
+			for _, b := range []string{t.Quality, src, strings.TrimSpace(t.VideoCode)} {
+				if b != "" {
+					bits = append(bits, b)
+				}
+			}
+			res = append(res, Result{
+				Title:    strings.Join(bits, " "),
+				InfoHash: ih,
+				Size:     t.SizeBytes,
+				Seeders:  t.Seeds,
+				Indexer:  ix.Name,
+			})
+		}
+	}
+	return res, nil
+}
+
+// ---------- AnimeTosho (anime, no key, JSON feed) ----------
+
+var reYear = regexp.MustCompile(`\b(19|20)\d{2}\b`)
+
+// toshoTitleQuery drops the year and episode markers: AnimeTosho's q= is a
+// fuzzy full-text match, so "Ran 1985" happily returns a 1985 anime pilot.
+func toshoTitleQuery(q string) string {
+	q = reSxxExx.ReplaceAllString(q, " ")
+	q = reYear.ReplaceAllString(q, " ")
+	return strings.Join(strings.Fields(q), " ")
+}
+
+func isAlnumByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+}
+
+// containsWord reports whether needle occurs in hay as a whole word, so "ran"
+// does not match "Orange".
+func containsWord(hay, needle string) bool {
+	h, n := strings.ToLower(hay), strings.ToLower(needle)
+	if n == "" {
+		return false
+	}
+	for start := 0; start+len(n) <= len(h); {
+		i := strings.Index(h[start:], n)
+		if i < 0 {
+			return false
+		}
+		i += start
+		before := i == 0 || !isAlnumByte(h[i-1])
+		after := i+len(n) == len(h) || !isAlnumByte(h[i+len(n)])
+		if before && after {
+			return true
+		}
+		start = i + 1
+	}
+	return false
+}
+
+// toshoRelevant keeps only entries that name what we asked for. Without this
+// the feed's loose matching leaks unrelated shows into the result list.
+func toshoRelevant(q, title string) bool {
+	var words, long []string
+	for _, f := range strings.Fields(toshoTitleQuery(q)) {
+		if f = strings.Trim(f, ".,:;!?'\"()[]-"); f != "" {
+			words = append(words, f)
+			if len(f) >= 4 {
+				long = append(long, f)
+			}
+		}
+	}
+	// Prefer tokens long enough to mean something; short titles ("Air", "Ran")
+	// still need to match, so fall back to all of them.
+	if len(long) > 0 {
+		words = long
+	}
+	if len(words) == 0 {
+		return true
+	}
+	for _, w := range words {
+		if containsWord(title, w) {
+			return true
+		}
+	}
+	return false
+}
+
+type toshoEntry struct {
+	Title       string `json:"title"`
+	TorrentName string `json:"torrent_name"`
+	InfoHash    string `json:"info_hash"`
+	Magnet      string `json:"magnet_uri"`
+	Seeders     int    `json:"seeders"`
+	TotalSize   int64  `json:"total_size"`
+}
+
+// animeToshoSearch covers anime that nyaa missed (its feed aggregates nyaa,
+// AniDex, NekoBT and its own tracker).
+func animeToshoSearch(ctx context.Context, hc *http.Client, ix Indexer, q string) ([]Result, error) {
+	base := strings.TrimRight(ix.URL, "/")
+	if base == "" {
+		base = "https://animetosho.org"
+	}
+	term := toshoTitleQuery(q)
+	if term == "" {
+		term = q
+	}
+	u := base + "/feed/json?q=" + url.QueryEscape(term)
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) marlin/1.0")
+	req.Header.Set("Accept", "application/json")
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("http %d", resp.StatusCode)
+	}
+	body, err := readAllLimit(resp.Body, 16<<20)
+	if err != nil {
+		return nil, err
+	}
+	var feed []toshoEntry
+	if err := json.Unmarshal(body, &feed); err != nil {
+		return nil, fmt.Errorf("bad json: %w", err)
+	}
+	var res []Result
+	for _, e := range feed {
+		ih := strings.ToLower(strings.TrimSpace(e.InfoHash))
+		if len(ih) != 40 {
+			continue
+		}
+		title := strings.TrimSpace(e.TorrentName)
+		if title == "" {
+			title = strings.TrimSpace(e.Title)
+		}
+		if title == "" {
+			continue
+		}
+		if !toshoRelevant(q, title) {
+			continue // the feed answers loosely; do not show a different show
+		}
+		res = append(res, Result{
+			Title:    title,
+			InfoHash: ih,
+			Size:     e.TotalSize,
+			Seeders:  e.Seeders,
+			Indexer:  ix.Name,
+			Magnet:   e.Magnet,
+			Trackers: trackersFromMagnet(e.Magnet),
+		})
+	}
+	return res, nil
 }

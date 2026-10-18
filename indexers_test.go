@@ -236,3 +236,160 @@ func testServerXML(t *testing.T, body string) *httptest.Server {
 	t.Cleanup(srv.Close)
 	return srv
 }
+
+const eztvFixture = `{"torrents_count":4,"torrents":[
+ {"hash":"D03D2022E4ED79545C4B8D70DFC3900C4780FC47","filename":"Show.S01E10.1080p.WEB.H264.mkv",
+  "title":"Show S01E10 1080p WEB H264-KBBQ EZTV","magnet_url":"magnet:?xt=urn:btih:d03d2022e4ed79545c4b8d70dfc3900c4780fc47&dn=x&tr=udp%3A%2F%2Ft.one%3A1337%2Fannounce",
+  "season":"1","episode":"10","seeds":4,"peers":3,"size_bytes":"3223111412"},
+ {"hash":"1111111111111111111111111111111111111111","title":"Show S02E01 1080p WEB","season":"2","episode":"1","seeds":9,"size_bytes":"1000"},
+ {"hash":"2222222222222222222222222222222222222222","title":"Show S01 1080p WEB H264-PACK","season":"1","episode":"0","seeds":7,"size_bytes":7000},
+ {"hash":"3333333333333333333333333333333333333333","title":"Show S01E09 1080p WEB","season":"1","episode":"9","seeds":2,"size_bytes":"500"}
+]}`
+
+func TestEZTVSearchFiltersSeasonAndEpisode(t *testing.T) {
+	var gotURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURL = r.URL.String()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, eztvFixture)
+	}))
+	defer srv.Close()
+
+	ix := Indexer{Kind: "eztv", Name: "eztv", URL: srv.URL}
+	res, err := eztvSearch(context.Background(), srv.Client(), ix, "series", 1, 10, "tt0903747")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotURL, "imdb_id=0903747") {
+		t.Errorf("imdb id should be numeric, got %q", gotURL)
+	}
+	// S01E10 plus the S01 pack; the other season and the wrong episode go.
+	if len(res) != 2 {
+		t.Fatalf("want 2 results, got %d: %+v", len(res), res)
+	}
+	if res[0].InfoHash != "d03d2022e4ed79545c4b8d70dfc3900c4780fc47" || res[0].Seeders != 4 || res[0].Size != 3223111412 {
+		t.Errorf("first result = %+v", res[0])
+	}
+	if len(res[0].Trackers) != 1 {
+		t.Errorf("magnet trackers not kept: %+v", res[0].Trackers)
+	}
+	if res[1].Seeders != 7 {
+		t.Errorf("season pack should be kept: %+v", res[1])
+	}
+	// EZTV has no text search, so a movie must not even hit the network.
+	if r, err := eztvSearch(context.Background(), srv.Client(), ix, "movie", 0, 0, "tt0903747"); err != nil || r != nil {
+		t.Errorf("movie should be skipped: %v %v", r, err)
+	}
+	if r, _ := eztvSearch(context.Background(), srv.Client(), ix, "series", 1, 1, ""); r != nil {
+		t.Errorf("no imdb id should be skipped, got %+v", r)
+	}
+}
+
+const ytsFixture = `{"status":"ok","data":{"movie_count":2,"movies":[
+ {"title":"Dune: Part Two","year":2024,"imdb_code":"tt15239678","torrents":[
+   {"hash":"82322840619ECE8BB1722ACFD815828B93F76557","quality":"720p","type":"bluray","video_codec":"x264","seeds":100,"peers":38,"size_bytes":1599875318},
+   {"hash":"C2F364BA7F59B22A1845B16FD8A1FC1783568F8B","quality":"1080p","type":"web","video_codec":"x265","seeds":42,"peers":40,"size_bytes":3285649981}]},
+ {"title":"Dune","year":2021,"imdb_code":"tt1160419","torrents":[
+   {"hash":"4444444444444444444444444444444444444444","quality":"1080p","type":"bluray","seeds":3,"size_bytes":2000}]}
+]}}`
+
+func TestYTSSearchExpandsTorrents(t *testing.T) {
+	var gotURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURL = r.URL.String()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, ytsFixture)
+	}))
+	defer srv.Close()
+
+	ix := Indexer{Kind: "yts", Name: "yts", URL: srv.URL}
+	res, err := ytsSearch(context.Background(), srv.Client(), ix, "movie", "tt15239678", "dune part two 2024")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotURL, "query_term=tt15239678") {
+		t.Errorf("should search by imdb id, got %q", gotURL)
+	}
+	// Two rows for Dune Part Two; the loose Dune (2021) match is dropped.
+	if len(res) != 2 {
+		t.Fatalf("want 2 results, got %d: %+v", len(res), res)
+	}
+	if !strings.Contains(res[0].Title, "1080p") && !strings.Contains(res[1].Title, "1080p") {
+		t.Errorf("titles should carry quality: %+v", res)
+	}
+	if res[0].Seeders != 100 || res[0].Size != 1599875318 {
+		t.Errorf("first row = %+v", res[0])
+	}
+	if r, _ := ytsSearch(context.Background(), srv.Client(), ix, "series", "tt15239678", ""); r != nil {
+		t.Errorf("YTS has no TV, expected no results, got %+v", r)
+	}
+}
+
+const toshoFixture = `[
+ {"title":"[Group] Frieren - 04 [1080p]","torrent_name":"[Group] Frieren - 04 [1080p]","info_hash":"2FD2133F28FBD29021B775C17C8E1CF5ACEB9A15",
+  "magnet_uri":"magnet:?xt=urn:btih:F7JBGPZI7PJJAINXOXAXZDQ46WWOXGQV&tr=udp%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce","seeders":31,"total_size":1234567890},
+ {"title":"no hash","torrent_name":"no hash","info_hash":"","seeders":5,"total_size":10}
+]`
+
+func TestAnimeToshoSearchParsesFeed(t *testing.T) {
+	var gotURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURL = r.URL.String()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, toshoFixture)
+	}))
+	defer srv.Close()
+
+	ix := Indexer{Kind: "animetosho", Name: "animetosho", URL: srv.URL}
+	res, err := animeToshoSearch(context.Background(), srv.Client(), ix, "Frieren")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotURL, "q=Frieren") {
+		t.Errorf("query not passed: %q", gotURL)
+	}
+	if len(res) != 1 {
+		t.Fatalf("want 1 result (hashless dropped), got %d", len(res))
+	}
+	if res[0].InfoHash != "2fd2133f28fbd29021b775c17c8e1cf5aceb9a15" || res[0].Seeders != 31 || res[0].Size != 1234567890 {
+		t.Errorf("result = %+v", res[0])
+	}
+	if len(res[0].Trackers) != 1 {
+		t.Errorf("trackers = %+v", res[0].Trackers)
+	}
+}
+
+func TestQueriesForCapsFanOut(t *testing.T) {
+	q := []string{"a", "b", "c", "d"}
+	if got := queriesFor("eztv", q); len(got) != 1 {
+		t.Errorf("eztv = %v", got)
+	}
+	if got := queriesFor("yts", q); len(got) != 1 {
+		t.Errorf("yts = %v", got)
+	}
+	if got := queriesFor("animetosho", q); len(got) != 3 {
+		t.Errorf("animetosho = %v", got)
+	}
+}
+
+func TestToshoRelevanceGuard(t *testing.T) {
+	cases := []struct {
+		query, title string
+		want         bool
+	}{
+		{"Ran 1985", "Kimagure Orange Road Pilot (1985)v2.mkv", false},
+		{"Ran 1985", "Ran.1985.1080p.BluRay.x264", true},
+		{"Frieren: Beyond Journey's End", "[9volt] Sousou no Frieren - 04 [1080p]", true},
+		{"Frieren S01E04", "[Group] Frieren - 04 [1080p]", true},
+		{"The Office 2005", "Urashima Taro [Orange-Flash]", false},
+		{"Air 2005", "Air - 01 [1080p]", true},
+	}
+	for _, c := range cases {
+		if got := toshoRelevant(c.query, c.title); got != c.want {
+			t.Errorf("toshoRelevant(%q, %q) = %v, want %v", c.query, c.title, got, c.want)
+		}
+	}
+	if got := toshoTitleQuery("Frieren S01E04 2024"); got != "Frieren" {
+		t.Errorf("toshoTitleQuery = %q", got)
+	}
+}

@@ -48,7 +48,7 @@ type Session struct {
 // Indexer is one configured search source.
 type Indexer struct {
 	ID       string `json:"id"`
-	Kind     string `json:"kind"` // torznab | knaben | apibay
+	Kind     string `json:"kind"` // torznab | knaben | nyaa | apibay | eztv | yts | animetosho
 	Name     string `json:"name"`
 	URL      string `json:"url"`
 	APIKey   string `json:"api_key"`
