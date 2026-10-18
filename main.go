@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const version = "1.4.1"
+const version = "1.4.2"
 
 var defaultTrackers = []string{
 	"udp://tracker.opentrackr.org:1337/announce",
@@ -235,25 +235,11 @@ func (s *Server) handleLanding(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	keys, _ := s.store.ListKeys()
-	var rows strings.Builder
-	for _, k := range keys {
-		if k.Revoked {
-			continue
-		}
-		u := s.baseURL(r) + "/k/" + k.Token + "/manifest.json"
-		rows.WriteString(fmt.Sprintf("<li><b>%s</b><br><code>%s</code></li>", htmlEscape(k.Label), htmlEscape(u)))
-	}
-	if rows.Len() == 0 {
-		rows.WriteString("<li>No keys yet — sign in and create one.</li>")
-	}
+	// Deliberately does not list manifest keys: they are credentials, and this
+	// page is public.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, landingHTML, rows.String())
-}
-
-func htmlEscape(s string) string {
-	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;")
-	return r.Replace(s)
+	w.Header().Set("Cache-Control", "no-store")
+	fmt.Fprint(w, landingHTML)
 }
 
 const landingHTML = `<!doctype html>
@@ -262,15 +248,12 @@ const landingHTML = `<!doctype html>
 <style>
 :root{color-scheme:dark}
 body{margin:0;min-height:100vh;background:#0b0e14;color:#d7dce5;font:15px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;padding:24px}
-.card{max-width:720px;width:100%%;background:#11151d;border:1px solid #1f2632;border-radius:16px;padding:32px}
+.card{max-width:720px;width:100%;background:#11151d;border:1px solid #1f2632;border-radius:16px;padding:32px}
 h1{margin:0 0 4px;font-size:26px;letter-spacing:-.02em}
 p{color:#8b95a7;margin:0 0 24px}
 ul{list-style:none;padding:0;display:grid;gap:12px}
-li{background:#0e1219;border:1px solid #1c2431;border-radius:10px;padding:12px 14px;font-size:13px;word-break:break-all}
-code{color:#7ee2b8;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 a.btn{display:inline-block;margin-top:22px;background:#2b6cf6;color:#fff;text-decoration:none;padding:10px 16px;border-radius:9px;font-weight:600;font-size:14px}
 </style></head><body><div class="card">
-<h1>Marlin</h1><p>Self-hosted streaming hub. Install one of these manifests in Stremio or Nuvio.</p>
-<ul>%s</ul>
+<h1>Marlin</h1><p>Self-hosted streaming hub. Manifest keys are issued from the admin console.</p>
 <a class="btn" href="/admin">Admin console</a>
 </div></body></html>`
