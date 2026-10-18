@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const version = "1.5.2"
+const version = "1.5.3"
 
 var defaultTrackers = []string{
 	"udp://tracker.opentrackr.org:1337/announce",

@@ -137,16 +137,30 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			s.hints.Store(res.InfoHash, res.Trackers)
 		}
 		label, q := releaseLabel(res.Title)
+		src := strings.TrimSpace(strings.TrimPrefix(label, q))
+		// First line is the bold one in the player: show the title being watched,
+		// not the addon name, with the resolution as the differentiator.
+		display := title
+		if typ == "series" && season > 0 {
+			display = fmt.Sprintf("%s S%02dE%02d", title, season, ep)
+		} else if year > 0 {
+			display = fmt.Sprintf("%s (%d)", title, year)
+		}
 		link := fmt.Sprintf("%s/k/%s/play/%s?n=%s", base, k.Token, res.InfoHash, url.QueryEscape(truncate(res.Title, 120)))
 		if _, _, files, ok := s.store.GetMedia(res.InfoHash); ok {
 			if idx, ok := bestCachedFile(files); ok {
 				link += "&f=" + strconv.Itoa(idx)
 			}
 		}
-		title := fmt.Sprintf("%s\n💾 %s  👥 %d  ·  %s", label, humanBytes(res.Size), res.Seeders, res.Indexer)
+		bits := []string{}
+		if src != "" {
+			bits = append(bits, src)
+		}
+		bits = append(bits, "💾 "+humanBytes(res.Size), fmt.Sprintf("👥 %d", res.Seeders), res.Indexer)
+		detail := strings.Join(bits, " · ")
 		streams = append(streams, Stream{
-			Name:  fmt.Sprintf("Marlin %s", q),
-			Title: title,
+			Name:  fmt.Sprintf("%s · %s", display, q),
+			Title: detail,
 			URL:   link,
 			BehaviorHints: map[string]any{
 				"bingeGroup":  "marlin-" + q,
