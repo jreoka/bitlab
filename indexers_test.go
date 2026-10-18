@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
@@ -391,5 +393,51 @@ func TestToshoRelevanceGuard(t *testing.T) {
 	}
 	if got := toshoTitleQuery("Frieren S01E04 2024"); got != "Frieren" {
 		t.Errorf("toshoTitleQuery = %q", got)
+	}
+}
+
+func TestEstimatedMbpsPlateaus(t *testing.T) {
+	cases := []struct {
+		seeders int
+		want    float64
+	}{
+		{0, 0}, {1, 5}, {4, 8}, {60, 25.2}, {100, 32}, {442, 40}, {5000, 40},
+	}
+	for _, c := range cases {
+		got := estimatedMbps(c.seeders)
+		if math.Abs(got-c.want) > 0.05 {
+			t.Errorf("estimatedMbps(%d) = %.2f, want %.2f", c.seeders, got, c.want)
+		}
+	}
+}
+
+func TestScoreDemotesUnplayableRemux(t *testing.T) {
+	// 64 GiB over a two-hour feature needs ~76 Mbps; the same film as a 29 GiB
+	// WEB needs ~25. Both fit in the quality bonuses, so playability decides.
+	remux := Result{Title: "Dune Part Two 2024 2160p REMUX HDR H264", Size: 64 << 30, Seeders: 300}
+	web := Result{Title: "Dune Part Two 2024 2160p WEB-DL HDR H264", Size: 29 << 30, Seeders: 300}
+	if scoreResult(remux, "movie", 0, 0) >= scoreResult(web, "movie", 0, 0) {
+		t.Fatalf("remux %.0f should rank below web %.0f", scoreResult(remux, "movie", 0, 0), scoreResult(web, "movie", 0, 0))
+	}
+	// A modest release on a small swarm must still beat a giant one on a big swarm.
+	small := Result{Title: "Movie 2024 1080p WEB-DL H264", Size: 3 << 30, Seeders: 8}
+	huge := Result{Title: "Movie 2024 1080p BluRay REMUX H264", Size: 60 << 30, Seeders: 8}
+	if scoreResult(small, "movie", 0, 0) <= scoreResult(huge, "movie", 0, 0) {
+		t.Fatalf("playable release should win: small %.0f huge %.0f", scoreResult(small, "movie", 0, 0), scoreResult(huge, "movie", 0, 0))
+	}
+	// A 1080p WEB episode on a healthy swarm keeps its place above a 4K remux.
+	ep := Result{Title: "Show S01E01 1080p WEB-DL H264", Size: 2 << 30, Seeders: 400}
+	ep4k := Result{Title: "Show S01E01 2160p REMUX H265", Size: 45 << 30, Seeders: 400}
+	if scoreResult(ep, "series", 1, 1) <= scoreResult(ep4k, "series", 1, 1) {
+		t.Fatalf("1080p episode should beat an unstreamable remux: %.0f vs %.0f", scoreResult(ep, "series", 1, 1), scoreResult(ep4k, "series", 1, 1))
+	}
+}
+
+func TestIndexerTimeoutShortensSlowSources(t *testing.T) {
+	if got := indexerTimeout("animetosho"); got != 6*time.Second {
+		t.Errorf("animetosho timeout = %v", got)
+	}
+	if got := indexerTimeout("knaben"); got != 15*time.Second {
+		t.Errorf("default timeout = %v", got)
 	}
 }
