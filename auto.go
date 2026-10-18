@@ -263,7 +263,7 @@ func (s *Server) pickAuto(ctx context.Context, typ, rawID, baseID string, season
 	if inflight != nil {
 		select {
 		case <-inflight:
-		case <-time.After(6 * time.Second):
+		case <-time.After(10 * time.Second):
 		case <-ctx.Done():
 			return autoPick{}, ctx.Err()
 		}
@@ -742,11 +742,13 @@ func (s *Server) handleAuto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Printf("auto %s: chose %s (%s)", rawID, pick.Title, pick.Label)
-	// An unmeasured pick has not proven it can deliver bytes; do not make the
-	// player wait the full metadata timeout on the strength of a guess.
+	// An unmeasured pick has not proven it can deliver bytes — often because a
+	// probe could not even fetch its metadata. Do not make the player wait the
+	// full 45s timeout on the strength of a guess: ten seconds, then let the
+	// client show an error and the stall be recorded.
 	wait := time.Duration(0)
 	if !pick.Measured {
-		wait = 20 * time.Second
+		wait = 10 * time.Second
 	}
 	s.serveTorrent(w, r, k, pick.InfoHash, pick.Title, pick.Trackers, -1, season, ep, rawID, wait)
 }

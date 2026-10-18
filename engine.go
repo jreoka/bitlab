@@ -441,7 +441,7 @@ func (s *Server) serveTorrent(w http.ResponseWriter, r *http.Request, key Key, i
 	// A player that waited ten seconds and got nothing is the clearest possible
 	// signal the release is not streaming — often clearer than the watchdog,
 	// which never runs if the client hangs up first.
-	if cw.written == 0 && mediaID != "" && time.Since(serveStart) > 10*time.Second {
+	if cw.written == 0 && mediaID != "" && time.Since(serveStart) >= 8*time.Second {
 		s.log.Printf("play %s (%s): no bytes in %s, demoting", ih[:8], mediaID, time.Since(serveStart).Round(time.Second))
 		s.store.RecordStall(ih, mediaID)
 	}
