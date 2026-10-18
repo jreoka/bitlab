@@ -290,6 +290,7 @@ func (s *Server) pickAuto(ctx context.Context, typ, rawID, baseID, sid string, s
 			if trusted {
 				s.log.Printf("auto %s: reusing %s (%s, picked %s ago)", rawID, ih[:8], label, age.Round(time.Minute))
 				name, _, _, _ := s.store.GetMedia(ih) // a magnet dn hint, if we have one
+				s.store.SaveAutoSession(sid, rawID, ih)
 				return autoPick{InfoHash: ih, Title: name, Label: label, Measured: true}, nil
 			}
 		}
