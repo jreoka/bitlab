@@ -289,10 +289,6 @@ tr:last-child td{border-bottom:0}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
         <span>Security</span>
       </button>
-      <button class="nav" data-tab="settings" onclick="tab('settings')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2" fill="var(--surface)"/><circle cx="15" cy="12" r="2" fill="var(--surface)"/><circle cx="8" cy="18" r="2" fill="var(--surface)"/></svg>
-        <span>Settings</span>
-      </button>
     </nav>
     <div class="side-foot">
       <div class="chip"><span>Cache</span><b id="chipcache">—</b></div>
@@ -428,20 +424,6 @@ tr:last-child td{border-bottom:0}
       </div>
     </section>
 
-    <!-- SETTINGS -->
-    <section id="tab-settings" class="hidden">
-      <div class="card">
-        <h2>Streaming</h2>
-        <p class="hint">Read-ahead is how much is pulled ahead of the playhead — larger means fewer stalls on seek, more RAM and bandwidth.</p>
-        <div class="row">
-          <div><label for="set-cache">Cache budget (GB)</label><input id="set-cache" type="number" min="0"></div>
-          <div><label for="set-idle">Drop idle torrents (min)</label><input id="set-idle" type="number" min="1"></div>
-          <div><label for="set-read">Read-ahead (MB)</label><input id="set-read" type="number" min="8"></div>
-          <div><button class="primary" onclick="saveSettings()">Save</button></div>
-        </div>
-        <p class="hint" style="margin-top:16px">Trackers are set at start-up via <code>MARLIN_TRACKERS</code>; DHT, PEX and LSD are always on.</p>
-      </div>
-    </section>
   </main>
 </div>
 
@@ -464,8 +446,7 @@ const ICON = {
 const titles = {
   keys:['Manifest keys','One addon URL per device, individually revocable.'],
   activity:['Activity','What the torrent engine is doing right now.'],
-  security:['Security','Two-factor login and signed-in sessions.'],
-  settings:['Settings','Cache budget, idle timeout and read-ahead.']
+  security:['Security','Two-factor login and signed-in sessions.']
 };
 
 function toast(msg, isErr){
@@ -503,11 +484,10 @@ async function logout(){ await fetch('/admin/api/logout',{method:'POST'}); locat
 
 function tab(name){
   document.querySelectorAll('.nav').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
-  ['keys','activity','security','settings'].forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== name));
+  ['keys','activity','security'].forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== name));
   const t = titles[name] || ['Marlin',''];
   $('#page-title').textContent = t[0]; $('#page-sub').textContent = t[1];
   if (name === 'security') loadSecurity();
-  if (name === 'settings' && state.overview) fillSettings(state.overview);
 }
 
 async function refresh(){
@@ -524,7 +504,6 @@ async function refresh(){
     $('#s-media').textContent = o.media_rows;
     loadKeys();
     renderTorrents(o.torrents || []);
-    if (!$('#set-cache').value) fillSettings(o);
   } catch(e){
     if (e && e.message && e.message !== 'signed out') toast('Refresh failed: ' + e.message, true);
   }
@@ -637,12 +616,6 @@ function renderTorrents(list){
   }).join('');
 }
 
-function fillSettings(o){
-  $('#set-cache').value = Math.round((o.cache_max_bytes||0)/1073741824);
-  $('#set-idle').value = o.idle_minutes || 20;
-  $('#set-read').value = 64;
-}
-
 /* ---- keys ---- */
 async function createKey(){
   const label = $('#k-label').value.trim() || 'key';
@@ -721,16 +694,6 @@ async function revokeSession(id){
 async function revokeOthers(){
   if (!confirm('Sign out every other session?')) return;
   try { await api('/admin/api/sessions/revoke-others', {method:'POST'}); toast('Other sessions signed out'); loadSecurity(); } catch(e){ toast(e.message, true); }
-}
-
-async function saveSettings(){
-  try {
-    await api('/admin/api/settings', {method:'POST', body: JSON.stringify({
-      cache_gb: parseInt($('#set-cache').value||'16',10),
-      idle_minutes: parseInt($('#set-idle').value||'20',10),
-      readahead_mb: parseInt($('#set-read').value||'64',10)})});
-    toast('Settings saved'); refresh();
-  } catch(e){ toast(e.message, true); }
 }
 
 let searchTimer = null;
