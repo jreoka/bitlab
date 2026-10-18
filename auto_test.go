@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -506,6 +507,35 @@ func TestPartialProbeDoesNotPenaliseOptions(t *testing.T) {
 	unprobed.evaluate()
 	if got, want := full.score, unprobed.score; got != want {
 		t.Fatalf("partial probe scored %v, unprobed scored %v", got, want)
+	}
+}
+
+// A client numbering episodes continuously files season 3 under season 1.
+func TestRemapEpisode(t *testing.T) {
+	eps := make([][2]int, 0, 58)
+	for s, n := range map[int]int{1: 25, 2: 25, 3: 8} {
+		for e := 1; e <= n; e++ {
+			eps = append(eps, [2]int{s, e})
+		}
+	}
+	sort.Slice(eps, func(i, j int) bool {
+		if eps[i][0] != eps[j][0] {
+			return eps[i][0] < eps[j][0]
+		}
+		return eps[i][1] < eps[j][1]
+	})
+
+	cases := []struct{ s, e, wantS, wantE int }{
+		{1, 51, 3, 1},  // absolute: 25 + 25 = 50, so 51 is S03E01
+		{1, 3, 1, 3},   // already fits season 1
+		{2, 26, 2, 26}, // out of range everywhere: left alone
+		{3, 8, 3, 8},   // fine as is
+		{1, 50, 2, 25}, // the last absolute episode of season 2
+	}
+	for _, c := range cases {
+		if gotS, gotE := remapEpisode(eps, c.s, c.e); gotS != c.wantS || gotE != c.wantE {
+			t.Errorf("remapEpisode(%d,%d) = (%d,%d), want (%d,%d)", c.s, c.e, gotS, gotE, c.wantS, c.wantE)
+		}
 	}
 }
 

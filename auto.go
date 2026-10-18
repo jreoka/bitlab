@@ -322,6 +322,7 @@ func (s *Server) pickAuto(ctx context.Context, typ, rawID, baseID, sid string, s
 	if err != nil {
 		return autoPick{}, fmt.Errorf("meta: %w", err)
 	}
+	season, ep = s.fixEpisodeNumber(baseID, season, ep)
 	queries := s.streamQueries(ctx, typ, title, year, season, ep)
 	results, errs := s.searchAll(ctx, queries, typ, season, ep, baseID)
 	for _, e := range errs {
@@ -806,9 +807,16 @@ func (s *Server) handleAuto(w http.ResponseWriter, r *http.Request) {
 		httpError(w, 400, "bad type")
 		return
 	}
-
 	ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
 	defer cancel()
+
+	// Map absolute episode numbering before the pick: the release that carries
+	// S03E01 is a different one from the pack that carries S01.
+	if typ == "series" && ep > 0 {
+		if _, _, err := s.resolveMeta(ctx, typ, baseID); err == nil {
+			season, ep = s.fixEpisodeNumber(baseID, season, ep)
+		}
+	}
 	pick, err := s.pickAuto(ctx, typ, rawID, baseID, r.URL.Query().Get("s"), season, ep)
 	if err != nil {
 		s.log.Printf("auto %s: %v", rawID, err)

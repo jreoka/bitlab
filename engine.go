@@ -243,17 +243,34 @@ func chooseFileForEpisode(paths []string, sizes []int64, want, season, ep int) (
 		return want, nil
 	}
 	if ep > 0 {
+		numbered := 0
 		for i, p := range paths {
 			if !isVideo(p) {
 				continue
 			}
-			if episodeSignal(filepath.Base(p), season, ep) > 0 {
+			base := filepath.Base(p)
+			switch sig := episodeSignal(base, season, ep); {
+			case sig > 0:
 				return i, nil
+			case sig < 0:
+				numbered++ // this file states an episode, just not this one
 			}
 		}
+		// Files that name their episodes, none of which is the one asked for:
+		// the release does not contain this episode and must not fall through to
+		// "largest file" — that plays an arbitrary episode, which is how a
+		// season-1 pack answered a request for season 3.
+		if numbered > 0 {
+			return -1, errNoEpisode
+		}
+		// Nothing in the release is numbered (a single episode plus an extra, or
+		// a film): there is nothing to match, so largest is the best guess.
 	}
 	return chooseFile(paths, sizes, want)
 }
+
+// errNoEpisode means the release does not contain the requested episode.
+var errNoEpisode = errors.New("release has no file for this episode")
 
 func chooseFile(paths []string, sizes []int64, want int) (int, error) {
 	if len(paths) == 0 {
@@ -353,6 +370,12 @@ func (s *Server) serveTorrent(w http.ResponseWriter, r *http.Request, key Key, i
 	}
 	idx, err := chooseFileForEpisode(paths, sizes, wantIdx, seasonWanted, epWanted)
 	if err != nil {
+		if errors.Is(err, errNoEpisode) && mediaID != "" {
+			// Deterministic, not transient: this release can never serve this
+			// episode, so demote it and let the next tap choose again.
+			s.log.Printf("play %s (%s): %v — demoting", ih[:8], mediaID, err)
+			s.store.RecordStall(ih, mediaID)
+		}
 		httpError(w, 404, err.Error())
 		return
 	}
