@@ -298,10 +298,24 @@ var qualityPatterns = []struct {
 func scoreResult(r Result, typ string, season, ep int) float64 {
 	// Swarm health matters, but a 900-seeder CAM must never outrank a healthy
 	// 2160p release, so seeders are log-scaled and quality is weighted hard.
-	score := math.Log1p(float64(r.Seeders)) * 140
+	score := math.Log1p(float64(r.Seeders)) * 220
 	for _, q := range qualityPatterns {
 		if q.re.MatchString(r.Title) {
 			score += q.bonus
+		}
+	}
+	// Can this release actually keep up? A 30 Mbps episode on a 6-seed swarm
+	// buffers no matter what it looks like, so penalise the shortfall. Roughly
+	// 1.5 Mbps per seeder, capped at what the link will do.
+	if r.Size > 0 {
+		duration := 7200.0 // a feature
+		if typ == "series" {
+			duration = 3000 // ~50 minute episode
+		}
+		needMbps := float64(r.Size) * 8 / duration / 1e6
+		haveMbps := math.Min(float64(r.Seeders)*1.5, 60)
+		if needMbps > haveMbps {
+			score -= (needMbps - haveMbps) * 150
 		}
 	}
 	// A healthy release size is a strong quality signal.

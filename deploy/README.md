@@ -30,3 +30,8 @@ Assumptions to check on a fresh cluster:
 
 The Ingress annotations disable proxy buffering and raise the read/send
 timeouts: without them nginx buffers the video and players stall.
+
+The pod runs `hostNetwork: true` on a fixed torrent port (51413) so it can accept
+inbound peer connections — on small swarms that is most of the difference between
+streaming and buffering. Single replica only: two pods cannot share the volume or
+the port.

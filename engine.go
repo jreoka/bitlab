@@ -40,6 +40,7 @@ type Engine struct {
 	trackers      []string
 	store         *Store
 	maxCacheBytes int64
+	prebufferMB   int64
 	idleTimeout   time.Duration
 
 	mu       sync.Mutex
@@ -74,6 +75,7 @@ func NewEngine(cfg Config, store *Store, lg *log.Logger) (*Engine, error) {
 		trackers:      cfg.Trackers,
 		store:         store,
 		maxCacheBytes: cfg.CacheMaxBytes,
+		prebufferMB:   cfg.PrebufferMB,
 		idleTimeout:   cfg.IdleTimeout,
 		addLocks:      map[string]*sync.Mutex{},
 		act:           map[string]*activity{},
@@ -172,7 +174,42 @@ func (e *Engine) Warm(ih, name string, extra []string) {
 			return
 		}
 		e.recordMedia(t)
+		e.prebuffer(t)
 	}()
+}
+
+// prebuffer pulls the head of the most likely file so the click that follows
+// starts from local bytes instead of waiting on the swarm.
+func (e *Engine) prebuffer(t *torrent.Torrent) {
+	if e.prebufferMB <= 0 {
+		return
+	}
+	files := t.Files()
+	if len(files) == 0 {
+		return
+	}
+	paths := make([]string, len(files))
+	sizes := make([]int64, len(files))
+	for i, f := range files {
+		paths[i] = f.DisplayPath()
+		sizes[i] = f.Length()
+	}
+	idx, err := chooseFile(paths, sizes, -1)
+	if err != nil {
+		return
+	}
+	f := files[idx]
+	r := f.NewReader()
+	defer r.Close()
+	r.SetReadahead(8 << 20)
+	r.SetResponsive()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	r.SetContext(ctx)
+	n, _ := io.CopyN(io.Discard, r, e.prebufferMB<<20)
+	if n > 0 {
+		e.log.Printf("prebuffered %s of %s (%s)", humanBytes(n), f.DisplayPath(), t.InfoHash().HexString()[:8])
+	}
 }
 
 func (e *Engine) recordMedia(t *torrent.Torrent) {

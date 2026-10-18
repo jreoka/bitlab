@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const version = "1.5.3"
+const version = "1.5.4"
 
 var defaultTrackers = []string{
 	"udp://tracker.opentrackr.org:1337/announce",
@@ -53,6 +53,7 @@ func loadConfig() Config {
 		IdleTimeout:    time.Duration(envInt("MARLIN_IDLE_MINUTES", 20)) * time.Minute,
 		InfoTimeout:    time.Duration(envInt("MARLIN_INFO_TIMEOUT", 45)) * time.Second,
 		ReadaheadBytes: int64(envInt("MARLIN_READAHEAD_MB", 64)) << 20,
+		PrebufferMB:    int64(envInt("MARLIN_PREBUFFER_MB", 8)),
 		TorrentPort:    envInt("MARLIN_TORRENT_PORT", 0),
 		AdminPassword:  env("MARLIN_ADMIN_PASSWORD", ""),
 	}

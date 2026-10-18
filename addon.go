@@ -24,6 +24,7 @@ type Config struct {
 	IdleTimeout    time.Duration
 	InfoTimeout    time.Duration
 	ReadaheadBytes int64
+	PrebufferMB    int64
 	TorrentPort    int
 	AdminPassword  string
 }

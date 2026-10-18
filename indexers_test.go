@@ -101,20 +101,45 @@ func TestKnabenSearchParsesJSON(t *testing.T) {
 }
 
 func TestRankingPrefersQualityAndHealth(t *testing.T) {
-	results := []Result{
-		{Title: "Movie 2020 CAM x264", Seeders: 900},
-		{Title: "Movie 2020 1080p BluRay x264", Seeders: 20, Size: 8 << 30},
-		{Title: "Movie 2020 2160p WEB-DL HEVC", Seeders: 10, Size: 20 << 30},
+	// Same swarm: the better-looking release wins.
+	even := []Result{
+		{Title: "Movie 2020 1080p BluRay x264", Seeders: 60, Size: 8 << 30},
+		{Title: "Movie 2020 2160p BluRay HEVC", Seeders: 60, Size: 20 << 30},
 	}
-	for i := range results {
-		results[i].Score = scoreResult(results[i], "movie", 0, 0)
+	for i := range even {
+		even[i].Score = scoreResult(even[i], "movie", 0, 0)
 	}
-	sortResults(results)
-	if !strings.Contains(results[0].Title, "2160p") {
-		t.Fatalf("best = %q, want the 2160p release", results[0].Title)
+	sortResults(even)
+	if !strings.Contains(even[0].Title, "2160p") {
+		t.Fatalf("with healthy swarms the 2160p should win, got %q", even[0].Title)
 	}
-	if strings.Contains(results[len(results)-1].Title, "2160p") {
-		t.Fatalf("cam release should rank last, got %q first", results[len(results)-1].Title)
+
+	// Thin swarm: a 20 GiB 2160p at 10 seeds cannot keep up, so the 1080p wins.
+	mixed := []Result{
+		{Title: "Movie 2020 2160p BluRay HEVC", Seeders: 10, Size: 20 << 30},
+		{Title: "Movie 2020 1080p BluRay x264", Seeders: 40, Size: 6 << 30},
+		{Title: "Movie 2020 CAM x264", Seeders: 900, Size: 1 << 30},
+	}
+	for i := range mixed {
+		mixed[i].Score = scoreResult(mixed[i], "movie", 0, 0)
+	}
+	sortResults(mixed)
+	if strings.Contains(mixed[0].Title, "2160p") {
+		t.Fatalf("thin-swarm 2160p should not rank first: %q", mixed[0].Title)
+	}
+	if !strings.Contains(mixed[len(mixed)-1].Title, "CAM") {
+		t.Fatalf("cam should rank last, got %q", mixed[len(mixed)-1].Title)
+	}
+}
+
+func TestThroughputPenalty(t *testing.T) {
+	// A 12 GiB episode needs ~33 Mbps; six seeds cannot carry that.
+	big := Result{Title: "Show S01E01 2160p WEB-DL", Seeders: 6, Size: 12 << 30}
+	small := Result{Title: "Show S01E01 1080p WEB-DL", Seeders: 6, Size: 2 << 30}
+	bs := scoreResult(big, "series", 1, 1)
+	ss := scoreResult(small, "series", 1, 1)
+	if bs >= ss {
+		t.Fatalf("big/thin release should score below the small one: %.0f vs %.0f", bs, ss)
 	}
 }
 
