@@ -93,10 +93,26 @@ func (s *Server) searchAll(ctx context.Context, q string, typ string, season, ep
 		all[i].Score = scoreResult(all[i], typ, season, ep)
 	}
 	sortResults(all)
+	all = dropDead(all)
 	if len(all) > 40 {
 		all = all[:40]
 	}
 	return all, errs
+}
+
+// dropDead removes releases with no seeders — they cannot play — unless that
+// would leave nothing at all.
+func dropDead(rs []Result) []Result {
+	live := make([]Result, 0, len(rs))
+	for _, r := range rs {
+		if r.Seeders > 0 {
+			live = append(live, r)
+		}
+	}
+	if len(live) == 0 {
+		return rs
+	}
+	return live
 }
 
 func (s *Server) searchIndexer(ctx context.Context, ix Indexer, q string, typ string, season, ep int, imdbID string) ([]Result, error) {

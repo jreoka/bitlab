@@ -208,3 +208,20 @@ func TestSniffContainer(t *testing.T) {
 		t.Errorf("unknown should be empty, got %q", ext)
 	}
 }
+
+func TestDropDeadReleases(t *testing.T) {
+	in := []Result{
+		{Title: "alive", Seeders: 12},
+		{Title: "dead", Seeders: 0},
+		{Title: "alive2", Seeders: 1},
+	}
+	out := dropDead(in)
+	if len(out) != 2 || out[0].Title != "alive" || out[1].Title != "alive2" {
+		t.Fatalf("dropDead = %+v", out)
+	}
+	// If everything is dead, return them rather than an empty list.
+	all := dropDead([]Result{{Title: "dead", Seeders: 0}})
+	if len(all) != 1 {
+		t.Fatalf("should keep the only row: %+v", all)
+	}
+}

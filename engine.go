@@ -156,7 +156,7 @@ func waitInfo(ctx context.Context, t *torrent.Torrent) error {
 }
 
 // Warm pulls metadata in the background so the click that follows is instant.
-func (e *Engine) Warm(ih, name string, extra []string) {
+func (e *Engine) Warm(ih, name string, extra []string, mb int64) {
 	select {
 	case e.warmSem <- struct{}{}:
 	default:
@@ -174,14 +174,14 @@ func (e *Engine) Warm(ih, name string, extra []string) {
 			return
 		}
 		e.recordMedia(t)
-		e.prebuffer(t)
+		e.prebuffer(t, mb)
 	}()
 }
 
 // prebuffer pulls the head of the most likely file so the click that follows
 // starts from local bytes instead of waiting on the swarm.
-func (e *Engine) prebuffer(t *torrent.Torrent) {
-	if e.prebufferMB <= 0 {
+func (e *Engine) prebuffer(t *torrent.Torrent, mb int64) {
+	if mb <= 0 {
 		return
 	}
 	files := t.Files()
@@ -206,7 +206,7 @@ func (e *Engine) prebuffer(t *torrent.Torrent) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	r.SetContext(ctx)
-	n, _ := io.CopyN(io.Discard, r, e.prebufferMB<<20)
+	n, _ := io.CopyN(io.Discard, r, mb<<20)
 	if n > 0 {
 		e.log.Printf("prebuffered %s of %s (%s)", humanBytes(n), f.DisplayPath(), t.InfoHash().HexString()[:8])
 	}

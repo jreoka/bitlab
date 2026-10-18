@@ -168,8 +168,14 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 				"notWebReady": false,
 			},
 		})
+		// Warm the head of the plausible picks: deeper for the top rows, which
+		// are the ones actually clicked, and shallow for the rest.
 		if i < 6 {
-			s.engine.Warm(res.InfoHash, res.Title, nil)
+			mb := int64(6)
+			if i < 3 {
+				mb = s.cfg.PrebufferMB * 3
+			}
+			s.engine.Warm(res.InfoHash, res.Title, nil, mb)
 		}
 	}
 	writeJSON(w, 200, StreamResponse{Streams: streams})
