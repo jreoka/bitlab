@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -538,8 +539,14 @@ func TestAutoRowIsAStableBingeGroup(t *testing.T) {
 	if row.Name != "Auto" {
 		t.Errorf("name = %q", row.Name)
 	}
-	if want := "https://stream.example/k/bit_abc/auto/series/tt123:1:2"; row.URL != want {
-		t.Errorf("url = %q, want %q", row.URL, want)
+	if want := "https://stream.example/k/bit_abc/auto/series/tt123:1:2?s="; !strings.HasPrefix(row.URL, want) {
+		t.Errorf("url = %q, want prefix %q", row.URL, want)
+	}
+	// Two renders must get different session ids, or a pick change would still
+	// reach a player that is mid-stream.
+	other := s.autoRow("https://stream.example", Key{Token: "bit_abc"}, "series", "tt123:1:2")
+	if other.URL == row.URL {
+		t.Error("two rows got the same session id")
 	}
 	if g, _ := row.BehaviorHints["bingeGroup"].(string); g != "bitlab-auto" {
 		t.Errorf("bingeGroup = %v", row.BehaviorHints["bingeGroup"])

@@ -158,6 +158,12 @@ CREATE TABLE IF NOT EXISTS stalls (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (infohash, media_id)
 );
+CREATE TABLE IF NOT EXISTS auto_sessions (
+  sid TEXT PRIMARY KEY,
+  media_id TEXT NOT NULL,
+  infohash TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS auto_picks (
   media_id TEXT PRIMARY KEY,
   infohash TEXT NOT NULL,
@@ -669,6 +675,28 @@ func (s *Store) GetAutoPick(mediaID string) (ih, label string, at int64, ok bool
 	err := s.db.QueryRow(`SELECT infohash,label,picked_at FROM auto_picks WHERE media_id=?`, mediaID).
 		Scan(&ih, &label, &at)
 	return ih, label, at, err == nil
+}
+
+// AutoSession pins a pick to one stream-url generation, so a player that
+// reconnects to the same URL keeps the release it started on.
+func (s *Store) SaveAutoSession(sid, mediaID, ih string) {
+	if sid == "" {
+		return
+	}
+	s.db.Exec(`INSERT INTO auto_sessions(sid,media_id,infohash,created_at) VALUES(?,?,?,?)
+		ON CONFLICT(sid) DO UPDATE SET infohash=excluded.infohash, created_at=excluded.created_at`,
+		sid, mediaID, ih, time.Now().Unix())
+	s.db.Exec(`DELETE FROM auto_sessions WHERE created_at < ?`, time.Now().Add(-autoPickTTL).Unix())
+}
+
+func (s *Store) GetAutoSession(sid, mediaID string) (string, bool) {
+	if sid == "" {
+		return "", false
+	}
+	var ih string
+	err := s.db.QueryRow(`SELECT infohash FROM auto_sessions WHERE sid=? AND media_id=? AND created_at > ?`,
+		sid, mediaID, time.Now().Add(-autoPickTTL).Unix()).Scan(&ih)
+	return ih, err == nil
 }
 
 // PicksForHash returns the media ids whose auto pick is this release, with the

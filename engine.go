@@ -547,6 +547,28 @@ func (s *Server) watchPlayback(ctx context.Context, stop context.CancelFunc, mon
 	}
 }
 
+// Readers is how many players are streaming this release right now. A pick must
+// not be changed out from under one: the player holds a byte offset into the
+// file it was handed.
+func (e *Engine) Readers(ih string) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if a, ok := e.act[ih]; ok {
+		return a.readers
+	}
+	return 0
+}
+
+// IdleFor is how long since a player last read this release.
+func (e *Engine) IdleFor(ih string) time.Duration {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if a, ok := e.act[ih]; ok && !a.lastAccess.IsZero() {
+		return time.Since(a.lastAccess)
+	}
+	return time.Hour
+}
+
 // janitor drops idle torrents and keeps the disk cache under budget.
 func (e *Engine) janitor() {
 	tick := time.NewTicker(30 * time.Second)

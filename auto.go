@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -240,12 +242,30 @@ type autoPick struct {
 // pickAuto assembles candidates, probes the plausible ones, and returns the
 // release auto would play. Probes are the expensive part, so they are limited
 // to the top few by cheap score and run in parallel under one deadline.
-func (s *Server) pickAuto(ctx context.Context, typ, rawID, baseID string, season, ep int) (autoPick, error) {
+func (s *Server) pickAuto(ctx context.Context, typ, rawID, baseID, sid string, season, ep int) (autoPick, error) {
 	// A pick that is still good is reused. The player holds a byte offset into
 	// the file it was handed, so re-deciding on every request can change the
 	// release underneath it: the offset then points past the end of a smaller
 	// file and playback strands there. Only a stall (recorded by the watchdog,
 	// or by a range past EOF) makes auto choose again.
+	// A session pins the release for as long as its URL is in use. Re-resolving
+	// on every request is what strands a player at the end of the bar: it holds
+	// a byte offset into the file it was given, and a new pick is a different
+	// file. The pin is only abandoned when the release is demoted and nothing is
+	// reading it any more.
+	if ih, ok := s.store.GetAutoSession(sid, rawID); ok {
+		demoted := s.store.StalledHashes(rawID, stallWindow)[ih]
+		// Keep the pin while the player is using it: readers attached, or a read
+		// within the last half minute. A player that has actually gone away (the
+		// app went back to the list, the episode was closed) gives up the pin, so
+		// a dead release does not trap the next attempt.
+		if !demoted || s.engine.IdleFor(ih) < 30*time.Second {
+			name, _, _, _ := s.store.GetMedia(ih)
+			s.log.Printf("auto %s: session %s pinned to %s", rawID, sid, ih[:8])
+			return autoPick{InfoHash: ih, Title: name, Label: sessionLabel(s.store, rawID, ih), Measured: true}, nil
+		}
+	}
+
 	if ih, label, at, need, ok := s.store.GetAutoPickFull(rawID); ok {
 		if age := time.Since(time.Unix(at, 0)); age < autoPickTTL && !s.store.StalledHashes(rawID, stallWindow)[ih] {
 			// A pick that has never been measured is a guess that got lucky
@@ -253,7 +273,7 @@ func (s *Server) pickAuto(ctx context.Context, typ, rawID, baseID string, season
 			// six seconds here is cheaper than two hours of reusing a dead
 			// release because the decision was made before any probe landed.
 			trusted := true
-			if _, hasProbe := s.store.GetProbe(ih); !hasProbe {
+			if _, hasProbe := s.store.GetProbe(ih); !hasProbe && s.engine.Readers(ih) == 0 {
 				c := &autoCand{Result: Result{InfoHash: ih, Title: label}, need: need, have: 0}
 				if c.need <= 0 {
 					c.need = 8
@@ -319,6 +339,7 @@ func (s *Server) pickAuto(ctx context.Context, typ, rawID, baseID string, season
 		return autoPick{}, fmt.Errorf("no usable release for %q", title)
 	}
 	s.store.SaveAutoPick(rawID, best.InfoHash, best.Label(), best.score, best.need)
+	s.store.SaveAutoSession(sid, rawID, best.InfoHash)
 	return autoPick{
 		InfoHash: best.InfoHash,
 		Title:    best.Title,
@@ -449,6 +470,11 @@ func (s *Server) probeAndSave(ctx context.Context, res Result) (TrackInfo, bool)
 	// two-hour TTL on a release the swarm never fed.
 	if ti.Mbps > 0 {
 		for mediaID, need := range s.store.PicksForHash(res.InfoHash) {
+			if s.engine.Readers(res.InfoHash) > 0 {
+				s.log.Printf("probe %s: %.1f Mbps is short of %.1f Mbps for %s, but a player is on it — leaving the pick alone",
+					res.InfoHash[:8], ti.Mbps, need, mediaID)
+				continue
+			}
 			if need > 0 && ti.Mbps < need*gateHeadroom {
 				s.log.Printf("probe %s: %.1f Mbps cannot sustain %.1f Mbps for %s — demoting the pick",
 					res.InfoHash[:8], ti.Mbps, need, mediaID)
@@ -782,7 +808,7 @@ func (s *Server) handleAuto(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
 	defer cancel()
-	pick, err := s.pickAuto(ctx, typ, rawID, baseID, season, ep)
+	pick, err := s.pickAuto(ctx, typ, rawID, baseID, r.URL.Query().Get("s"), season, ep)
 	if err != nil {
 		s.log.Printf("auto %s: %v", rawID, err)
 		httpError(w, 404, "no playable release")
@@ -804,6 +830,24 @@ func (s *Server) handleAuto(w http.ResponseWriter, r *http.Request) {
 	s.serveTorrent(w, r, k, pick.InfoHash, pick.Title, pick.Trackers, -1, season, ep, rawID, wait)
 }
 
+// sessionLabel is what the row shows for a pinned pick: the saved label when
+// the pin is the current pick, otherwise nothing.
+func sessionLabel(st *Store, mediaID, ih string) string {
+	if pickIH, label, _, _, ok := st.GetAutoPickFull(mediaID); ok && pickIH == ih {
+		return label
+	}
+	return ""
+}
+
+// sessionToken is a short random id for one render of the stream list.
+func sessionToken() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
+}
+
 // autoRow is the only list entry. It is a plain HTTP URL, so it works in any
 // player, and it resolves its release when the player asks for it.
 func (s *Server) autoRow(base string, k Key, typ, rawID string) Stream {
@@ -815,7 +859,10 @@ func (s *Server) autoRow(base string, k Key, typ, rawID string) Stream {
 	return Stream{
 		Name:  "Auto",
 		Title: detail,
-		URL:   fmt.Sprintf("%s/k/%s/auto/%s/%s", base, k.Token, typ, url.PathEscape(rawID)),
+		// The session id pins whatever release this row resolves to, for as long
+		// as the client keeps using this URL. Without it, a re-decision between
+		// two range requests hands the player a different file and it strands.
+		URL: fmt.Sprintf("%s/k/%s/auto/%s/%s?s=%s", base, k.Token, typ, url.PathEscape(rawID), sessionToken()),
 		BehaviorHints: map[string]any{
 			// A fixed group, so switching episodes stays on auto rather than
 			// pinning whichever release the first episode happened to use.
