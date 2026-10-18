@@ -56,14 +56,22 @@ func TestRecoveryCodesAreSingleUse(t *testing.T) {
 }
 
 func TestParseTTL(t *testing.T) {
+	day := 24 * time.Hour
 	cases := map[string]time.Duration{
-		"":      0,
-		"never": 0,
-		"12h":   12 * time.Hour,
-		"7d":    7 * 24 * time.Hour,
-		"2w":    14 * 24 * time.Hour,
-		"30d":   30 * 24 * time.Hour,
-		"1y":    365 * 24 * time.Hour,
+		"":         0,
+		"never":    0,
+		"12h":      12 * time.Hour,
+		"7d":       7 * day,
+		"3d":       3 * day,
+		"2w":       14 * day,
+		"30d":      30 * day,
+		"3m":       90 * day,
+		"2y":       730 * day,
+		"1.5y":     547*day + 12*time.Hour,
+		" 2 Y ":    730 * day,
+		"2 months": 60 * day,
+		"1 year":   365 * day,
+		"6 mo":     180 * day,
 	}
 	for in, want := range cases {
 		got, err := parseTTL(in)
@@ -74,11 +82,17 @@ func TestParseTTL(t *testing.T) {
 			t.Errorf("parseTTL(%q) = %v, want %v", in, got, want)
 		}
 	}
-	if _, err := parseTTL("banana"); err == nil {
-		t.Error("garbage duration accepted")
+	for _, bad := range []string{"banana", "10", "3x", "-5d", "0d"} {
+		if _, err := parseTTL(bad); err == nil {
+			t.Errorf("parseTTL(%q) should fail", bad)
+		}
 	}
-	if d, err := parseTTL("2030-01-01"); err != nil || d <= 0 {
-		t.Errorf("absolute date: %v %v", d, err)
+	if _, err := parseTTL("2020-01-01"); err == nil {
+		t.Error("past date should fail")
+	}
+	d, err := parseTTL("2030-06-01")
+	if err != nil || d <= 0 {
+		t.Errorf("future date: %v %v", d, err)
 	}
 }
 

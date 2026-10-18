@@ -3,276 +3,450 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Marlin — admin</title>
+<title>Marlin — console</title>
 <style>
 :root{
   color-scheme:dark;
-  --bg:#0a0d13; --panel:#10141c; --panel2:#0c1017; --line:#1d2532;
-  --text:#dbe2ee; --muted:#7d8899; --accent:#3b82f6; --accent2:#22c55e;
-  --danger:#ef4444; --warn:#f59e0b;
+  --bg:#06090f;
+  --surface:#0d1219;
+  --surface-2:#0a0e15;
+  --line:#1a2230;
+  --line-soft:#151c27;
+  --text:#e6ebf4;
+  --text-dim:#98a4b8;
+  --text-faint:#6b768a;
+  --accent:#4d8dff;
+  --accent-2:#2dd4a7;
+  --danger:#ff6b6b;
+  --warn:#f7b955;
+  --radius:16px;
+  --shadow:0 1px 0 rgba(255,255,255,.03) inset, 0 20px 60px -30px rgba(0,0,0,.9);
 }
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
-code,pre,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);background:#151b25;color:var(--text);padding:7px 12px;transition:.15s}
-button:hover{background:#1b2331;border-color:#2a3648}
-button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
-button.primary:hover{background:#2f6fe0}
-button.danger{color:#ff9c9c;border-color:#3a1f22;background:#1a1113}
-button.danger:hover{background:#2a1518}
-button.ghost{background:transparent}
-button:disabled{opacity:.45;cursor:not-allowed}
-input,select{font:inherit;background:#0b0f16;border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 10px;outline:none;width:100%}
-input:focus,select:focus{border-color:#2f4a72;box-shadow:0 0 0 3px #3b82f61a}
-label{display:block;font-size:12px;color:var(--muted);margin:0 0 5px;letter-spacing:.02em}
-.wrap{max-width:1180px;margin:0 auto;padding:26px 22px 60px}
-header.top{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding-bottom:18px;border-bottom:1px solid var(--line);margin-bottom:22px}
-.logo{width:34px;height:34px;border-radius:10px;background:linear-gradient(140deg,#3b82f6,#22c55e);display:grid;place-items:center;font-weight:800;color:#04101f;font-size:16px}
-h1{font-size:19px;margin:0;letter-spacing:-.01em}
-.sub{color:var(--muted);font-size:12px}
-.spacer{flex:1}
-.chip{font-size:11px;padding:3px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted);background:#0d121a}
-.tabs{display:flex;gap:4px;margin-bottom:20px;background:#0c1017;border:1px solid var(--line);border-radius:10px;padding:4px;width:max-content;max-width:100%;overflow:auto}
-.tabs button{border:0;background:transparent;color:var(--muted);padding:7px 14px;border-radius:7px;font-size:13px}
-.tabs button.on{background:#182231;color:var(--text)}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:18px}
-.panel h2{font-size:14px;margin:0 0 3px;font-weight:600}
-.panel .hint{color:var(--muted);font-size:12px;margin:0 0 16px}
+html,body{height:100%}
+body{
+  margin:0;color:var(--text);
+  background:
+    radial-gradient(1100px 620px at 12% -12%, #16233c 0%, rgba(22,35,60,0) 62%),
+    radial-gradient(900px 520px at 100% -6%, #0e2b25 0%, rgba(14,43,37,0) 58%),
+    var(--bg);
+  font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+}
+a{color:var(--accent);text-decoration:none}
+code,.mono{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;font-variant-ligatures:none}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:#1e2837;border-radius:8px;border:3px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:#2a3648;background-clip:content-box}
+
+/* ---------- shell ---------- */
+.shell{display:grid;grid-template-columns:236px minmax(0,1fr);min-height:100vh}
+.sidebar{
+  position:sticky;top:0;height:100vh;display:flex;flex-direction:column;gap:26px;
+  padding:22px 16px;border-right:1px solid var(--line-soft);
+  background:linear-gradient(180deg,rgba(13,18,25,.92),rgba(9,12,18,.75));
+  backdrop-filter:blur(8px);
+}
+.brand{display:flex;align-items:center;gap:11px;padding:2px 6px}
+.mark{
+  width:34px;height:34px;border-radius:11px;flex:none;display:grid;place-items:center;
+  background:linear-gradient(145deg,#4d8dff,#2dd4a7);color:#04121f;font-weight:800;font-size:15px;
+  box-shadow:0 6px 18px -8px rgba(77,141,255,.9), 0 1px 0 rgba(255,255,255,.35) inset;
+}
+.brand .name{font-size:14.5px;font-weight:650;letter-spacing:-.01em;line-height:1.1}
+.brand .ver{font-size:10.5px;color:var(--text-faint);letter-spacing:.04em;text-transform:uppercase}
+nav{display:flex;flex-direction:column;gap:2px}
+.nav{
+  display:flex;align-items:center;gap:10px;width:100%;text-align:left;
+  border:0;background:transparent;color:var(--text-dim);padding:9px 11px;border-radius:10px;
+  font:inherit;font-size:13.2px;cursor:pointer;transition:background .14s,color .14s;position:relative;
+}
+.nav svg{width:16px;height:16px;flex:none;opacity:.75}
+.nav:hover{background:#111823;color:var(--text)}
+.nav.on{background:#141d2b;color:#fff}
+.nav.on svg{opacity:1;color:var(--accent)}
+.nav.on::before{content:"";position:absolute;left:-16px;top:9px;bottom:9px;width:2px;border-radius:2px;background:linear-gradient(#4d8dff,#2dd4a7)}
+.side-foot{margin-top:auto;display:grid;gap:8px}
+.chip{
+  display:flex;justify-content:space-between;gap:8px;
+  font-size:11.2px;color:var(--text-dim);background:#0b1017;border:1px solid var(--line-soft);
+  border-radius:9px;padding:7px 10px;
+}
+.chip b{color:var(--text);font-weight:600;font-variant-numeric:tabular-nums}
+.signout{
+  background:transparent;border:1px solid var(--line);color:var(--text-dim);border-radius:9px;
+  padding:8px 10px;font:inherit;font-size:12.5px;cursor:pointer;transition:.14s;
+}
+.signout:hover{color:var(--text);border-color:#2b3a4e;background:#101722}
+
+main{padding:28px 30px 70px;max-width:1120px;width:100%}
+.page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin:0 0 22px}
+.page-head h1{margin:0;font-size:22px;font-weight:650;letter-spacing:-.025em}
+.page-head p{margin:5px 0 0;color:var(--text-dim);font-size:12.8px;max-width:60ch}
+section{animation:fade .22s ease}
+@keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+
+/* ---------- primitives ---------- */
+.card{
+  background:linear-gradient(180deg,#0f151e,#0c1118);
+  border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);
+  padding:20px 20px 18px;margin-bottom:16px;
+}
+.card > h2{font-size:13px;margin:0 0 3px;font-weight:650;letter-spacing:-.005em}
+.card > .hint{color:var(--text-faint);font-size:12.2px;margin:0 0 16px;max-width:75ch}
+button{font:inherit;cursor:pointer;border-radius:9px;border:1px solid var(--line);background:#131a24;color:var(--text);padding:8px 13px;transition:.14s}
+button:hover{background:#18212d;border-color:#28374a}
+button:active{transform:translateY(1px)}
+button.primary{
+  background:linear-gradient(180deg,#4d8dff,#3a76e6);border-color:#4d8dff;color:#fff;font-weight:600;
+  box-shadow:0 8px 22px -12px rgba(77,141,255,.95), 0 1px 0 rgba(255,255,255,.22) inset;
+}
+button.primary:hover{background:linear-gradient(180deg,#5c98ff,#417fe8)}
+button.danger{color:#ff8f8f;border-color:#33201f;background:#160f11}
+button.danger:hover{background:#25151a;border-color:#5a2c33;color:#ffb4b4}
+button.ghost{background:transparent;border-color:transparent;color:var(--text-dim)}
+button.ghost:hover{background:#141c27;color:var(--text)}
+button.icon{display:inline-grid;place-items:center;width:30px;height:30px;padding:0;border-radius:8px;border-color:transparent;background:transparent;color:var(--text-faint)}
+button.icon svg{width:14.5px;height:14.5px}
+button.icon:hover{background:#151d28;color:var(--text);border-color:#233043}
+button.icon.danger:hover{background:#241318;color:#ffb4b4;border-color:#4a282e}
+input,select{font:inherit;background:#080c12;border:1px solid var(--line);color:var(--text);border-radius:9px;padding:9px 11px;outline:none;width:100%;transition:.14s}
+input::placeholder{color:#4f5a6c}
+input:focus,select:focus{border-color:#365f9e;box-shadow:0 0 0 3px rgba(77,141,255,.15)}
+label{display:block;font-size:11.5px;color:var(--text-faint);margin:0 0 6px;letter-spacing:.03em;text-transform:uppercase;font-weight:600}
+.row{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));align-items:end}
+.muted{color:var(--text-faint)}
+.ok{color:var(--accent-2)} .bad{color:var(--danger)} .warnc{color:var(--warn)}
+.tiny{font-size:11.2px}
+
+/* ---------- metrics ---------- */
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:12px;margin-bottom:16px}
+.metric{
+  position:relative;overflow:hidden;padding:15px 16px;border-radius:13px;
+  background:linear-gradient(180deg,#0f151e,#0b1017);border:1px solid var(--line-soft);
+}
+.metric::after{content:"";position:absolute;inset:auto 0 0 0;height:2px;background:linear-gradient(90deg,#4d8dff00,#4d8dff66,#2dd4a766,#2dd4a700)}
+.metric .k{font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--text-faint);font-weight:600}
+.metric .v{font-size:23px;font-weight:640;letter-spacing:-.03em;margin-top:5px;font-variant-numeric:tabular-nums}
+
+/* ---------- key cards ---------- */
+.keys{display:grid;gap:10px}
+.key-card{
+  display:flex;flex-direction:column;padding:14px 16px 12px;border-radius:13px;border:1px solid var(--line-soft);
+  background:linear-gradient(180deg,#0e141d,#0b1016);transition:border-color .15s;
+}
+.key-card:hover{border-color:#253347}
+.key-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.key-actions{display:flex;gap:2px}
+.key-title{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.key-title b{font-size:14px;font-weight:640;letter-spacing:-.01em}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--accent-2);box-shadow:0 0 0 3px rgba(45,212,167,.14)}
+.dot.paused{background:var(--warn);box-shadow:0 0 0 3px rgba(247,185,85,.14)}
+.dot.expired{background:var(--danger);box-shadow:0 0 0 3px rgba(255,107,107,.14)}
+.pill{font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--text-dim);background:#101822;border:1px solid var(--line);padding:2px 7px;border-radius:999px;font-weight:600}
+.pill.paused{color:#ffd79a;border-color:#3a2f17;background:#1c1710}
+.pill.expired{color:#ffb4b4;border-color:#3a2226;background:#1c1214}
+.key-sub{color:var(--text-faint);font-size:12px;margin-top:4px;display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+.key-sub .sep{opacity:.4}
+.idtag{font-size:10.5px;color:#7fb4ff;background:#0f1a28;border:1px solid #1b2d43;border-radius:6px;padding:1px 6px}
+.urlrow{display:flex;align-items:center;gap:6px;margin-top:10px}
+.urlbox{
+  flex:1;min-width:0;font-size:11.8px;color:#93a3ba;background:#080c12;border:1px solid var(--line-soft);
+  border-radius:9px;padding:7px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.key-stats{display:flex;gap:26px;margin-top:12px;padding-top:10px;border-top:1px solid #111823}
+.key-stats .k{font-size:9.8px;letter-spacing:.07em;text-transform:uppercase;color:var(--text-faint);font-weight:600}
+.key-stats .v{font-size:12.4px;font-variant-numeric:tabular-nums;margin-top:2px;color:#cfd8e6}
+.key-stats .v em{font-style:normal;color:var(--text-faint)}
+.key-actions{display:flex;gap:6px}
+.copied{color:var(--accent-2)!important;border-color:#1f4a3c!important}
+
+/* ---------- tables ---------- */
 table{width:100%;border-collapse:collapse;font-size:13px}
-th{text-align:left;color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.06em;padding:0 10px 8px;border-bottom:1px solid var(--line)}
-td{padding:11px 10px;border-bottom:1px solid #161d28;vertical-align:middle}
+th{text-align:left;color:var(--text-faint);font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;padding:0 10px 9px;border-bottom:1px solid var(--line-soft)}
+td{padding:11px 10px;border-bottom:1px solid #121924;vertical-align:middle}
+tbody tr:hover td{background:#0c121a}
 tr:last-child td{border-bottom:0}
-.row{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));align-items:end}
-.url{font-size:12px;color:#8ea0b8;word-break:break-all;max-width:420px}
-.ok{color:var(--accent2)} .bad{color:var(--danger)} .warnc{color:var(--warn)}
-.bar{height:6px;background:#161d28;border-radius:99px;overflow:hidden;min-width:90px}
-.bar>i{display:block;height:100%;background:linear-gradient(90deg,#3b82f6,#22c55e)}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
-.stat{background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:13px 15px}
-.stat .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
-.stat .v{font-size:19px;font-weight:650;margin-top:3px;letter-spacing:-.02em}
+.num{font-variant-numeric:tabular-nums}
+.bar{height:5px;background:#141c27;border-radius:99px;overflow:hidden;min-width:80px}
+.bar>i{display:block;height:100%;background:linear-gradient(90deg,#4d8dff,#2dd4a7);transition:width .4s}
+
+/* ---------- misc ---------- */
+.list-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid var(--line-soft);border-radius:10px;background:#0b1017;font-size:12.6px}
+.searchres{display:grid;gap:7px;margin-top:14px;max-height:370px;overflow:auto}
+.empty{padding:26px 12px;text-align:center;color:var(--text-faint);font-size:12.6px}
+.empty svg{width:22px;height:22px;opacity:.5;display:block;margin:0 auto 8px}
 .hidden{display:none!important}
-.toast{position:fixed;right:18px;bottom:18px;background:#16202e;border:1px solid #2a3a51;padding:11px 15px;border-radius:10px;font-size:13px;box-shadow:0 10px 30px #0008;opacity:0;transform:translateY(8px);transition:.2s;z-index:9;max-width:420px}
+.split{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:20px;align-items:start}
+.qr{background:#fff;padding:9px;border-radius:12px;width:208px;height:208px;display:grid;place-items:center}
+.qr img{width:190px;height:190px;display:block}
+.codes{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:8px;margin-top:12px}
+.codes code{background:#080c12;border:1px solid var(--line);border-radius:8px;padding:8px;text-align:center;font-size:12.4px;letter-spacing:.05em}
+.toast{
+  position:fixed;right:20px;bottom:20px;z-index:20;padding:11px 15px;border-radius:11px;font-size:12.9px;
+  background:#111a26;border:1px solid #26374d;box-shadow:0 18px 46px -18px rgba(0,0,0,.95);
+  opacity:0;transform:translateY(10px);transition:.2s;max-width:420px;
+}
 .toast.on{opacity:1;transform:none}
-.toast.err{border-color:#4a2126;background:#241416}
-.login{max-width:370px;margin:12vh auto;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:26px}
-.login h1{margin-bottom:18px;font-size:17px}
-.login .field{margin-bottom:12px}
-.keytag{font-size:11px;background:#12202c;color:#7dd3fc;border:1px solid #1b3348;padding:2px 7px;border-radius:6px}
-.badge{font-size:10.5px;padding:2px 7px;border-radius:999px;border:1px solid #22303f;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
-.badge.active{color:#7ee2b8;border-color:#1c3a30;background:#0f1f1a}
-.badge.paused{color:#ffd28a;border-color:#3a2f17;background:#1f1a0f}
-.badge.expired{color:#ff9c9c;border-color:#3a1f22;background:#1f1214}
-.searchres{display:grid;gap:8px;margin-top:14px;max-height:360px;overflow:auto}
-.sr{display:flex;gap:12px;justify-content:space-between;align-items:center;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:9px 12px;font-size:12.5px}
-.sr .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.actions{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
-.muted{color:var(--muted)}
-.tiny{font-size:11px}
-.qr{background:#fff;padding:8px;border-radius:10px;width:212px;height:212px;display:grid;place-items:center}
-.qr img{width:196px;height:196px;display:block}
-.codes{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-top:12px}
-.codes code{background:#0b0f16;border:1px solid var(--line);border-radius:7px;padding:7px 9px;text-align:center;font-size:12.5px;letter-spacing:.04em}
-.split{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;align-items:start}
+.toast.err{border-color:#4a2126;background:#1e1214}
+
+/* ---------- login ---------- */
+.auth{min-height:100vh;display:grid;place-items:center;padding:24px}
+.auth-card{width:100%;max-width:372px;background:linear-gradient(180deg,#0f151e,#0b1017);border:1px solid var(--line);border-radius:18px;padding:28px;box-shadow:0 40px 90px -40px rgba(0,0,0,1)}
+.auth-card .brand{margin-bottom:22px}
+.auth-card h1{font-size:16px;margin:0 0 4px;font-weight:640;letter-spacing:-.01em}
+.auth-card .sub{margin:0 0 20px;color:var(--text-faint);font-size:12.4px}
+.field{margin-bottom:12px}
+.auth-err{min-height:17px;margin:10px 0 0;font-size:12px;color:var(--danger)}
+
+@media (max-width:900px){
+  .shell{grid-template-columns:1fr}
+  .sidebar{position:static;height:auto;flex-direction:row;align-items:center;gap:14px;padding:12px 14px;border-right:0;border-bottom:1px solid var(--line-soft);overflow-x:auto}
+  .sidebar .brand{padding:0}
+  nav{flex-direction:row;gap:4px}
+  .nav.on::before{display:none}
+  .nav span{display:none}
+  .side-foot{margin:0 0 0 auto;grid-auto-flow:column;gap:6px}
+  .chip{display:none}
+  main{padding:20px 16px 60px}
+  .key-card{grid-template-columns:1fr}
+  .key-side{align-items:flex-start}
+  .key-stats{text-align:left}
+  .split{grid-template-columns:1fr}
+}
 </style>
 </head>
 <body>
 
-<div id="login" class="login hidden">
-  <h1>Marlin admin</h1>
-  <div class="field">
-    <label>Password</label>
-    <input id="pw" type="password" autocomplete="current-password" autofocus>
+<!-- login -->
+<div id="login" class="auth hidden">
+  <div class="auth-card">
+    <div class="brand">
+      <div class="mark">M</div>
+      <div><div class="name">Marlin</div><div class="ver">Admin console</div></div>
+    </div>
+    <h1>Sign in</h1>
+    <p class="sub">Manage manifest keys and the streaming engine.</p>
+    <div class="field">
+      <label for="pw">Password</label>
+      <input id="pw" type="password" autocomplete="current-password" autofocus>
+    </div>
+    <div class="field hidden" id="code-row">
+      <label for="code">Two-factor code</label>
+      <input id="code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="123456 or a recovery code">
+    </div>
+    <button class="primary" style="width:100%;margin-top:6px" onclick="doLogin()">Sign in</button>
+    <p class="auth-err" id="loginerr"></p>
   </div>
-  <div class="field hidden" id="code-row">
-    <label>Two-factor code</label>
-    <input id="code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="123456 or a recovery code">
-  </div>
-  <button class="primary" style="width:100%" onclick="doLogin()">Sign in</button>
-  <p class="muted tiny" id="loginerr" style="min-height:18px;margin:10px 0 0"></p>
 </div>
 
-<div id="app" class="wrap hidden">
-  <header class="top">
-    <div class="logo">M</div>
-    <div>
-      <h1>Marlin</h1>
-      <div class="sub">self-hosted streaming hub · <span id="ver">—</span></div>
-    </div>
-    <div class="spacer"></div>
-    <span class="chip" id="chipcache">cache —</span>
-    <span class="chip" id="chipup">uptime —</span>
-    <button class="ghost" onclick="logout()">Sign out</button>
-  </header>
-
-  <div class="tabs">
-    <button class="on" data-tab="keys" onclick="tab('keys')">Manifest keys</button>
-    <button data-tab="indexers" onclick="tab('indexers')">Indexers</button>
-    <button data-tab="activity" onclick="tab('activity')">Activity</button>
-    <button data-tab="security" onclick="tab('security')">Security</button>
-    <button data-tab="settings" onclick="tab('settings')">Settings</button>
-  </div>
-
-  <!-- KEYS -->
-  <section id="tab-keys">
-    <div class="stats" style="margin-bottom:18px">
-      <div class="stat"><div class="k">Active keys</div><div class="v" id="s-keys">0</div></div>
-      <div class="stat"><div class="k">Torrents loaded</div><div class="v" id="s-tor">0</div></div>
-      <div class="stat"><div class="k">Cache used</div><div class="v" id="s-cache">0</div></div>
-      <div class="stat"><div class="k">Known titles</div><div class="v" id="s-media">0</div></div>
-    </div>
-
-    <div class="panel">
-      <h2>New manifest key</h2>
-      <p class="hint">Each key is its own Stremio/Nuvio addon URL with its own stats. Expired keys are deleted automatically.</p>
-      <div class="row">
-        <div><label>Label</label><input id="k-label" placeholder="living room tv"></div>
-        <div><label>Note (optional)</label><input id="k-note" placeholder="who / what device"></div>
-        <div><label>Expires</label>
-          <select id="k-expires">
-            <option value="">never</option>
-            <option value="1d">1 day</option>
-            <option value="7d">7 days</option>
-            <option value="30d">30 days</option>
-            <option value="90d">90 days</option>
-            <option value="1y">1 year</option>
-          </select>
-        </div>
-        <div><button class="primary" onclick="createKey()">Create key</button></div>
+<!-- app -->
+<div id="app" class="shell hidden">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="mark">M</div>
+      <div>
+        <div class="name">Marlin</div>
+        <div class="ver"><span id="ver">—</span></div>
       </div>
     </div>
-
-    <div class="panel">
-      <h2>Keys</h2>
-      <p class="hint">Pause keeps the key and its stats but stops it working. Revoke deletes it — the URL dies immediately and the entry is gone.</p>
-      <table>
-        <thead><tr><th>Key</th><th>Manifest URL</th><th>Expires</th><th>Used</th><th>Traffic</th><th></th></tr></thead>
-        <tbody id="keys"></tbody>
-      </table>
+    <nav>
+      <button class="nav on" data-tab="keys" onclick="tab('keys')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M11 12 20 3M15 7l3 3M18 4l3 3"/></svg>
+        <span>Manifest keys</span>
+      </button>
+      <button class="nav" data-tab="indexers" onclick="tab('indexers')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <span>Indexers</span>
+      </button>
+      <button class="nav" data-tab="activity" onclick="tab('activity')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        <span>Activity</span>
+      </button>
+      <button class="nav" data-tab="security" onclick="tab('security')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        <span>Security</span>
+      </button>
+      <button class="nav" data-tab="settings" onclick="tab('settings')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2" fill="var(--surface)"/><circle cx="15" cy="12" r="2" fill="var(--surface)"/><circle cx="8" cy="18" r="2" fill="var(--surface)"/></svg>
+        <span>Settings</span>
+      </button>
+    </nav>
+    <div class="side-foot">
+      <div class="chip"><span>Cache</span><b id="chipcache">—</b></div>
+      <div class="chip"><span>Uptime</span><b id="chipup">—</b></div>
+      <button class="signout" onclick="logout()">Sign out</button>
     </div>
-  </section>
+  </aside>
 
-  <!-- INDEXERS -->
-  <section id="tab-indexers" class="hidden">
-    <div class="panel">
-      <h2>Add / update an indexer</h2>
-      <p class="hint">Torznab works with Prowlarr, Jackett and nZEDb (paste the full <code>/api</code> URL and its key). <code>knaben</code> and <code>apibay</code> are public and need no key.</p>
-      <div class="row">
-        <div><label>Kind</label>
-          <select id="ix-kind"><option value="torznab">torznab</option><option value="knaben">knaben</option><option value="apibay">apibay</option></select>
-        </div>
-        <div><label>Name</label><input id="ix-name" placeholder="prowlarr"></div>
-        <div><label>URL</label><input id="ix-url" placeholder="http://prowlarr:9696/1/api"></div>
-        <div><label>API key</label><input id="ix-key" placeholder="optional for public indexers"></div>
+  <main>
+    <header class="page-head">
+      <div>
+        <h1 id="page-title">Manifest keys</h1>
+        <p id="page-sub">One addon URL per device, individually revocable.</p>
       </div>
-      <div style="height:12px"></div>
-      <div style="display:flex;gap:8px">
-        <button class="primary" onclick="saveIndexer()">Save indexer</button>
-        <button onclick="testIndexer()">Test with a search</button>
-      </div>
-      <div id="ixtest" class="searchres"></div>
-    </div>
+    </header>
 
-    <div class="panel">
-      <h2>Configured indexers</h2>
-      <p class="hint">Results from every enabled indexer are merged, deduped by infohash and ranked by quality + swarm health.</p>
-      <table>
-        <thead><tr><th>Name</th><th>Kind</th><th>URL</th><th>State</th><th></th></tr></thead>
-        <tbody id="indexers"></tbody>
-      </table>
-    </div>
-
-    <div class="panel">
-      <h2>Search tester</h2>
-      <p class="hint">Accepts a title or an IMDb id (<code>tt0111161</code>, series: <code>tt0944947:1:1</code>).</p>
-      <div class="row">
-        <div style="grid-column:span 2"><label>Query</label><input id="q" placeholder="tt0111161"></div>
-        <div><label>Type</label><select id="q-type"><option>movie</option><option>series</option></select></div>
-        <div><button onclick="search()">Search</button></div>
+    <!-- KEYS -->
+    <section id="tab-keys">
+      <div class="metrics">
+        <div class="metric"><div class="k">Active keys</div><div class="v" id="s-keys">0</div></div>
+        <div class="metric"><div class="k">Torrents</div><div class="v" id="s-tor">0</div></div>
+        <div class="metric"><div class="k">Cache</div><div class="v" id="s-cache">0</div></div>
+        <div class="metric"><div class="k">Known titles</div><div class="v" id="s-media">0</div></div>
       </div>
-      <div id="searchres" class="searchres"></div>
-    </div>
-  </section>
 
-  <!-- ACTIVITY -->
-  <section id="tab-activity" class="hidden">
-    <div class="panel">
-      <h2>Live torrents</h2>
-      <p class="hint">Idle torrents are dropped automatically; the disk cache is trimmed to the configured budget.</p>
-      <table>
-        <thead><tr><th>Release</th><th>Progress</th><th>Peers</th><th>Rate</th><th>Readers</th><th></th></tr></thead>
-        <tbody id="torrents"></tbody>
-      </table>
-    </div>
-    <div class="panel">
-      <h2>Quick play</h2>
-      <p class="hint">Paste a magnet link to get a direct HTTP stream URL (uses your first key).</p>
-      <div class="row">
-        <div style="grid-column:span 3"><label>Magnet</label><input id="magnet" placeholder="magnet:?xt=urn:btih:..."></div>
-        <div><button onclick="quickPlay()">Get stream URL</button></div>
-      </div>
-      <div id="quickres" class="searchres"></div>
-    </div>
-  </section>
-
-  <!-- SECURITY -->
-  <section id="tab-security" class="hidden">
-    <div class="panel">
-      <h2>Two-factor authentication</h2>
-      <p class="hint">TOTP — works with 1Password, Authy, Google Authenticator, Aegis, anything on <code>otpauth://</code>.</p>
-      <div id="tfa-off">
-        <button class="primary" onclick="begin2FA()">Enable two-factor</button>
-      </div>
-      <div id="tfa-setup" class="hidden">
-        <div class="split">
-          <div>
-            <label>1. Scan this in your authenticator</label>
-            <div class="qr" id="qr-box"></div>
-            <p class="tiny muted">Or enter the secret by hand: <code id="totp-secret"></code></p>
-            <label>2. Enter the 6-digit code it shows</label>
-            <input id="totp-code" inputmode="numeric" placeholder="123456" style="max-width:200px">
-            <div style="height:10px"></div>
-            <button class="primary" onclick="enable2FA()">Confirm and enable</button>
+      <div class="card">
+        <h2>New manifest key</h2>
+        <p class="hint">Each key is its own Stremio/Nuvio addon URL with its own stats. Expiry accepts <code>3d</code>, <code>2w</code>, <code>3m</code>, <code>2y</code> or a date like <code>2027-06-01</code>.</p>
+        <div class="row">
+          <div><label for="k-label">Label</label><input id="k-label" placeholder="living room tv"></div>
+          <div><label for="k-note">Note</label><input id="k-note" placeholder="who / what device"></div>
+          <div><label for="k-expires">Expires</label>
+            <input id="k-expires" list="expiry-presets" placeholder="never" autocomplete="off" spellcheck="false">
+            <datalist id="expiry-presets">
+              <option value="7d">7 days</option>
+              <option value="30d">30 days</option>
+              <option value="3m">3 months</option>
+              <option value="1y">1 year</option>
+              <option value="2y">2 years</option>
+            </datalist>
           </div>
-          <button class="ghost" onclick="cancel2FA()">Cancel</button>
+          <div><button class="primary" onclick="createKey()">Create key</button></div>
         </div>
       </div>
-      <div id="tfa-on" class="hidden">
-        <p style="margin:0 0 12px"><span class="ok">Two-factor is on.</span> <span class="muted tiny" id="recovery-left"></span></p>
-        <button class="danger" onclick="disable2FA()">Disable two-factor</button>
-      </div>
-      <div id="recovery-box" class="hidden">
-        <h2 style="margin-top:20px">Recovery codes</h2>
-        <p class="hint">Each of these signs you in once if you lose the authenticator. They are shown only now — store them somewhere safe.</p>
-        <div class="codes" id="recovery-codes"></div>
-      </div>
-    </div>
 
-    <div class="panel">
-      <h2>Signed-in sessions</h2>
-      <p class="hint">Every successful login is tracked. Revoking a session signs that browser out on its next request.</p>
-      <table>
-        <thead><tr><th>Device</th><th>IP</th><th>Last seen</th><th>Started</th><th></th></tr></thead>
-        <tbody id="sessions"></tbody>
-      </table>
-      <div style="margin-top:12px"><button class="danger" onclick="revokeOthers()">Sign out everywhere else</button></div>
-    </div>
-  </section>
-
-  <!-- SETTINGS -->
-  <section id="tab-settings" class="hidden">
-    <div class="panel">
-      <h2>Streaming</h2>
-      <p class="hint">Read-ahead is how much is pulled ahead of the playhead — larger means fewer stalls on seek, more RAM/bandwidth.</p>
-      <div class="row">
-        <div><label>Cache budget (GB)</label><input id="set-cache" type="number" min="0"></div>
-        <div><label>Drop idle torrents after (min)</label><input id="set-idle" type="number" min="1"></div>
-        <div><label>Read-ahead (MB)</label><input id="set-read" type="number" min="8"></div>
-        <div><button class="primary" onclick="saveSettings()">Save</button></div>
+      <div class="card">
+        <h2>Keys</h2>
+        <p class="hint">Pause keeps the key and its stats but stops it working. Revoke deletes it — the URL dies immediately and the entry is gone.</p>
+        <div id="keys" class="keys"></div>
       </div>
-      <p class="hint" style="margin-top:16px">Trackers are set at start-up via <code>MARLIN_TRACKERS</code>; DHT, PEX and LSD are always on.</p>
-    </div>
-  </section>
+    </section>
+
+    <!-- INDEXERS -->
+    <section id="tab-indexers" class="hidden">
+      <div class="card">
+        <h2>Add / update an indexer</h2>
+        <p class="hint">Torznab works with Prowlarr, Jackett and nZEDb (full <code>/api</code> URL plus its key). <code>knaben</code> and <code>apibay</code> are public and need no key.</p>
+        <div class="row">
+          <div><label for="ix-kind">Kind</label>
+            <select id="ix-kind"><option value="torznab">torznab</option><option value="knaben">knaben</option><option value="apibay">apibay</option></select>
+          </div>
+          <div><label for="ix-name">Name</label><input id="ix-name" placeholder="prowlarr"></div>
+          <div><label for="ix-url">URL</label><input id="ix-url" placeholder="http://prowlarr:9696/1/api"></div>
+          <div><label for="ix-key">API key</label><input id="ix-key" placeholder="optional for public indexers"></div>
+        </div>
+        <div style="height:12px"></div>
+        <div style="display:flex;gap:8px">
+          <button class="primary" onclick="saveIndexer()">Save indexer</button>
+          <button onclick="testIndexer()">Test with a search</button>
+        </div>
+        <div id="ixtest" class="searchres"></div>
+      </div>
+
+      <div class="card">
+        <h2>Configured indexers</h2>
+        <p class="hint">Results from every enabled indexer are merged, deduped by infohash and ranked by quality and swarm health.</p>
+        <table>
+          <thead><tr><th>Name</th><th>Kind</th><th>Endpoint</th><th>State</th><th></th></tr></thead>
+          <tbody id="indexers"></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h2>Search tester</h2>
+        <p class="hint">Accepts a title or an IMDb id (<code>tt0111161</code>, series: <code>tt0944947:1:1</code>).</p>
+        <div class="row">
+          <div style="grid-column:span 2"><label for="q">Query</label><input id="q" placeholder="tt0111161"></div>
+          <div><label for="q-type">Type</label><select id="q-type"><option>movie</option><option>series</option></select></div>
+          <div><button onclick="search()">Search</button></div>
+        </div>
+        <div id="searchres" class="searchres"></div>
+      </div>
+    </section>
+
+    <!-- ACTIVITY -->
+    <section id="tab-activity" class="hidden">
+      <div class="card">
+        <h2>Live torrents</h2>
+        <p class="hint">Idle torrents are dropped automatically; the disk cache is trimmed to the configured budget.</p>
+        <table>
+          <thead><tr><th>Release</th><th>Progress</th><th>Peers</th><th>Rate</th><th>Readers</th><th></th></tr></thead>
+          <tbody id="torrents"></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h2>Quick play</h2>
+        <p class="hint">Paste a magnet link to get a direct HTTP stream URL (uses your first key).</p>
+        <div class="row">
+          <div style="grid-column:span 3"><label for="magnet">Magnet</label><input id="magnet" placeholder="magnet:?xt=urn:btih:..."></div>
+          <div><button onclick="quickPlay()">Get stream URL</button></div>
+        </div>
+        <div id="quickres" class="searchres"></div>
+      </div>
+    </section>
+
+    <!-- SECURITY -->
+    <section id="tab-security" class="hidden">
+      <div class="card">
+        <h2>Two-factor authentication</h2>
+        <p class="hint">TOTP — works with 1Password, Authy, Google Authenticator, Aegis, anything on <code>otpauth://</code>.</p>
+        <div id="tfa-off">
+          <button class="primary" onclick="begin2FA()">Enable two-factor</button>
+        </div>
+        <div id="tfa-setup" class="hidden">
+          <div class="split">
+            <div>
+              <label>1 · Scan this in your authenticator</label>
+              <div class="qr" id="qr-box"></div>
+              <p class="tiny muted" style="margin:10px 0 16px">Or enter the secret by hand: <code id="totp-secret"></code></p>
+              <label for="totp-code">2 · Enter the 6-digit code</label>
+              <input id="totp-code" inputmode="numeric" placeholder="123456" style="max-width:180px">
+              <div style="height:12px"></div>
+              <button class="primary" onclick="enable2FA()">Confirm and enable</button>
+            </div>
+            <div><button class="ghost" onclick="cancel2FA()">Cancel</button></div>
+          </div>
+        </div>
+        <div id="tfa-on" class="hidden">
+          <div class="list-row">
+            <span><span class="ok">Two-factor is on.</span> <span class="tiny muted" id="recovery-left"></span></span>
+            <button class="danger" onclick="disable2FA()">Disable</button>
+          </div>
+        </div>
+        <div id="recovery-box" class="hidden">
+          <h2 style="margin-top:22px">Recovery codes</h2>
+          <p class="hint">Each signs you in once if you lose the authenticator. Shown only now — store them somewhere safe.</p>
+          <div class="codes" id="recovery-codes"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Signed-in sessions</h2>
+        <p class="hint">Every successful login is tracked. Revoking a session signs that browser out on its next request.</p>
+        <table>
+          <thead><tr><th>Device</th><th>IP</th><th>Last seen</th><th>Started</th><th></th></tr></thead>
+          <tbody id="sessions"></tbody>
+        </table>
+        <div style="margin-top:14px"><button class="danger" onclick="revokeOthers()">Sign out everywhere else</button></div>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="tab-settings" class="hidden">
+      <div class="card">
+        <h2>Streaming</h2>
+        <p class="hint">Read-ahead is how much is pulled ahead of the playhead — larger means fewer stalls on seek, more RAM and bandwidth.</p>
+        <div class="row">
+          <div><label for="set-cache">Cache budget (GB)</label><input id="set-cache" type="number" min="0"></div>
+          <div><label for="set-idle">Drop idle torrents (min)</label><input id="set-idle" type="number" min="1"></div>
+          <div><label for="set-read">Read-ahead (MB)</label><input id="set-read" type="number" min="8"></div>
+          <div><button class="primary" onclick="saveSettings()">Save</button></div>
+        </div>
+        <p class="hint" style="margin-top:16px">Trackers are set at start-up via <code>MARLIN_TRACKERS</code>; DHT, PEX and LSD are always on.</p>
+      </div>
+    </section>
+  </main>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -282,6 +456,23 @@ let state = {overview:null, security:null};
 const $ = s => document.querySelector(s);
 const esc = s => String(s??'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
+const ICON = {
+  copy:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M5 15H4.5A1.5 1.5 0 0 1 3 13.5v-9A1.5 1.5 0 0 1 4.5 3h9A1.5 1.5 0 0 1 15 4.5V5"/></svg>',
+  check:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+  pause:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M9 5v14M15 5v14"/></svg>',
+  play:'<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg>',
+  trash:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4.5A1.5 1.5 0 0 1 9.5 3h5A1.5 1.5 0 0 1 16 4.5V6m2.5 0 .8 13.1A1.9 1.9 0 0 1 17.4 21H6.6a1.9 1.9 0 0 1-1.9-1.9L5.5 6"/></svg>',
+  key:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M11 12 20 3M15 7l3 3M18 4l3 3"/></svg>',
+  search:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>'
+};
+const titles = {
+  keys:['Manifest keys','One addon URL per device, individually revocable.'],
+  indexers:['Indexers','Where Marlin searches for releases.'],
+  activity:['Activity','What the torrent engine is doing right now.'],
+  security:['Security','Two-factor login and signed-in sessions.'],
+  settings:['Settings','Cache budget, idle timeout and read-ahead.']
+};
+
 function toast(msg, isErr){
   const t = $('#toast'); t.textContent = msg; t.className = 'toast on' + (isErr?' err':'');
   clearTimeout(t._h); t._h = setTimeout(()=>t.className='toast', isErr?4200:2600);
@@ -289,7 +480,7 @@ function toast(msg, isErr){
 async function api(path, opts){
   const r = await fetch(path, Object.assign({headers:{'Content-Type':'application/json'}}, opts||{}));
   let j = null; try { j = await r.json(); } catch(e){}
-  if (r.status === 401 && j && j.twofa) return j;      // password ok, code needed
+  if (r.status === 401 && j && j.twofa) return j;
   if (r.status === 401) { showLogin(); throw new Error('signed out'); }
   if (!r.ok) throw new Error((j && j.error) || ('HTTP ' + r.status));
   return j;
@@ -307,17 +498,19 @@ async function doLogin(){
     const j = await r.json().catch(()=>({}));
     if (!r.ok) {
       if (j.twofa) { $('#code-row').classList.remove('hidden'); $('#code').focus(); $('#loginerr').textContent = 'Password accepted — enter your code.'; return; }
-      $('#loginerr').textContent = j.error || 'failed';
+      $('#loginerr').textContent = j.error || 'Sign-in failed';
       return;
     }
     showApp(); refresh();
-  } catch(e){ $('#loginerr').textContent = 'network error'; }
+  } catch(e){ $('#loginerr').textContent = 'Network error'; }
 }
 async function logout(){ await fetch('/admin/api/logout',{method:'POST'}); location.reload(); }
 
 function tab(name){
-  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+  document.querySelectorAll('.nav').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
   ['keys','indexers','activity','security','settings'].forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== name));
+  const t = titles[name] || ['Marlin',''];
+  $('#page-title').textContent = t[0]; $('#page-sub').textContent = t[1];
   if (name === 'security') loadSecurity();
   if (name === 'settings' && state.overview) fillSettings(state.overview);
 }
@@ -328,8 +521,8 @@ async function refresh(){
     if (!o || o.twofa) return;
     state.overview = o;
     $('#ver').textContent = 'v' + o.version;
-    $('#chipcache').textContent = 'cache ' + bytes(o.cache_bytes) + ' / ' + bytes(o.cache_max_bytes);
-    $('#chipup').textContent = 'up ' + uptime(o.uptime_seconds);
+    $('#chipcache').innerHTML = '<b>' + bytes(o.cache_bytes) + '</b>';
+    $('#chipup').innerHTML = '<b>' + uptime(o.uptime_seconds) + '</b>';
     $('#s-keys').textContent = o.active_keys;
     $('#s-tor').textContent = (o.torrents || []).length;
     $('#s-cache').textContent = bytes(o.cache_bytes);
@@ -339,7 +532,7 @@ async function refresh(){
     renderTorrents(o.torrents || []);
     if (!$('#set-cache').value) fillSettings(o);
   } catch(e){
-    if (e && e.message && e.message !== 'signed out') toast('refresh failed: ' + e.message, true);
+    if (e && e.message && e.message !== 'signed out') toast('Refresh failed: ' + e.message, true);
   }
 }
 
@@ -362,65 +555,84 @@ function ago(ts){
   if (d < 172800) return Math.round(d/3600) + 'h ago';
   return Math.round(d/86400) + 'd ago';
 }
-function expiryLabel(ts){
-  if (!ts) return '<span class="muted">never</span>';
+function expiry(ts){
+  if (!ts) return 'never expires';
   const left = ts - Date.now()/1000;
-  if (left <= 0) return '<span class="bad">expired</span>';
-  if (left < 86400) return '<span class="warnc">' + Math.round(left/3600) + 'h left</span>';
-  return Math.round(left/86400) + 'd left <span class="tiny muted">· ' + new Date(ts*1000).toLocaleDateString() + '</span>';
+  if (left <= 0) return 'expired';
+  if (left < 86400) return Math.round(left/3600) + 'h left';
+  if (left < 2592000) return Math.round(left/86400) + 'd left';
+  return new Date(ts*1000).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'});
 }
 
 function renderKeys(keys, base){
-  const tb = $('#keys');
-  if (!keys.length){ tb.innerHTML = '<tr><td colspan="6" class="muted">No keys yet.</td></tr>'; return; }
+  const box = $('#keys');
+  if (!keys.length){
+    box.innerHTML = '<div class="empty">'+ICON.key+'No keys yet — create one above and paste its manifest URL into Stremio.</div>';
+    return;
+  }
   const origin = base || location.origin;
-  tb.innerHTML = keys.map(k => {
+  box.innerHTML = keys.map(k => {
     const url = origin + '/k/' + k.token + '/manifest.json';
     const expired = k.expires_at && k.expires_at*1000 < Date.now();
-    const badge = expired ? '<span class="badge expired">expired</span>'
-      : k.status === 'paused' ? '<span class="badge paused">paused</span>'
-      : '<span class="badge active">active</span>';
-    return `<tr>
-      <td><b>${esc(k.label)}</b> ${badge}<br><span class="tiny muted">${esc(k.note||'')}</span><br><span class="keytag mono">${esc(k.id)}</span></td>
-      <td><div class="url mono">${esc(url)}</div></td>
-      <td class="tiny">${expiryLabel(k.expires_at)}</td>
-      <td class="tiny muted">${ago(k.last_used_at)}<br>${k.requests} req</td>
-      <td class="tiny">${bytes(k.bytes)}</td>
-      <td><div class="actions">
-        <button class="ghost" onclick="copy('${esc(url)}')">Copy</button>
-        <button class="ghost" onclick="pauseKey('${k.id}',${k.status==='paused'?0:1})">${k.status==='paused'?'Resume':'Pause'}</button>
-        <button class="danger" onclick="revokeKey('${k.id}','${esc(k.label)}')">Revoke</button>
-      </div></td></tr>`;
+    const paused = k.status === 'paused';
+    const dot = expired ? 'dot expired' : paused ? 'dot paused' : 'dot';
+    const pill = expired ? '<span class="pill expired">expired</span>'
+      : paused ? '<span class="pill paused">paused</span>' : '<span class="pill">active</span>';
+    return `<div class="key-card">
+      <div class="key-head">
+        <div class="key-title"><span class="${dot}"></span><b>${esc(k.label)}</b>${pill}<span class="idtag mono">${esc(k.id)}</span></div>
+        <div class="key-actions">
+          <button class="icon" title="${paused?'Resume':'Pause'}" onclick="pauseKey('${k.id}',${paused?0:1})">${paused?ICON.play:ICON.pause}</button>
+          <button class="icon danger" title="Revoke and delete" onclick="revokeKey('${k.id}','${esc(k.label)}')">${ICON.trash}</button>
+        </div>
+      </div>
+      <div class="key-sub">${esc(k.note || 'no note')}<span class="sep">·</span>${expiry(k.expires_at)}</div>
+      <div class="urlrow">
+        <code class="urlbox" title="${esc(url)}">${esc(url)}</code>
+        <button class="icon" title="Copy manifest URL" onclick="copyUrl(this,'${esc(url)}')">${ICON.copy}</button>
+      </div>
+      <div class="key-stats">
+        <div><div class="k">Last used</div><div class="v">${ago(k.last_used_at)}</div></div>
+        <div><div class="k">Requests</div><div class="v">${k.requests}</div></div>
+        <div><div class="k">Traffic</div><div class="v">${bytes(k.bytes)}</div></div>
+      </div>
+    </div>`;
   }).join('');
 }
 
 function renderIndexers(list){
   const tb = $('#indexers');
-  if (!list.length){ tb.innerHTML = '<tr><td colspan="5" class="muted">None configured — searches will return nothing.</td></tr>'; return; }
+  if (!list.length){
+    tb.innerHTML = '<tr><td colspan="5" class="empty">'+ICON.search+'No indexers configured — searches will return nothing.</td></tr>';
+    return;
+  }
   tb.innerHTML = list.map(i => `<tr>
     <td><b>${esc(i.name)}</b></td>
-    <td><span class="keytag">${esc(i.kind)}</span></td>
-    <td class="url mono">${esc(i.url || (i.kind === 'knaben' ? 'api.knaben.org (public)' : i.kind === 'apibay' ? 'apibay.org (public)' : '—'))}</td>
+    <td><span class="pill">${esc(i.kind)}</span></td>
+    <td class="tiny muted mono" style="max-width:320px;overflow:hidden;text-overflow:ellipsis">${esc(i.url || (i.kind === 'knaben' ? 'api.knaben.org (public)' : i.kind === 'apibay' ? 'apibay.org (public)' : 'default'))}</td>
     <td>${i.enabled?'<span class="ok">enabled</span>':'<span class="muted">off</span>'}</td>
-    <td><div class="actions">
+    <td><div class="key-actions" style="justify-content:flex-end">
       <button class="ghost" onclick="toggleIndexer('${i.id}',${i.enabled?0:1})">${i.enabled?'Disable':'Enable'}</button>
-      <button class="ghost" onclick="delIndexer('${i.id}')">✕</button>
+      <button class="icon ghost" title="Remove" onclick="delIndexer('${i.id}')">${ICON.trash}</button>
     </div></td></tr>`).join('');
 }
 
 function renderTorrents(list){
   const tb = $('#torrents');
-  if (!list || !list.length){ tb.innerHTML = '<tr><td colspan="6" class="muted">Nothing loaded right now.</td></tr>'; return; }
+  if (!list || !list.length){
+    tb.innerHTML = '<tr><td colspan="6" class="empty">Nothing loaded right now.</td></tr>';
+    return;
+  }
   tb.innerHTML = list.map(t => {
     const pct = Math.round((t.progress||0)*100);
     return `<tr>
-      <td><div class="t" style="max-width:330px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.name||t.infohash.slice(0,10))}</div>
+      <td><div style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600">${esc(t.name||t.infohash.slice(0,10))}</div>
         <span class="tiny muted mono">${t.infohash.slice(0,12)} · ${bytes(t.size)}</span></td>
-      <td><div class="bar"><i style="width:${pct}%"></i></div><span class="tiny muted">${pct}%</span></td>
-      <td>${t.peers} <span class="tiny muted">(${t.seeders} seeds)</span></td>
-      <td>${t.rate ? bytes(t.rate)+'/s' : '—'}</td>
-      <td>${t.readers ? '<span class="ok">'+t.readers+'</span>' : '<span class="muted">0</span>'}</td>
-      <td><div class="actions"><button class="ghost" onclick="dropTorrent('${t.infohash}')">Drop</button></div></td></tr>`;
+      <td style="min-width:120px"><div class="bar"><i style="width:${pct}%"></i></div><span class="tiny muted num">${pct}%</span></td>
+      <td class="num">${t.peers} <span class="tiny muted">(${t.seeders} seeds)</span></td>
+      <td class="num">${t.rate ? bytes(t.rate)+'/s' : '—'}</td>
+      <td class="num">${t.readers ? '<span class="ok">'+t.readers+'</span>' : '<span class="muted">0</span>'}</td>
+      <td><div class="key-actions" style="justify-content:flex-end"><button class="ghost" onclick="dropTorrent('${t.infohash}')">Drop</button></div></td></tr>`;
   }).join('');
 }
 
@@ -434,10 +646,10 @@ function fillSettings(o){
 async function createKey(){
   const label = $('#k-label').value.trim() || 'key';
   const note = $('#k-note').value.trim();
-  const expires = $('#k-expires').value;
+  const expires = $('#k-expires').value.trim();
   try {
     await api('/admin/api/keys', {method:'POST', body: JSON.stringify({label, note, expires})});
-    $('#k-label').value = ''; $('#k-note').value = '';
+    $('#k-label').value = ''; $('#k-note').value = ''; $('#k-expires').value = '';
     toast('Key created'); refresh();
   } catch(e){ toast(e.message, true); }
 }
@@ -449,8 +661,12 @@ async function revokeKey(id, label){
   if (!confirm('Revoke "'+label+'"?\n\nThis deletes the key permanently — the manifest URL stops working immediately and its stats are gone.')) return;
   try { await api('/admin/api/keys/'+id, {method:'DELETE'}); toast('Key revoked and deleted'); refresh(); } catch(e){ toast(e.message, true); }
 }
-function copy(text){
-  navigator.clipboard.writeText(text).then(()=>toast('Copied manifest URL')).catch(()=>toast('Copy failed',true));
+function copyUrl(btn, text){
+  navigator.clipboard.writeText(text).then(()=>{
+    const old = btn.innerHTML; btn.innerHTML = ICON.check; btn.classList.add('copied');
+    toast('Copied manifest URL');
+    setTimeout(()=>{ btn.innerHTML = old; btn.classList.remove('copied'); }, 1400);
+  }).catch(()=>toast('Copy failed',true));
 }
 
 /* ---- indexers ---- */
@@ -463,12 +679,12 @@ async function saveIndexer(){
 }
 async function testIndexer(){
   const body = {kind:$('#ix-kind').value, name:'test', url:$('#ix-url').value.trim(), api_key:$('#ix-key').value.trim()};
-  $('#ixtest').innerHTML = '<div class="muted tiny">searching…</div>';
+  $('#ixtest').innerHTML = '<div class="tiny muted">Searching…</div>';
   try {
     const r = await api('/admin/api/indexers/test?q=' + encodeURIComponent('big buck bunny'), {method:'POST', body: JSON.stringify(body)});
     if (r.error){ $('#ixtest').innerHTML = '<div class="bad tiny">'+esc(r.error)+'</div>'; return; }
-    $('#ixtest').innerHTML = (r.results||[]).map(x => `<div class="sr"><span class="t">${esc(x.Title)}</span><span class="tiny muted">${x.Seeders} seeds · ${bytes(x.Size)}</span></div>`).join('')
-      || '<div class="muted tiny">no results</div>';
+    $('#ixtest').innerHTML = (r.results||[]).map(x => `<div class="list-row"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.Title)}</span><span class="tiny muted num">${x.Seeders} seeds · ${bytes(x.Size)}</span></div>`).join('')
+      || '<div class="tiny muted">No results</div>';
   } catch(e){ $('#ixtest').innerHTML = '<div class="bad tiny">'+esc(e.message)+'</div>'; }
 }
 async function toggleIndexer(id, on){
@@ -483,13 +699,13 @@ async function delIndexer(id){
 }
 async function search(){
   const q = $('#q').value.trim(); if (!q) return;
-  $('#searchres').innerHTML = '<div class="muted tiny">searching…</div>';
+  $('#searchres').innerHTML = '<div class="tiny muted">Searching…</div>';
   try {
     const r = await api('/admin/api/search?q=' + encodeURIComponent(q) + '&type=' + $('#q-type').value);
-    const rows = (r.results||[]).map(x => `<div class="sr"><span class="t">${esc(x.Title)}</span>
-      <span class="tiny muted">${x.Seeders} seeds · ${bytes(x.Size)} · ${esc(x.Indexer)}</span></div>`).join('');
+    const rows = (r.results||[]).map(x => `<div class="list-row"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.Title)}</span>
+      <span class="tiny muted num" style="white-space:nowrap">${x.Seeders} seeds · ${bytes(x.Size)} · ${esc(x.Indexer)}</span></div>`).join('');
     const errs = (r.errors||[]).map(e => `<div class="warnc tiny">${esc(e)}</div>`).join('');
-    $('#searchres').innerHTML = (rows || '<div class="muted tiny">no results</div>') + errs;
+    $('#searchres').innerHTML = (rows || '<div class="tiny muted">No results</div>') + errs;
   } catch(e){ $('#searchres').innerHTML = '<div class="bad tiny">'+esc(e.message)+'</div>'; }
 }
 async function dropTorrent(ih){
@@ -499,7 +715,7 @@ async function quickPlay(){
   $('#quickres').innerHTML = '';
   try {
     const r = await api('/admin/api/play', {method:'POST', body: JSON.stringify({magnet: $('#magnet').value.trim()})});
-    $('#quickres').innerHTML = `<div class="sr"><a href="${esc(r.url)}" target="_blank" class="mono tiny">${esc(r.url)}</a></div>`;
+    $('#quickres').innerHTML = `<div class="list-row"><a href="${esc(r.url)}" target="_blank" class="mono tiny" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.url)}</a></div>`;
   } catch(e){ toast(e.message,true); }
 }
 
@@ -514,18 +730,18 @@ async function loadSecurity(){
     if (s.two_factor) $('#recovery-left').textContent = s.recovery_left + ' recovery codes left';
     const tb = $('#sessions');
     tb.innerHTML = (s.sessions||[]).map(x => `<tr>
-      <td><b>${esc(x.name||'Browser')}</b> ${x.id===s.current?'<span class="badge active">this device</span>':''}</td>
-      <td class="tiny mono">${esc(x.ip||'—')}</td>
+      <td><b>${esc(x.name||'Browser')}</b> ${x.id===s.current?'<span class="pill" style="color:#7ee2b8;border-color:#1c3a30;background:#0f1f1a">this device</span>':''}</td>
+      <td class="tiny muted mono">${esc(x.ip||'—')}</td>
       <td class="tiny muted">${ago(x.last_seen_at)}</td>
       <td class="tiny muted">${when(x.created_at)}</td>
-      <td><div class="actions">${x.id===s.current?'':'<button class="ghost" onclick="revokeSession(\''+x.id+'\')">Revoke</button>'}</div></td>
-    </tr>`).join('') || '<tr><td colspan="5" class="muted">No sessions.</td></tr>';
+      <td><div class="key-actions" style="justify-content:flex-end">${x.id===s.current?'':'<button class="ghost" onclick="revokeSession(\''+x.id+'\')">Revoke</button>'}</div></td>
+    </tr>`).join('') || '<tr><td colspan="5" class="empty">No sessions.</td></tr>';
   } catch(e){ toast(e.message, true); }
 }
 async function begin2FA(){
   try {
     const r = await api('/admin/api/2fa/begin', {method:'POST'});
-    $('#qr-box').innerHTML = '<img src="' + r.qr + '" alt="TOTP QR">';
+    $('#qr-box').innerHTML = '<img src="' + r.qr + '" alt="TOTP QR code">';
     $('#totp-secret').textContent = r.secret;
     $('#tfa-off').classList.add('hidden'); $('#tfa-on').classList.add('hidden');
     $('#tfa-setup').classList.remove('hidden'); $('#recovery-box').classList.add('hidden');

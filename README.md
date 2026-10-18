@@ -109,7 +109,7 @@ Everything the UI does is a small JSON API under `/admin/api`, session-cookie au
 ```
 POST   /admin/api/login              {"password":"...","code":"123456"}
 GET    /admin/api/overview           keys, indexers, torrents, cache, uptime
-POST   /admin/api/keys               {"label","note","expires":"30d"}
+POST   /admin/api/keys               {"label","note","expires":"3m"}
 POST   /admin/api/keys/{id}/pause    {"paused":true|false}
 DELETE /admin/api/keys/{id}          revoke = delete, effective immediately
 POST   /admin/api/indexers           {id?,kind,name,url,api_key,enabled}

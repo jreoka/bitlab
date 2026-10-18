@@ -335,44 +335,51 @@ func (s *Server) handleRevokeOtherSessions(w http.ResponseWriter, r *http.Reques
 
 // --- key expiry parsing ---
 
-// parseTTL accepts "12h", "7d", "2w", "3mo", "1y" or an absolute date
-// (2026-12-31). Empty means no expiry.
+// parseTTL accepts a duration ("12h", "3d", "2w", "3m", "2y", "1.5y",
+// "hours"/"days"/"months" spelled out) or an absolute date ("2027-06-01").
+// Bare m means months — this is a key lifetime, not a timeout.
 func parseTTL(v string) (time.Duration, error) {
-	v = strings.TrimSpace(v)
-	if v == "" || v == "never" {
+	raw := strings.ToLower(strings.TrimSpace(v))
+	if raw == "" || raw == "never" || raw == "none" || raw == "-" || raw == "0" {
 		return 0, nil
 	}
-	if d, err := time.Parse("2006-01-02", v); err == nil {
-		return time.Until(d), nil
-	}
-	unit := v[len(v)-1]
-	numPart := v[:len(v)-1]
-	mult := time.Duration(0)
-	switch {
-	case strings.HasSuffix(v, "mo"):
-		unit, numPart = 'm', strings.TrimSuffix(v, "mo")
-		if n, err := strconv.Atoi(numPart); err == nil {
-			return time.Duration(n) * 30 * 24 * time.Hour, nil
+	for _, layout := range []string{"2006-01-02", "2006/01/02", "02-01-2006", "2006-01-02 15:04", time.RFC3339} {
+		if d, err := time.Parse(layout, raw); err == nil {
+			until := time.Until(d)
+			if until <= 0 {
+				return 0, fmt.Errorf("that date has already passed")
+			}
+			return until, nil
 		}
-		return 0, fmt.Errorf("bad duration %q", v)
 	}
-	switch unit {
-	case 'h':
-		mult = time.Hour
-	case 'd':
-		mult = 24 * time.Hour
-	case 'w':
-		mult = 7 * 24 * time.Hour
-	case 'm':
-		mult = 30 * 24 * time.Hour
-	case 'y':
-		mult = 365 * 24 * time.Hour
-	default:
-		return 0, fmt.Errorf("bad duration %q (use 12h, 7d, 30d, 1y or a date)", v)
+	i := 0
+	for i < len(raw) && (raw[i] == '.' || (raw[i] >= '0' && raw[i] <= '9')) {
+		i++
 	}
-	n, err := strconv.Atoi(numPart)
+	num, unit := strings.TrimSpace(raw[:i]), strings.TrimSpace(raw[i:])
+	if num == "" || unit == "" {
+		return 0, fmt.Errorf("use a duration like 3d, 2w, 3m, 1y or a date like 2027-06-01")
+	}
+	n, err := strconv.ParseFloat(num, 64)
 	if err != nil || n <= 0 {
-		return 0, fmt.Errorf("bad duration %q", v)
+		return 0, fmt.Errorf("invalid amount %q", num)
 	}
-	return time.Duration(n) * mult, nil
+	mults := map[string]time.Duration{
+		"min": time.Minute, "mins": time.Minute, "minute": time.Minute, "minutes": time.Minute,
+		"h": time.Hour, "hr": time.Hour, "hrs": time.Hour, "hour": time.Hour, "hours": time.Hour,
+		"d": 24 * time.Hour, "day": 24 * time.Hour, "days": 24 * time.Hour,
+		"w": 7 * 24 * time.Hour, "wk": 7 * 24 * time.Hour, "week": 7 * 24 * time.Hour, "weeks": 7 * 24 * time.Hour,
+		"m": 30 * 24 * time.Hour, "mo": 30 * 24 * time.Hour, "mon": 30 * 24 * time.Hour,
+		"month": 30 * 24 * time.Hour, "months": 30 * 24 * time.Hour,
+		"y": 365 * 24 * time.Hour, "yr": 365 * 24 * time.Hour, "year": 365 * 24 * time.Hour, "years": 365 * 24 * time.Hour,
+	}
+	mult, ok := mults[unit]
+	if !ok {
+		return 0, fmt.Errorf("unknown unit %q — use h, d, w, m (months) or y", unit)
+	}
+	d := time.Duration(n * float64(mult))
+	if d > 50*365*24*time.Hour {
+		return 0, fmt.Errorf("that is longer than 50 years")
+	}
+	return d, nil
 }
