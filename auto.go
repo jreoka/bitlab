@@ -312,7 +312,8 @@ func (s *Server) pickAuto(ctx context.Context, typ, rawID, baseID, sid string, s
 			return autoPick{}, ctx.Err()
 		}
 		if ih, label, at, ok := s.store.GetAutoPick(rawID); ok {
-			if time.Since(time.Unix(at, 0)) < autoPickTTL && !s.store.StalledHashes(rawID, stallWindow)[ih] {
+			if time.Since(time.Unix(at, 0)) < autoPickTTL && !s.store.StalledHashes(rawID, stallWindow)[ih] &&
+				!s.releaseLacksEpisode(ih, season, ep) {
 				s.log.Printf("auto %s: using the decision made behind the list (%s)", rawID, ih[:8])
 				name, _, _, _ := s.store.GetMedia(ih)
 				return autoPick{InfoHash: ih, Title: name, Label: label}, nil
