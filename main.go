@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const version = "1.5.1"
+const version = "1.5.2"
 
 var defaultTrackers = []string{
 	"udp://tracker.opentrackr.org:1337/announce",
@@ -267,34 +267,23 @@ const landingHTML = `<!doctype html>
 <style>
 :root{color-scheme:dark}
 *{box-sizing:border-box}
-body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;color:#e6ebf4;
- background:radial-gradient(1100px 620px at 12% -12%,#16233c 0%,rgba(22,35,60,0) 62%),
- radial-gradient(900px 520px at 100% -6%,#0e2b25 0%,rgba(14,43,37,0) 58%),#06090f;
- font:15px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
-.card{width:100%;max-width:430px;background:linear-gradient(180deg,#0f151e,#0b1017);
- border:1px solid #1a2230;border-radius:20px;padding:32px;box-shadow:0 40px 90px -40px #000}
-.brand{display:flex;align-items:center;gap:12px;margin-bottom:24px}
-.mark{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;flex:none;
- background:linear-gradient(145deg,#4d8dff,#2dd4a7);color:#04121f;font-weight:800;font-size:17px;
- box-shadow:0 8px 22px -10px #4d8dff}
-.name{font-size:15px;font-weight:650;letter-spacing:-.01em}
-.ver{font-size:10.5px;color:#6b768a;text-transform:uppercase;letter-spacing:.07em}
-h1{margin:0 0 8px;font-size:20px;letter-spacing:-.025em;font-weight:650}
-p{margin:0 0 22px;color:#98a4b8;font-size:13.2px}
-ul{margin:0 0 24px;padding:0;list-style:none;display:grid;gap:9px;font-size:12.8px;color:#98a4b8}
-li{display:flex;gap:9px;align-items:flex-start}
-li b{color:#e6ebf4;font-weight:600}
-svg{width:15px;height:15px;flex:none;margin-top:3px;color:#2dd4a7}
-a.btn{display:block;text-align:center;background:linear-gradient(180deg,#4d8dff,#3a76e6);color:#fff;
- text-decoration:none;padding:11px 16px;border-radius:11px;font-weight:600;font-size:13.5px;
- box-shadow:0 10px 26px -14px #4d8dff,0 1px 0 rgba(255,255,255,.2) inset}
-</style></head><body><div class="card">
- <div class="brand"><div class="mark">M</div><div><div class="name">Marlin</div><div class="ver">Streaming hub</div></div></div>
+body{margin:0;min-height:100vh;display:grid;place-items:center;padding:32px;background:#0a0b0d;color:#e9ebef;
+ font:13.5px/1.65 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{width:100%;max-width:360px}
+.brand{display:flex;align-items:baseline;gap:9px;margin-bottom:30px}
+.mark{color:#5b8cff;font-weight:700;font-size:17px;letter-spacing:-.03em}
+.name{font-size:13.5px;font-weight:600}
+.ver{font-size:10px;color:#5d646f;text-transform:uppercase;letter-spacing:.09em}
+h1{margin:0 0 8px;font-size:16px;font-weight:600;letter-spacing:-.01em}
+p{margin:0 0 20px;color:#8b929e;font-size:12.5px;max-width:34ch}
+ul{margin:0 0 26px;padding:0;list-style:none;font-size:12.2px;color:#5d646f;display:grid;gap:5px}
+li::before{content:"— ";color:#3c424b}
+a{color:#5b8cff;text-decoration:none;font-size:12.5px}
+a:hover{text-decoration:underline}
+</style></head><body><div class="wrap">
+ <div class="brand"><span class="mark">M</span><span class="name">Marlin</span><span class="ver">hub</span></div>
  <h1>Private add-on server</h1>
  <p>Manifest keys are issued from the console. Install one in Stremio or Nuvio to start streaming.</p>
- <ul>
-  <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span><b>Per-device keys</b> — pause, expire or revoke any of them</span></li>
-  <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span><b>No debrid</b> — Marlin fetches and streams itself</span></li>
- </ul>
- <a class="btn" href="/admin">Open the console</a>
+ <ul><li>per-device keys — pause, expire or revoke</li><li>no debrid — Marlin fetches and streams itself</li></ul>
+ <a href="/admin">Open the console →</a>
 </div></body></html>`
