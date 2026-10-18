@@ -353,16 +353,18 @@ func (s *Server) serveTorrent(w http.ResponseWriter, r *http.Request, key Key, i
 	}
 	f := allFiles[idx]
 
-	// A range past the end cannot be served, and the reason is worth saying out
-	// loud: the player is still holding a byte offset from a different release
-	// (auto re-picking, or a click on another row). Demote the release so the
-	// next request chooses again instead of repeating this.
+	// A range past the end cannot be served. The release is fine; the player is
+	// holding a byte offset from a different file (it switched sources or rows
+	// with the player open), so say exactly that. Demoting the release here
+	// would punish a good torrent for a client-side state bug, and a player that
+	// retries would walk through several.
 	if start, ok := rangeStart(r.Header.Get("Range")); ok && start >= f.Length() {
-		s.log.Printf("play %s: range starts at %d but the file is %s — the player is holding an offset from another release",
-			ih[:8], start, humanBytes(f.Length()))
-		if mediaID != "" {
-			s.store.RecordStall(ih, mediaID)
+		who := mediaID
+		if who == "" {
+			who = "?"
 		}
+		s.log.Printf("play %s (%s): range starts at %d but this file is %s — the player is holding an offset from another release; reopening the episode resets it",
+			ih[:8], who, start, humanBytes(f.Length()))
 	}
 
 	act := s.engine.activity(ih)
