@@ -127,6 +127,20 @@ func TestMeasuredCandidateBeatsUnmeasured(t *testing.T) {
 	}
 }
 
+// A candidate demoted by a real measurement must not come back on the next pass.
+func TestChooseAutoSkipsDemotedCandidates(t *testing.T) {
+	slow := movieCand("Movie.2024.1080p.BluRay.REMUX.HEVC", 1080, 12, 60)
+	slow.probed, slow.measured, slow.gated = true, true, true
+
+	ok := movieCand("Movie.2024.1080p.WEB-DL.H.264", 1080, 8, 40)
+	ok.probed, ok.measured = true, true
+
+	best, _ := chooseAuto([]*autoCand{slow, ok}, nil)
+	if best != ok {
+		t.Fatalf("auto chose a demoted candidate")
+	}
+}
+
 func TestChooseAutoFallsBackWhenNothingPasses(t *testing.T) {
 	slow := movieCand("Movie.2024.1080p.WEB-DL.H.264", 1080, 8, 1)
 	best, fallback := chooseAuto([]*autoCand{slow}, nil)

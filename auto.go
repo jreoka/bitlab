@@ -157,6 +157,7 @@ type autoCand struct {
 	tracks   TrackInfo
 	probed   bool // tracks came from the container, not the filename
 	measured bool // have came from a probe, not from a seeder estimate
+	gated    bool // failed the gate on a real measurement
 	score    float64
 }
 
@@ -323,6 +324,24 @@ func (s *Server) pickAuto(ctx context.Context, typ, rawID, baseID string, season
 		best = fallback
 	}
 
+	// The one release whose throughput really matters is the one about to be
+	// streamed. If it won on an estimate, measure it now: this is the difference
+	// between a quick start and the player buffering through a cold metadata
+	// wait, and if it fails the gate on measurement the next candidate takes it.
+	if best != nil && !best.measured {
+		verifyCtx, vcancel := context.WithTimeout(ctx, 8*time.Second)
+		s.probeCand(verifyCtx, best)
+		vcancel()
+		if best.measured && best.have/best.need < gateHeadroom {
+			s.log.Printf("auto %s: %q measured %.1f/%.1f Mbps, below the gate", rawID, best.Title, best.have, best.need)
+			best.gated = true
+			if alt, _ := chooseAuto(cands, nil); alt != nil {
+				s.log.Printf("auto %s: switching to %q", rawID, alt.Title)
+				best = alt
+			}
+		}
+	}
+
 	s.store.SaveAutoPick(rawID, best.InfoHash, best.Label(), best.score)
 	return autoPick{
 		InfoHash: best.InfoHash,
@@ -343,6 +362,9 @@ func chooseAuto(cands []*autoCand, onSkip func(*autoCand, float64)) (best, fallb
 	// release the swarm demonstrably fed.
 	var measured *autoCand
 	for _, c := range cands {
+		if c.gated {
+			continue
+		}
 		c.evaluate()
 		if fallback == nil || c.score > fallback.score {
 			fallback = c
@@ -466,12 +488,13 @@ func (c *autoCand) Label() string {
 	}
 	// A seeder estimate is marked as such: "40 Mbps" means measured, "~40 Mbps"
 	// means we are guessing and the player may find out otherwise.
-	if c.have > 0 {
-		if c.measured {
-			bits = append(bits, fmt.Sprintf("%.0f Mbps", c.have))
-		} else {
-			bits = append(bits, fmt.Sprintf("~%.0f Mbps", c.have))
-		}
+	switch {
+	case c.have >= 100:
+		bits = append(bits, "cached") // already on disk; no swarm involved
+	case c.have > 0 && c.measured:
+		bits = append(bits, fmt.Sprintf("%.0f Mbps", c.have))
+	case c.have > 0:
+		bits = append(bits, fmt.Sprintf("~%.0f Mbps", c.have))
 	}
 	return strings.Join(bits, " · ")
 }

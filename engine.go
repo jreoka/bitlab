@@ -469,6 +469,13 @@ func (s *Server) watchPlayback(ctx context.Context, stop context.CancelFunc, mon
 				continue
 			}
 			starved++
+			// A cold torrent needs DHT and trackers before it can deliver
+			// anything, so "no first byte yet" gets a longer rope than a
+			// stream that has already started and then dried up.
+			deadline := 6
+			if cur == 0 {
+				deadline = 9 // 45s
+			}
 			switch {
 			case starved == 2:
 				// A bursty swarm recovers if we stop racing it piece by piece.
@@ -478,7 +485,7 @@ func (s *Server) watchPlayback(ctx context.Context, stop context.CancelFunc, mon
 				s.log.Printf("play %s: no data for %s, readahead raised to %s",
 					ih[:8], (time.Duration(starved) * tick).Round(time.Second),
 					humanBytes(s.cfg.ReadaheadBytes*3))
-			case starved >= 6:
+			case starved >= deadline:
 				elapsed := time.Since(start).Round(time.Second)
 				s.log.Printf("play %s: stalled (%s in %s, needs %.1f Mbps); ending stream",
 					ih[:8], humanBytes(cur), elapsed, needMbps)
