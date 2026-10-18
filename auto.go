@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -254,7 +255,7 @@ func (s *Server) pickAuto(ctx context.Context, typ, rawID, baseID, sid string, s
 	// file. The pin is only abandoned when the release is demoted and nothing is
 	// reading it any more.
 	if ih, ok := s.store.GetAutoSession(sid, rawID); ok {
-		demoted := s.store.StalledHashes(rawID, stallWindow)[ih]
+		demoted := s.store.StalledHashes(rawID, stallWindow)[ih] || s.releaseLacksEpisode(ih, season, ep)
 		// Keep the pin while the player is using it: readers attached, or a read
 		// within the last half minute. A player that has actually gone away (the
 		// app went back to the list, the episode was closed) gives up the pin, so
@@ -267,7 +268,8 @@ func (s *Server) pickAuto(ctx context.Context, typ, rawID, baseID, sid string, s
 	}
 
 	if ih, label, at, need, ok := s.store.GetAutoPickFull(rawID); ok {
-		if age := time.Since(time.Unix(at, 0)); age < autoPickTTL && !s.store.StalledHashes(rawID, stallWindow)[ih] {
+		if age := time.Since(time.Unix(at, 0)); age < autoPickTTL && !s.store.StalledHashes(rawID, stallWindow)[ih] &&
+			!s.releaseLacksEpisode(ih, season, ep) {
 			// A pick that has never been measured is a guess that got lucky
 			// enough to be clicked. Measure it once before trusting it again:
 			// six seconds here is cheaper than two hours of reusing a dead
@@ -332,7 +334,7 @@ func (s *Server) pickAuto(ctx context.Context, typ, rawID, baseID, sid string, s
 		return autoPick{}, fmt.Errorf("no releases for %q", title)
 	}
 
-	cands := s.autoCands(results, typ, rawID, season)
+	cands := s.autoCands(results, typ, rawID, season, ep)
 	if len(cands) == 0 {
 		return autoPick{}, fmt.Errorf("no candidates for %q", title)
 	}
@@ -517,9 +519,35 @@ func (s *Server) warmProbe(res Result) {
 		res.InfoHash[:8], ti.Width, ti.Height, ti.Video, ti.Audio, ti.Subs, ti.Mbps)
 }
 
+// releaseLacksEpisode uses a cached file list to prove that a release does not
+// contain a given episode. Unknown is not "lacks": only a numbering that is
+// present and does not match counts, the same rule the file chooser applies.
+func (s *Server) releaseLacksEpisode(ih string, season, ep int) bool {
+	if ep <= 0 {
+		return false
+	}
+	_, _, files, ok := s.store.GetMedia(ih)
+	if !ok || len(files) == 0 {
+		return false
+	}
+	numbered := 0
+	for _, f := range files {
+		if !isVideo(f.Path) {
+			continue
+		}
+		switch sig := episodeSignal(filepath.Base(f.Path), season, ep); {
+		case sig > 0:
+			return false
+		case sig < 0:
+			numbered++
+		}
+	}
+	return numbered > 0
+}
+
 // autoCands turns indexer rows into rankable candidates: cam/3D and demoted
 // releases are dropped here, before anything is measured.
-func (s *Server) autoCands(results []Result, typ, rawID string, season int) []*autoCand {
+func (s *Server) autoCands(results []Result, typ, rawID string, season, ep int) []*autoCand {
 	stalled := s.store.StalledHashes(rawID, stallWindow)
 	cands := make([]*autoCand, 0, len(results))
 	demoted := make([]*autoCand, 0, 4)
@@ -528,6 +556,12 @@ func (s *Server) autoCands(results []Result, typ, rawID string, season int) []*a
 		tier := classifyTier(r.Title)
 		if tier == tierCam {
 			skippedCam++
+			continue
+		}
+		if ep > 0 && s.releaseLacksEpisode(r.InfoHash, season, ep) {
+			// Its file list proves it does not contain this episode. Retrying it
+			// can never help, so it is not even a fallback.
+			skippedStall++
 			continue
 		}
 		if stalled[r.InfoHash] {
@@ -682,9 +716,10 @@ func (s *Server) applyProbe(c *autoCand, p Probe) {
 // has already run and the warm probes are in flight, so a click a few seconds
 // later can be served without deciding anything — which is the difference
 // between a two-second start and a cold search behind the player's spinner.
-func (s *Server) resolveAhead(rawID, typ string, season int, results []Result) {
+func (s *Server) resolveAhead(rawID, typ string, season, ep int, results []Result) {
 	if ih, _, at, ok := s.store.GetAutoPick(rawID); ok {
-		if time.Since(time.Unix(at, 0)) < autoPickTTL && !s.store.StalledHashes(rawID, stallWindow)[ih] {
+		if time.Since(time.Unix(at, 0)) < autoPickTTL && !s.store.StalledHashes(rawID, stallWindow)[ih] &&
+			!s.releaseLacksEpisode(ih, season, ep) {
 			return // a good pick exists; the click will reuse it
 		}
 	}
@@ -719,7 +754,7 @@ func (s *Server) resolveAhead(rawID, typ string, season int, results []Result) {
 		}
 	}
 
-	cands := s.autoCands(results, typ, rawID, season)
+	cands := s.autoCands(results, typ, rawID, season, ep)
 	if len(cands) == 0 {
 		return
 	}
