@@ -429,6 +429,25 @@ func (s *Store) SaveIndexer(i Indexer) (Indexer, error) {
 	return i, err
 }
 
+// UpsertIndexerByName inserts or updates an indexer identified by kind+name,
+// which is how MARLIN_INDEXERS is applied on every boot without duplicating rows.
+func (s *Store) UpsertIndexerByName(ix Indexer) error {
+	var id string
+	err := s.db.QueryRow(`SELECT id FROM indexers WHERE kind=? AND name=?`, ix.Kind, ix.Name).Scan(&id)
+	if err == nil {
+		ix.ID = id
+		_, err = s.db.Exec(`UPDATE indexers SET url=?,api_key=?,enabled=?,priority=? WHERE id=?`,
+			ix.URL, ix.APIKey, boolInt(ix.Enabled), ix.Priority, id)
+		return err
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	_, err = s.db.Exec(`INSERT INTO indexers(id,kind,name,url,api_key,enabled,priority) VALUES(?,?,?,?,?,?,?)`,
+		randHex(5), ix.Kind, ix.Name, ix.URL, ix.APIKey, boolInt(ix.Enabled), ix.Priority)
+	return err
+}
+
 func (s *Store) DeleteIndexer(id string) error {
 	_, err := s.db.Exec(`DELETE FROM indexers WHERE id=?`, id)
 	return err

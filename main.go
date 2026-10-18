@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,7 +15,7 @@ import (
 	"time"
 )
 
-const version = "1.6.5"
+const version = "1.6.6"
 
 var defaultTrackers = []string{
 	// HTTP(S) first: some hosts block outbound UDP, which kills both DHT and
@@ -70,6 +71,13 @@ func loadConfig() Config {
 			}
 		}
 	}
+	if raw := os.Getenv("MARLIN_INDEXERS"); raw != "" {
+		// Declarative indexer config, applied on every boot:
+		// [{"kind":"torznab","name":"prowlarr","url":"http://prowlarr:9696/1/api","api_key":"..."}]
+		if err := json.Unmarshal([]byte(raw), &cfg.Indexers); err != nil {
+			fmt.Fprintf(os.Stderr, "MARLIN_INDEXERS is not valid JSON: %v\n", err)
+		}
+	}
 	if len(cfg.Trackers) == 0 {
 		cfg.Trackers = defaultTrackers
 	}
@@ -100,7 +108,23 @@ func main() {
 	}
 	defer store.Close()
 
-	if env("MARLIN_SEED_INDEXER", "on") != "off" {
+	if len(cfg.Indexers) > 0 {
+		for _, ix := range cfg.Indexers {
+			ix.Enabled = true
+			if ix.Name == "" {
+				ix.Name = ix.Kind
+			}
+			if err := store.UpsertIndexerByName(ix); err != nil {
+				lg.Printf("indexer %q: %v", ix.Name, err)
+				continue
+			}
+			lg.Printf("indexer from MARLIN_INDEXERS: %s (%s)", ix.Name, ix.Kind)
+		}
+	}
+
+	// An explicit MARLIN_INDEXERS list is the whole configuration: do not add
+	// public defaults on top of it.
+	if len(cfg.Indexers) == 0 && env("MARLIN_SEED_INDEXER", "on") != "off" {
 		// knaben on first run, then nyaa once (anime needs its own index).
 		list, _ := store.ListIndexers()
 		if len(list) == 0 {

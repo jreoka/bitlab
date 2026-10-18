@@ -26,6 +26,7 @@ type Config struct {
 	ReadaheadBytes int64
 	PrebufferMB    int64
 	TorrentPort    int
+	Indexers       []Indexer
 	AdminPassword  string
 }
 

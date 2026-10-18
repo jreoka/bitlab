@@ -190,7 +190,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		CacheBytes: s.engine.CacheBytes(),
 		CacheMax:   s.engine.maxCacheBytes,
 		Uptime:     int64(time.Since(s.start).Seconds()),
-		Version:    "1.6.5",
+		Version:    "1.6.6",
 		BaseURL:    s.cfg.BaseURL,
 		KeyCount:   s.store.ActiveKeyCount(),
 		MediaRows:  s.store.MediaCacheCount(),
@@ -288,10 +288,23 @@ func (s *Server) handleDeleteKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSaveIndexer(w http.ResponseWriter, r *http.Request) {
-	var ix Indexer
-	if err := json.NewDecoder(r.Body).Decode(&ix); err != nil {
+	var body struct {
+		ID       string `json:"id"`
+		Kind     string `json:"kind"`
+		Name     string `json:"name"`
+		URL      string `json:"url"`
+		APIKey   string `json:"api_key"`
+		Enabled  *bool  `json:"enabled"`
+		Priority int    `json:"priority"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httpError(w, 400, "bad json")
 		return
+	}
+	ix := Indexer{ID: body.ID, Kind: body.Kind, Name: body.Name, URL: body.URL,
+		APIKey: body.APIKey, Priority: body.Priority, Enabled: true}
+	if body.Enabled != nil {
+		ix.Enabled = *body.Enabled
 	}
 	if ix.Name == "" {
 		ix.Name = "indexer"

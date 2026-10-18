@@ -22,8 +22,8 @@ Marlin ──► Cinemeta (title lookup) ──► indexers (knaben / torznab)
   own usage stats and can be paused (stops working, keeps its history), given an expiry (`1d`, `30d`,
   `1y`, or a date — the row is **deleted** when it lapses), or revoked, which deletes it outright.
   Revoking one leaves every other device working, and no key ever sees another key's traffic.
-- **Admin UI** at `/admin`: key lifecycle in one click, indexer management with a search tester, live
-  torrent list (peers, rate, progress), and streaming tunables. Nothing needs a restart.
+- **Admin UI** at `/admin`: key lifecycle in one click, live torrent list (peers, rate, progress) and
+  streaming tunables. Nothing needs a restart.
 - **Two-factor login** (TOTP, zero-config: scan the QR, keep the ten single-use recovery codes) and
   **tracked sessions** — every login shows up as a device with its IP and last-seen time, and can be
   revoked individually or all at once.
@@ -36,8 +36,9 @@ Marlin ──► Cinemeta (title lookup) ──► indexers (knaben / torznab)
 - **Quality ranking.** Resolution, source (REMUX/BluRay/WEB), codec, HDR and swarm health are scored;
   CAM/TS rips are pushed to the bottom, and for series the requested `SxxExx` is preferred over
   season packs.
-- **Indexers:** `knaben` (public meta-index, works out of the box), `torznab` (Prowlarr, Jackett,
-  nZEDb), `apibay`. Add as many as you like; results are merged and deduped by infohash.
+- **Indexers** are configuration, not UI: `knaben` (public meta-index, seeded on first run), `nyaa`
+  (anime), `torznab` (Prowlarr, Jackett, nZEDb) and `apibay`. Declare extra ones with
+  `MARLIN_INDEXERS`; results are merged, deduped by infohash and ranked by streamability.
 
 ## Quick start
 
@@ -89,9 +90,20 @@ persisted in SQLite.
 | `MARLIN_INFO_TIMEOUT` | `45` | seconds to wait for torrent metadata before answering 504 |
 | `MARLIN_TRACKERS` | public list | comma-separated announce URLs added to every magnet |
 | `MARLIN_SEED_INDEXER` | `on` | set `off` to start with no indexers |
+| `MARLIN_INDEXERS` | — | JSON array of indexers, upserted by kind+name on boot |
 
 Behind a reverse proxy, pass `X-Forwarded-Proto`/`X-Forwarded-Host` (or set `MARLIN_BASE_URL`) so the
 manifest hands out `https://` links.
+
+Adding indexers without a UI — `MARLIN_INDEXERS` is applied on every boot and upserts by name, so it
+is safe to leave in your compose file or manifest:
+
+```yaml
+MARLIN_INDEXERS: |
+  [{"kind":"torznab","name":"prowlarr","url":"http://prowlarr:9696/1/api","api_key":"abc123"}]
+```
+
+`kind` is one of `torznab`, `knaben`, `nyaa`, `apibay`; the public ones ignore `url`/`api_key`.
 
 ## Install
 
@@ -113,7 +125,7 @@ POST   /admin/api/keys               {"label","note","expires":"3m"}
 POST   /admin/api/keys/{id}/pause    {"paused":true|false}
 DELETE /admin/api/keys/{id}          revoke = delete, effective immediately
 POST   /admin/api/indexers           {id?,kind,name,url,api_key,enabled}
-POST   /admin/api/indexers/test?q=   search a single indexer without saving it
+DELETE /admin/api/indexers/{id}
 GET    /admin/api/search?q=tt0111161&type=movie
 POST   /admin/api/settings           {"cache_gb","idle_minutes","readahead_mb"}
 GET    /admin/api/security           2FA state + tracked sessions
