@@ -168,6 +168,13 @@ CREATE TABLE IF NOT EXISTS auto_picks (
 `); err != nil {
 		return err
 	}
+	// A saved pick remembers the bitrate it must sustain, so a probe that lands
+	// after the decision can tell whether the pick is still viable.
+	if !s.hasColumn("auto_picks", "need") {
+		if _, err := s.db.Exec(`ALTER TABLE auto_picks ADD COLUMN need REAL NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
 	// `status` replaces the old boolean `revoked`; revoking now deletes the key,
 	// so any key that was revoked under the old scheme goes away.
 	if !s.hasColumn("keys", "status") {
@@ -644,14 +651,43 @@ func (s *Store) StalledHashes(mediaID string, window time.Duration) map[string]b
 	return out
 }
 
-func (s *Store) SaveAutoPick(mediaID, ih, label string, score float64) {
-	s.db.Exec(`INSERT INTO auto_picks(media_id,infohash,label,score,picked_at) VALUES(?,?,?,?,?)
+func (s *Store) SaveAutoPick(mediaID, ih, label string, score, need float64) {
+	s.db.Exec(`INSERT INTO auto_picks(media_id,infohash,label,score,need,picked_at) VALUES(?,?,?,?,?,?)
 		ON CONFLICT(media_id) DO UPDATE SET infohash=excluded.infohash, label=excluded.label,
-		score=excluded.score, picked_at=excluded.picked_at`, mediaID, ih, label, score, time.Now().Unix())
+		score=excluded.score, need=excluded.need, picked_at=excluded.picked_at`,
+		mediaID, ih, label, score, need, time.Now().Unix())
+}
+
+// GetAutoPickFull also returns the bitrate the pick was chosen to sustain.
+func (s *Store) GetAutoPickFull(mediaID string) (ih, label string, at int64, need float64, ok bool) {
+	err := s.db.QueryRow(`SELECT infohash,label,picked_at,need FROM auto_picks WHERE media_id=?`, mediaID).
+		Scan(&ih, &label, &at, &need)
+	return ih, label, at, need, err == nil
 }
 
 func (s *Store) GetAutoPick(mediaID string) (ih, label string, at int64, ok bool) {
 	err := s.db.QueryRow(`SELECT infohash,label,picked_at FROM auto_picks WHERE media_id=?`, mediaID).
 		Scan(&ih, &label, &at)
 	return ih, label, at, err == nil
+}
+
+// PicksForHash returns the media ids whose auto pick is this release, with the
+// bitrate each must sustain. A probe that lands after the decision uses this to
+// notice that the pick cannot stream.
+func (s *Store) PicksForHash(ih string) map[string]float64 {
+	out := map[string]float64{}
+	rows, err := s.db.Query(`SELECT media_id,need,picked_at FROM auto_picks WHERE infohash=?`, ih)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var media string
+		var need float64
+		var at int64
+		if rows.Scan(&media, &need, &at) == nil && time.Since(time.Unix(at, 0)) < autoPickTTL {
+			out[media] = need
+		}
+	}
+	return out
 }

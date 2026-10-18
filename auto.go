@@ -246,11 +246,32 @@ func (s *Server) pickAuto(ctx context.Context, typ, rawID, baseID string, season
 	// release underneath it: the offset then points past the end of a smaller
 	// file and playback strands there. Only a stall (recorded by the watchdog,
 	// or by a range past EOF) makes auto choose again.
-	if ih, label, at, ok := s.store.GetAutoPick(rawID); ok {
+	if ih, label, at, need, ok := s.store.GetAutoPickFull(rawID); ok {
 		if age := time.Since(time.Unix(at, 0)); age < autoPickTTL && !s.store.StalledHashes(rawID, stallWindow)[ih] {
-			s.log.Printf("auto %s: reusing %s (%s, picked %s ago)", rawID, ih[:8], label, age.Round(time.Minute))
-			name, _, _, _ := s.store.GetMedia(ih) // a magnet dn hint, if we have one
-			return autoPick{InfoHash: ih, Title: name, Label: label}, nil
+			// A pick that has never been measured is a guess that got lucky
+			// enough to be clicked. Measure it once before trusting it again:
+			// six seconds here is cheaper than two hours of reusing a dead
+			// release because the decision was made before any probe landed.
+			trusted := true
+			if _, hasProbe := s.store.GetProbe(ih); !hasProbe {
+				c := &autoCand{Result: Result{InfoHash: ih, Title: label}, need: need, have: 0}
+				if c.need <= 0 {
+					c.need = 8
+				}
+				vctx, vcancel := context.WithTimeout(ctx, 6*time.Second)
+				s.probeCand(vctx, c)
+				vcancel()
+				if c.measured && c.have < c.need*gateHeadroom {
+					s.log.Printf("auto %s: pick %s measures %.1f/%.1f Mbps, choosing again", rawID, ih[:8], c.have, c.need)
+					s.store.RecordStall(ih, rawID)
+					trusted = false
+				}
+			}
+			if trusted {
+				s.log.Printf("auto %s: reusing %s (%s, picked %s ago)", rawID, ih[:8], label, age.Round(time.Minute))
+				name, _, _, _ := s.store.GetMedia(ih) // a magnet dn hint, if we have one
+				return autoPick{InfoHash: ih, Title: name, Label: label, Measured: true}, nil
+			}
 		}
 	}
 
@@ -297,7 +318,7 @@ func (s *Server) pickAuto(ctx context.Context, typ, rawID, baseID string, season
 	if best == nil {
 		return autoPick{}, fmt.Errorf("no usable release for %q", title)
 	}
-	s.store.SaveAutoPick(rawID, best.InfoHash, best.Label(), best.score)
+	s.store.SaveAutoPick(rawID, best.InfoHash, best.Label(), best.score, best.need)
 	return autoPick{
 		InfoHash: best.InfoHash,
 		Title:    best.Title,
@@ -421,6 +442,20 @@ func (s *Server) probeAndSave(ctx context.Context, res Result) (TrackInfo, bool)
 		}
 	}
 	s.store.SaveProbe(res.InfoHash, idx, ti)
+
+	// This probe may be arriving after auto already committed to the release.
+	// If the measurement says it cannot sustain the bitrate that pick was chosen
+	// for, demote it: the next tap chooses again instead of waiting out a
+	// two-hour TTL on a release the swarm never fed.
+	if ti.Mbps > 0 {
+		for mediaID, need := range s.store.PicksForHash(res.InfoHash) {
+			if need > 0 && ti.Mbps < need*gateHeadroom {
+				s.log.Printf("probe %s: %.1f Mbps cannot sustain %.1f Mbps for %s — demoting the pick",
+					res.InfoHash[:8], ti.Mbps, need, mediaID)
+				s.store.RecordStall(res.InfoHash, mediaID)
+			}
+		}
+	}
 	return ti, true
 }
 
@@ -459,6 +494,7 @@ func (s *Server) warmProbe(res Result) {
 func (s *Server) autoCands(results []Result, typ, rawID string, season int) []*autoCand {
 	stalled := s.store.StalledHashes(rawID, stallWindow)
 	cands := make([]*autoCand, 0, len(results))
+	demoted := make([]*autoCand, 0, 4)
 	skippedCam, skippedStall := 0, 0
 	for _, r := range results {
 		tier := classifyTier(r.Title)
@@ -468,24 +504,35 @@ func (s *Server) autoCands(results []Result, typ, rawID string, season int) []*a
 		}
 		if stalled[r.InfoHash] {
 			skippedStall++
+			demoted = append(demoted, s.newCand(r, tier, typ, season))
 			continue
 		}
-		c := &autoCand{
-			Result: r,
-			tier:   tier,
-			res:    resolutionFromName(r.Title),
-			need:   neededMbps(r, typ, season),
-			have:   estimatedMbps(r.Seeders),
-		}
-		if c.need <= 0 {
-			c.need = 8
-		}
-		cands = append(cands, c)
+		cands = append(cands, s.newCand(r, tier, typ, season))
+	}
+	if len(cands) == 0 && len(demoted) > 0 {
+		// Every release has failed here before. Refusing to serve anything is
+		// worse than trying the least recently demoted one: swarms recover.
+		s.log.Printf("auto %s: every candidate is demoted, retrying them anyway", rawID)
+		cands = demoted
 	}
 	if len(cands) == 0 && (skippedCam > 0 || skippedStall > 0) {
 		s.log.Printf("auto %s: no candidates (cam=%d stalled=%d)", rawID, skippedCam, skippedStall)
 	}
 	return cands
+}
+
+func (s *Server) newCand(r Result, tier srcTier, typ string, season int) *autoCand {
+	c := &autoCand{
+		Result: r,
+		tier:   tier,
+		res:    resolutionFromName(r.Title),
+		need:   neededMbps(r, typ, season),
+		have:   estimatedMbps(r.Seeders),
+	}
+	if c.need <= 0 {
+		c.need = 8
+	}
+	return c
 }
 
 // decide ranks candidates, measuring the plausible ones, and returns the
@@ -659,7 +706,7 @@ func (s *Server) resolveAhead(rawID, typ string, season int, results []Result) {
 			return
 		}
 	}
-	s.store.SaveAutoPick(rawID, best.InfoHash, best.Label(), best.score)
+	s.store.SaveAutoPick(rawID, best.InfoHash, best.Label(), best.score, best.need)
 	s.log.Printf("auto %s: pre-decided %s (%s)", rawID, best.Title, best.Label())
 }
 
@@ -741,7 +788,11 @@ func (s *Server) handleAuto(w http.ResponseWriter, r *http.Request) {
 		httpError(w, 404, "no playable release")
 		return
 	}
-	s.log.Printf("auto %s: chose %s (%s)", rawID, pick.Title, pick.Label)
+	name := pick.Title
+	if name == "" {
+		name = pick.InfoHash[:8]
+	}
+	s.log.Printf("auto %s: chose %s (%s)", rawID, name, pick.Label)
 	// An unmeasured pick has not proven it can deliver bytes — often because a
 	// probe could not even fetch its metadata. Do not make the player wait the
 	// full 45s timeout on the strength of a guess: ten seconds, then let the

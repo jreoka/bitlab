@@ -413,6 +413,28 @@ func TestProbeCacheRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPicksForHash(t *testing.T) {
+	s := testStore(t)
+	const ih = "cafebabecafebabecafebabecafebabecafebabe"
+
+	s.SaveAutoPick("tt1:1:1", ih, "2160p WEB-DL", 80, 24)
+	if got := s.PicksForHash(ih); got["tt1:1:1"] != 24 {
+		t.Fatalf("PicksForHash = %v", got)
+	}
+	if len(s.PicksForHash("0000000000000000000000000000000000000000")) != 0 {
+		t.Fatal("a different hash should have no picks")
+	}
+	// Demotion is keyed by (hash, media), so the same release can still be used
+	// for another episode.
+	s.RecordStall(ih, "tt1:1:1")
+	if !s.StalledHashes("tt1:1:1", 6*time.Hour)[ih] {
+		t.Fatal("stall not recorded")
+	}
+	if s.StalledHashes("tt1:1:2", 6*time.Hour)[ih] {
+		t.Fatal("stall leaked across episodes")
+	}
+}
+
 func TestAutoPickHistory(t *testing.T) {
 	s := testStore(t)
 	const ih = "ba5eba11ba5eba11ba5eba11ba5eba11ba5eba11"
@@ -420,8 +442,8 @@ func TestAutoPickHistory(t *testing.T) {
 	if _, _, _, ok := s.GetAutoPick("tt1"); ok {
 		t.Fatal("history should start empty")
 	}
-	s.SaveAutoPick("tt1", ih, "1080p WEB-DL · 3 audio", 81.5)
-	s.SaveAutoPick("tt1", ih, "2160p BluRay · 2 audio", 90) // upsert, same key
+	s.SaveAutoPick("tt1", ih, "1080p WEB-DL · 3 audio", 81.5, 9)
+	s.SaveAutoPick("tt1", ih, "2160p BluRay · 2 audio", 90, 24) // upsert, same key
 	gotIH, label, at, ok := s.GetAutoPick("tt1")
 	if !ok || gotIH != ih {
 		t.Fatalf("pick history = %q %v", gotIH, ok)
