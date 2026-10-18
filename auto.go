@@ -77,10 +77,12 @@ var (
 	// squashed frames side by side. They are 1080p BluRay by every other
 	// measure, which is exactly why auto has to name them and refuse.
 	re3DRelease = regexp.MustCompile(`(?i)\b(3d|hsbs|half-sbs|hou|half-ou|sbs)\b`)
-	reDiscRel   = regexp.MustCompile(`(?i)\b(remux|bluray|blu-ray|bdremux|bd25|bd50|bdmv|uhdbd|bdrip)\b`)
-	reWebDL     = regexp.MustCompile(`(?i)\b(web-?dl|webdl|dsnp|amzn|nf|hmax|atvp|pcok|itunes)\b`)
-	reRipRel    = regexp.MustCompile(`(?i)\b(webrip|brrip|dvdrip|hdrip|dvd|xvid|divx)\b`)
-	reTvRel     = regexp.MustCompile(`(?i)\b(hdtv|pdtv|dsr|sdtv|tvrip|hdtvrip)\b`)
+	// Anime fansub names carry the source as a bare tag — "[BD][1080p]",
+	// "[WEB][1080p]" — so the tag itself has to count.
+	reDiscRel = regexp.MustCompile(`(?i)\b(remux|bluray|blu-ray|bdremux|bd25|bd50|bdmv|uhdbd|bdrip|bd)\b`)
+	reWebDL   = regexp.MustCompile(`(?i)\b(web-?dl|webdl|web|dsnp|amzn|nf|hmax|atvp|pcok|itunes)\b`)
+	reRipRel  = regexp.MustCompile(`(?i)\b(webrip|brrip|dvdrip|hdrip|dvd|xvid|divx)\b`)
+	reTvRel   = regexp.MustCompile(`(?i)\b(hdtv|pdtv|dsr|sdtv|tvrip|hdtvrip)\b`)
 
 	reRes2160 = regexp.MustCompile(`(?i)\b(2160p|4k|uhd)\b`)
 	reRes1080 = regexp.MustCompile(`(?i)\b1080[pi]\b`)

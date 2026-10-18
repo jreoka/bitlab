@@ -26,6 +26,8 @@ func TestClassifyTier(t *testing.T) {
 		{"Dune.Part.Two.2024.DVDSCR.x264", tierCam},
 		{"Dune.Part.Two.2024.1080p.BluRay.3D.HSBS.H264", tierCam},
 		{"Dune.Part.Two.2024.HOU.1080p.BluRay", tierCam},
+		{"[ENTE] Re Zero Kara Hajimeru Isekai Seikatsu (2016) S01E01 [AV1] [OPUS] [BD] [1080p]", tierDisc},
+		{"[SubsPlease] Some Anime - 05 (1080p) [WEB] [AAC]", tierWeb},
 		{"Dune Part Two 2024 1080p", tierUnknown},
 	}
 	for _, c := range cases {
