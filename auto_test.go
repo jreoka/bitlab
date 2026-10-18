@@ -129,6 +129,43 @@ func TestMeasuredCandidateBeatsUnmeasured(t *testing.T) {
 	}
 }
 
+// When nothing clears the gate, the fallback must prefer "might actually
+// stream" over picture quality: a 4K that cannot obviously sustain its bitrate
+// is the classic minute-long spinner.
+func TestFallbackPrefersHeadroomOverResolution(t *testing.T) {
+	uhd := movieCand("Movie.2024.2160p.WEB-DL.H.265", 2160, 20, 25) // 22 Mbps need, 1.1x
+	hd := movieCand("Movie.2024.1080p.WEBRip.x264", 1080, 7, 6)     // 7.8 Mbps need, 0.77x
+	hd.measured = true
+
+	if got := chooseFallback([]*autoCand{uhd, hd}); got != hd {
+		t.Fatalf("fallback picked %q", got.Title)
+	}
+}
+
+// A 4K with real room still wins; the discount is about doubt, not resolution.
+func TestFallbackKeeps4KWhenItHasRoom(t *testing.T) {
+	uhd := movieCand("Movie.2024.2160p.BluRay.REMUX.HEVC", 2160, 20, 60) // 1.7x measured
+	uhd.measured = true
+	hd := movieCand("Movie.2024.1080p.WEB-DL.H.264", 1080, 7, 8)
+	hd.measured = true
+
+	if got := chooseFallback([]*autoCand{hd, uhd}); got != uhd {
+		t.Fatalf("fallback picked %q", got.Title)
+	}
+}
+
+// A measured release that is merely tight beats an unmeasured one that looks
+// comfortable on a seeder estimate.
+func TestFallbackTrustsMeasurement(t *testing.T) {
+	guess := movieCand("Movie.2024.1080p.WEB-DL.H.264", 1080, 7, 9)  // 1.15x, estimated
+	seen := movieCand("Movie.2024.1080p.WEB-DL.AAC-GRP", 1080, 7, 7) // 0.89x, measured
+	seen.measured = true
+
+	if got := chooseFallback([]*autoCand{guess, seen}); got != seen {
+		t.Fatalf("fallback picked %q", got.Title)
+	}
+}
+
 // A candidate demoted by a real measurement must not come back on the next pass.
 func TestChooseAutoSkipsDemotedCandidates(t *testing.T) {
 	slow := movieCand("Movie.2024.1080p.BluRay.REMUX.HEVC", 1080, 12, 60)

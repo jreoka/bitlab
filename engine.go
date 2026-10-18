@@ -313,12 +313,12 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 		epWanted, _ = strconv.Atoi(v)
 	}
 	s.serveTorrent(w, r, key, ih, r.URL.Query().Get("n"), r.URL.Query()["tr"],
-		wantIdx, seasonWanted, epWanted, r.URL.Query().Get("m"))
+		wantIdx, seasonWanted, epWanted, r.URL.Query().Get("m"), 0)
 }
 
 // serveTorrent streams one release to a player. handlePlay reaches it from a
 // concrete row; handleAuto reaches it after resolving the pick at click time.
-func (s *Server) serveTorrent(w http.ResponseWriter, r *http.Request, key Key, ih, hint string, trackers []string, wantIdx, seasonWanted, epWanted int, mediaID string) {
+func (s *Server) serveTorrent(w http.ResponseWriter, r *http.Request, key Key, ih, hint string, trackers []string, wantIdx, seasonWanted, epWanted int, mediaID string, infoWait time.Duration) {
 	var extra []string
 	if v, ok := s.hints.Load(ih); ok {
 		extra = v.([]string)
@@ -329,9 +329,14 @@ func (s *Server) serveTorrent(w http.ResponseWriter, r *http.Request, key Key, i
 		return
 	}
 
-	// Metadata is usually already warm by the time a player asks.
+	// Metadata is usually already warm by the time a player asks. An unproven
+	// release gets a shorter leash: waiting the full timeout means the player
+	// buffers for a minute before it can even show an error.
 	ctx := r.Context()
-	infoCtx, cancel := context.WithTimeout(ctx, s.cfg.InfoTimeout)
+	if infoWait <= 0 {
+		infoWait = s.cfg.InfoTimeout
+	}
+	infoCtx, cancel := context.WithTimeout(ctx, infoWait)
 	defer cancel()
 	if err := waitInfo(infoCtx, t); err != nil {
 		httpError(w, 504, "waiting for metadata: "+err.Error())
@@ -428,10 +433,18 @@ func (s *Server) serveTorrent(w http.ResponseWriter, r *http.Request, key Key, i
 	w.Header().Set("X-Bitlab-File", strconv.Itoa(idx))
 
 	cw := &countingWriter{ResponseWriter: w, n: &s.bytesOut, m: mon}
+	serveStart := time.Now()
 	// ServeContent probes the size with Seek(0, End) before writing anything.
 	// Answering that arithmetically avoids telling the torrent client to
 	// prioritise the tail of the file, which delays the first byte.
 	http.ServeContent(cw, r, name, time.Time{}, &sizedReader{r: reader, size: f.Length(), m: mon})
+	// A player that waited ten seconds and got nothing is the clearest possible
+	// signal the release is not streaming — often clearer than the watchdog,
+	// which never runs if the client hangs up first.
+	if cw.written == 0 && mediaID != "" && time.Since(serveStart) > 10*time.Second {
+		s.log.Printf("play %s (%s): no bytes in %s, demoting", ih[:8], mediaID, time.Since(serveStart).Round(time.Second))
+		s.store.RecordStall(ih, mediaID)
+	}
 	s.store.AddKeyBytes(key.ID, cw.written)
 	s.log.Printf("play %s key=%s file=%d served=%s range=%q", ih[:8], key.ID, idx, humanBytes(cw.written), r.Header.Get("Range"))
 }

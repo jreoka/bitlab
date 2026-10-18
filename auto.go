@@ -231,6 +231,10 @@ type autoPick struct {
 	Trackers []string
 	Mbps     float64
 	Label    string // e.g. "1080p WEB-DL · 3 audio · 12 subs"
+	// Measured says the swarm answered a probe for this release. An unmeasured
+	// pick gets a short metadata wait: if it cannot even supply that, the
+	// player should be told quickly instead of buffering for a minute.
+	Measured bool
 }
 
 // pickAuto assembles candidates, probes the plausible ones, and returns the
@@ -338,11 +342,13 @@ func (s *Server) pickAuto(ctx context.Context, typ, rawID, baseID string, season
 		s.log.Printf("auto %s: %s at %.1f/%.1f Mbps (%.2fx)%s below gate", rawID, c.Title, c.have, c.need, headroom, src)
 	})
 	if best == nil {
-		// Nothing clears the gate. Handing over the best-scoring release still
-		// beats an error: it may stream slowly, and the watchdog will demote it
-		// for the next attempt.
-		s.log.Printf("auto %s: nothing passed the gate, falling back to %q", rawID, fallback.Title)
-		best = fallback
+		// Nothing clears the gate. Take the release most likely to play at all
+		// rather than the prettiest one: at this point a 4K WEB-DL that might
+		// scrape 25 Mbps is exactly what leaves the player buffering.
+		if best = chooseFallback(cands); best == nil {
+			best = fallback // every candidate demoted: better to try than to 404
+		}
+		s.log.Printf("auto %s: nothing passed the gate, falling back to %q (%.2fx)", rawID, best.Title, best.have/best.need)
 	}
 
 	// The one release whose throughput really matters is the one about to be
@@ -350,10 +356,19 @@ func (s *Server) pickAuto(ctx context.Context, typ, rawID, baseID string, season
 	// between a quick start and the player buffering through a cold metadata
 	// wait, and if it fails the gate on measurement the next candidate takes it.
 	if best != nil && !best.measured {
-		verifyCtx, vcancel := context.WithTimeout(ctx, 8*time.Second)
+		verifyCtx, vcancel := context.WithTimeout(ctx, 12*time.Second)
 		s.probeCand(verifyCtx, best)
 		vcancel()
-		if best.measured && best.have/best.need < gateHeadroom {
+		switch {
+		case !best.measured:
+			// Its own header would not come down: the swarm is cold or dead.
+			// Serving it means the player waits for metadata that never lands,
+			// so hand over a release that did answer instead.
+			if alt := chooseFallback(cands); alt != nil && alt != best && alt.measured {
+				s.log.Printf("auto %s: %q did not respond to a probe, using %q instead", rawID, best.Title, alt.Title)
+				best = alt
+			}
+		case best.have/best.need < gateHeadroom:
 			s.log.Printf("auto %s: %q measured %.1f/%.1f Mbps, below the gate", rawID, best.Title, best.have, best.need)
 			best.gated = true
 			if alt, _ := chooseAuto(cands, nil); alt != nil {
@@ -370,6 +385,7 @@ func (s *Server) pickAuto(ctx context.Context, typ, rawID, baseID string, season
 		Trackers: best.Trackers,
 		Mbps:     best.have,
 		Label:    best.Label(),
+		Measured: best.measured,
 	}, nil
 }
 
@@ -411,6 +427,34 @@ func chooseAuto(cands []*autoCand, onSkip func(*autoCand, float64)) (best, fallb
 		return measured, fallback
 	}
 	return best, fallback
+}
+
+// chooseFallback ranks releases when nothing clears the gate. The question is no
+// longer "which is best" but "which is least likely to sit there buffering", so
+// headroom leads and unreachable 4K releases are discounted.
+func chooseFallback(cands []*autoCand) *autoCand {
+	var best *autoCand
+	bestScore := -1.0
+	for _, c := range cands {
+		if c.gated {
+			continue
+		}
+		ratio := c.have / c.need
+		// A 4K needs a lot of room to be worth its bitrate; below 1.5x it is
+		// the classic 60-second spinner.
+		if c.res >= 2160 && ratio < 1.5 {
+			ratio *= 0.5
+		}
+		// Evidence beats a guess: a measured release that is merely tight is a
+		// better bet than an unmeasured one that looks comfortable.
+		if c.measured {
+			ratio *= 1.3
+		}
+		if ratio > bestScore {
+			best, bestScore = c, ratio
+		}
+	}
+	return best
 }
 
 // prescore is the cheap ordering used to pick whom to probe: bitrate-gated
@@ -560,7 +604,13 @@ func (s *Server) handleAuto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Printf("auto %s: chose %s (%s)", rawID, pick.Title, pick.Label)
-	s.serveTorrent(w, r, k, pick.InfoHash, pick.Title, pick.Trackers, -1, season, ep, rawID)
+	// An unmeasured pick has not proven it can deliver bytes; do not make the
+	// player wait the full metadata timeout on the strength of a guess.
+	wait := time.Duration(0)
+	if !pick.Measured {
+		wait = 20 * time.Second
+	}
+	s.serveTorrent(w, r, k, pick.InfoHash, pick.Title, pick.Trackers, -1, season, ep, rawID, wait)
 }
 
 // autoRow is the only list entry. It is a plain HTTP URL, so it works in any
