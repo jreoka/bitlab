@@ -234,6 +234,25 @@ func isVideo(p string) bool {
 
 // chooseFile picks the file to serve: an explicit index if valid, else the
 // largest video file, skipping samples. Pure so it can be tested directly.
+// chooseFileForEpisode prefers the file whose name carries the requested
+// episode, which is how a season pack gets played correctly.
+func chooseFileForEpisode(paths []string, sizes []int64, want, season, ep int) (int, error) {
+	if want >= 0 && want < len(paths) {
+		return want, nil
+	}
+	if ep > 0 {
+		for i, p := range paths {
+			if !isVideo(p) {
+				continue
+			}
+			if episodeSignal(filepath.Base(p), season, ep) > 0 {
+				return i, nil
+			}
+		}
+	}
+	return chooseFile(paths, sizes, want)
+}
+
 func chooseFile(paths []string, sizes []int64, want int) (int, error) {
 	if len(paths) == 0 {
 		return 0, errors.New("torrent has no files")
@@ -285,6 +304,13 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 			wantIdx = n
 		}
 	}
+	seasonWanted, epWanted := 0, 0
+	if v := r.URL.Query().Get("s"); v != "" {
+		seasonWanted, _ = strconv.Atoi(v)
+	}
+	if v := r.URL.Query().Get("e"); v != "" {
+		epWanted, _ = strconv.Atoi(v)
+	}
 
 	var extra []string
 	if v, ok := s.hints.Load(ih); ok {
@@ -313,7 +339,7 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 		paths[i] = ff.DisplayPath()
 		sizes[i] = ff.Length()
 	}
-	idx, err := chooseFile(paths, sizes, wantIdx)
+	idx, err := chooseFileForEpisode(paths, sizes, wantIdx, seasonWanted, epWanted)
 	if err != nil {
 		httpError(w, 404, err.Error())
 		return

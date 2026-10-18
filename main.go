@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const version = "1.5.7"
+const version = "1.6.0"
 
 var defaultTrackers = []string{
 	"udp://tracker.opentrackr.org:1337/announce",
@@ -94,9 +94,27 @@ func main() {
 	}
 	defer store.Close()
 
-	if list, _ := store.ListIndexers(); len(list) == 0 && env("MARLIN_SEED_INDEXER", "on") != "off" {
-		if _, err := store.SaveIndexer(Indexer{Kind: "knaben", Name: "knaben", Enabled: true}); err != nil {
-			lg.Printf("seed indexer: %v", err)
+	if env("MARLIN_SEED_INDEXER", "on") != "off" {
+		// knaben on first run, then nyaa once (anime needs its own index).
+		list, _ := store.ListIndexers()
+		if len(list) == 0 {
+			if _, err := store.SaveIndexer(Indexer{Kind: "knaben", Name: "knaben", Enabled: true}); err != nil {
+				lg.Printf("seed indexer: %v", err)
+			}
+		}
+		if store.GetSetting("seeded:nyaa", "") == "" {
+			haveNyaa := false
+			for _, ix := range list {
+				if ix.Kind == "nyaa" {
+					haveNyaa = true
+				}
+			}
+			if !haveNyaa {
+				if _, err := store.SaveIndexer(Indexer{Kind: "nyaa", Name: "nyaa", Enabled: true}); err == nil {
+					lg.Printf("added nyaa indexer for anime")
+				}
+			}
+			store.SetSetting("seeded:nyaa", "1")
 		}
 	}
 

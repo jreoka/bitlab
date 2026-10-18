@@ -225,3 +225,14 @@ func TestDropDeadReleases(t *testing.T) {
 		t.Fatalf("should keep the only row: %+v", all)
 	}
 }
+
+// testServerXML serves a fixed body and hands back a server the caller can hit.
+func testServerXML(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/rss+xml")
+		fmt.Fprint(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}

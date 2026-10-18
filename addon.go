@@ -121,7 +121,22 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		query = fmt.Sprintf("%s %d", title, year)
 	}
 
-	results, errs := s.searchAll(ctx, query, typ, season, ep, baseID)
+	queries := []string{query}
+	if typ == "series" && season > 0 {
+		aliases := s.animeAliases(ctx, title)
+		for i, alias := range aliases {
+			if i >= 2 {
+				break
+			}
+			queries = append(queries, fmt.Sprintf("%s S%02dE%02d", alias, season, ep))
+		}
+		// Release groups write anime as "Show - 04" far more often than "SxxE04",
+		// so one alias is searched by name alone and filtered by episode later.
+		if len(aliases) > 0 {
+			queries = append(queries, aliases[0])
+		}
+	}
+	results, errs := s.searchAll(ctx, queries, typ, season, ep, baseID)
 	for _, e := range errs {
 		s.log.Printf("stream %s: %s", rawID, e)
 	}
@@ -148,6 +163,10 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			display = fmt.Sprintf("%s (%d)", title, year)
 		}
 		link := fmt.Sprintf("%s/k/%s/play/%s?n=%s", base, k.Token, res.InfoHash, url.QueryEscape(truncate(res.Title, 120)))
+		if typ == "series" && season > 0 {
+			// Tells the play handler which file to pick inside a season pack.
+			link += fmt.Sprintf("&s=%d&e=%d", season, ep)
+		}
 		if _, _, files, ok := s.store.GetMedia(res.InfoHash); ok {
 			if idx, ok := bestCachedFile(files); ok {
 				link += "&f=" + strconv.Itoa(idx)

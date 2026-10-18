@@ -329,10 +329,10 @@ tr:last-child td{border-bottom:0}
     <section id="tab-indexers" class="hidden">
       <div class="card">
         <h2>Add / update an indexer</h2>
-        <p class="hint">Torznab works with Prowlarr, Jackett and nZEDb (full <code>/api</code> URL plus its key). <code>knaben</code> and <code>apibay</code> are public and need no key.</p>
+        <p class="hint">Torznab works with Prowlarr, Jackett and nZEDb (full <code>/api</code> URL plus its key). <code>knaben</code>, <code>nyaa</code> and <code>apibay</code> are public and need no key.</p>
         <div class="row">
           <div><label for="ix-kind">Kind</label>
-            <select id="ix-kind"><option value="torznab">torznab</option><option value="knaben">knaben</option><option value="apibay">apibay</option></select>
+            <select id="ix-kind"><option value="torznab">torznab</option><option value="knaben">knaben</option><option value="nyaa">nyaa (anime)</option><option value="apibay">apibay</option></select>
           </div>
           <div><label for="ix-name">Name</label><input id="ix-name" placeholder="prowlarr"></div>
           <div><label for="ix-url">URL</label><input id="ix-url" placeholder="http://prowlarr:9696/1/api"></div>
@@ -611,7 +611,7 @@ function renderIndexers(list){
   tb.innerHTML = list.map(i => `<tr>
     <td><b>${esc(i.name)}</b></td>
     <td><span class="pill">${esc(i.kind)}</span></td>
-    <td class="tiny muted mono" style="max-width:320px;overflow:hidden;text-overflow:ellipsis">${esc(i.url || (i.kind === 'knaben' ? 'api.knaben.org (public)' : i.kind === 'apibay' ? 'apibay.org (public)' : 'default'))}</td>
+    <td class="tiny muted mono" style="max-width:320px;overflow:hidden;text-overflow:ellipsis">${esc(i.url || (i.kind === 'knaben' ? 'api.knaben.org (public)' : i.kind === 'nyaa' ? 'nyaa.si (public)' : i.kind === 'apibay' ? 'apibay.org (public)' : 'default'))}</td>
     <td>${i.enabled?'<span class="ok">enabled</span>':'<span class="muted">off</span>'}</td>
     <td><div class="key-actions" style="justify-content:flex-end">
       <button class="ghost" onclick="toggleIndexer('${i.id}',${i.enabled?0:1})">${i.enabled?'Disable':'Enable'}</button>

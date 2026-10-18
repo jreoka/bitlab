@@ -179,7 +179,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		CacheBytes: s.engine.CacheBytes(),
 		CacheMax:   s.engine.maxCacheBytes,
 		Uptime:     int64(time.Since(s.start).Seconds()),
-		Version:    "1.5.7",
+		Version:    "1.6.0",
 		BaseURL:    s.cfg.BaseURL,
 		KeyCount:   s.store.ActiveKeyCount(),
 		MediaRows:  s.store.MediaCacheCount(),
@@ -324,7 +324,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			q = title
 		}
 	}
-	res, errs := s.searchAll(ctx, q, typ, season, ep, imdb)
+	res, errs := s.searchAll(ctx, []string{q}, typ, season, ep, imdb)
 	writeJSON(w, 200, map[string]any{"query": q, "count": len(res), "results": res, "errors": errs})
 }
 

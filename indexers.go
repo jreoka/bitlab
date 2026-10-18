@@ -35,7 +35,13 @@ var videoExts = map[string]bool{
 }
 
 // searchAll fans out across every enabled indexer and merges the results.
-func (s *Server) searchAll(ctx context.Context, q string, typ string, season, ep int, imdbID string) ([]Result, []string) {
+func (s *Server) searchAll(ctx context.Context, queries []string, typ string, season, ep int, imdbID string) ([]Result, []string) {
+	if len(queries) == 0 {
+		return nil, []string{"empty query"}
+	}
+	if len(queries) > 4 {
+		queries = queries[:4]
+	}
 	indexers, err := s.store.ListIndexers()
 	if err != nil {
 		return nil, []string{err.Error()}
@@ -55,17 +61,21 @@ func (s *Server) searchAll(ctx context.Context, q string, typ string, season, ep
 		err  error
 		name string
 	}
-	ch := make(chan out, len(enabled))
+	// Every query runs against every indexer: anime needs all of its names
+	// (romaji, English, synonyms) because release titles use any of them.
+	ch := make(chan out, len(enabled)*len(queries))
 	var wg sync.WaitGroup
 	for _, ix := range enabled {
-		wg.Add(1)
-		go func(ix Indexer) {
-			defer wg.Done()
-			c, cancel := context.WithTimeout(ctx, 15*time.Second)
-			defer cancel()
-			r, err := s.searchIndexer(c, ix, q, typ, season, ep, imdbID)
-			ch <- out{res: r, err: err, name: ix.Name}
-		}(ix)
+		for _, q := range queries {
+			wg.Add(1)
+			go func(ix Indexer, q string) {
+				defer wg.Done()
+				c, cancel := context.WithTimeout(ctx, 15*time.Second)
+				defer cancel()
+				r, err := s.searchIndexer(c, ix, q, typ, season, ep, imdbID)
+				ch <- out{res: r, err: err, name: ix.Name}
+			}(ix, q)
+		}
 	}
 	wg.Wait()
 	close(ch)
@@ -92,6 +102,19 @@ func (s *Server) searchAll(ctx context.Context, q string, typ string, season, ep
 	for i := range all {
 		all[i].Score = scoreResult(all[i], typ, season, ep)
 	}
+	// If we know which episode we want and some release matches it, drop the
+	// ones that are clearly a different episode or a season pack. Anime naming
+	// ("Show - 04", "Show S01E04") varies, so this is judged per title.
+	if typ == "series" && season > 0 {
+		keep := make([]Result, 0, len(all))
+		for _, r := range all {
+			if episodeSignal(r.Title, season, ep) < 0 {
+				continue // a different episode, a different season, or a pack
+			}
+			keep = append(keep, r)
+		}
+		all = keep
+	}
 	sortResults(all)
 	all = dropDead(all)
 	if len(all) > 40 {
@@ -117,6 +140,8 @@ func dropDead(rs []Result) []Result {
 
 func (s *Server) searchIndexer(ctx context.Context, ix Indexer, q string, typ string, season, ep int, imdbID string) ([]Result, error) {
 	switch ix.Kind {
+	case "nyaa":
+		return nyaaSearch(ctx, s.http, ix, q)
 	case "knaben":
 		return knabenSearch(ctx, s.http, ix, q)
 	case "apibay":
@@ -346,6 +371,9 @@ func scoreResult(r Result, typ string, season, ep int) float64 {
 		}
 	}
 	if typ == "series" && season > 0 {
+		if reSeason.MatchString(r.Title) && !reSxxExx.MatchString(r.Title) {
+			score -= 350 // a pack: playable, but not the episode itself
+		}
 		tag := fmt.Sprintf("s%02de%02d", season, ep)
 		if strings.Contains(strings.ToLower(strings.ReplaceAll(r.Title, " ", "")), tag) {
 			score += 400
@@ -484,4 +512,145 @@ func trackersFromMagnet(m string) []string {
 		return nil
 	}
 	return u.Query()["tr"]
+}
+
+// ---------- nyaa (anime, no key) ----------
+
+type nyaaItem struct {
+	Title    string `xml:"title"`
+	Link     string `xml:"link"`
+	InfoHash string `xml:"infoHash"`
+	Seeders  int    `xml:"seeders"`
+	Size     string `xml:"size"`
+	Category string `xml:"category"`
+	Trusted  string `xml:"trusted"`
+}
+
+func nyaaSearch(ctx context.Context, hc *http.Client, ix Indexer, q string) ([]Result, error) {
+	base := strings.TrimRight(ix.URL, "/")
+	if base == "" {
+		base = "https://nyaa.si"
+	}
+	cat := "1_2" // anime, english-translated
+	if strings.HasPrefix(strings.TrimPrefix(ix.URL, base), "/c=") {
+		cat = strings.TrimPrefix(strings.TrimPrefix(ix.URL, base), "/c=")
+		base = strings.TrimRight(strings.TrimSuffix(base, "/c="+cat), "/")
+	}
+	u := base + "/?page=rss&q=" + url.QueryEscape(q) + "&c=" + url.QueryEscape(cat) + "&f=0&s=seeders&o=desc"
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) marlin/1.0")
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("http %d", resp.StatusCode)
+	}
+	body, err := readAllLimit(resp.Body, 8<<20)
+	if err != nil {
+		return nil, err
+	}
+	var feed struct {
+		Items []nyaaItem `xml:"channel>item"`
+	}
+	if err := xml.Unmarshal(body, &feed); err != nil {
+		return nil, fmt.Errorf("bad xml: %w", err)
+	}
+	var out []Result
+	for _, it := range feed.Items {
+		ih := strings.ToLower(strings.TrimSpace(it.InfoHash))
+		if len(ih) != 40 {
+			continue
+		}
+		out = append(out, Result{
+			Title:    strings.TrimSpace(it.Title),
+			InfoHash: ih,
+			Size:     parseSize(it.Size),
+			Seeders:  it.Seeders,
+			Indexer:  ix.Name,
+		})
+	}
+	return out, nil
+}
+
+// parseSize turns "1.5 GiB" / "300 MiB" / "1,024 KiB" into bytes.
+func parseSize(s string) int64 {
+	s = strings.TrimSpace(s)
+	fields := strings.Fields(s)
+	if len(fields) != 2 {
+		return 0
+	}
+	num, err := strconv.ParseFloat(strings.ReplaceAll(fields[0], ",", ""), 64)
+	if err != nil {
+		return 0
+	}
+	mult := float64(1)
+	switch strings.ToLower(fields[1]) {
+	case "b":
+		mult = 1
+	case "kib", "kb":
+		mult = 1 << 10
+	case "mib", "mb":
+		mult = 1 << 20
+	case "gib", "gb":
+		mult = 1 << 30
+	case "tib", "tb":
+		mult = 1 << 40
+	default:
+		return 0
+	}
+	return int64(num * mult)
+}
+
+var (
+	reSxxExx = regexp.MustCompile(`(?i)\bs(\d{1,2})[\s._-]?e(\d{1,3})\b`)
+	reDashEp = regexp.MustCompile(`(?i)(?:^|[\s\[])[-–]\s*0*(\d{1,4})(?:v\d)?\b`)
+	reEpOnly = regexp.MustCompile(`(?i)\bep?(\d{1,3})\b`)
+	reSeason = regexp.MustCompile(`(?i)\bs(\d{1,2})\b`)
+)
+
+// episodeSignal says whether a title is the episode we asked for (+1), a
+// different one (-1), or simply unknown (0).
+func episodeSignal(title string, season, ep int) int {
+	if ep <= 0 {
+		return 0
+	}
+	if m := reSxxExx.FindStringSubmatch(title); m != nil {
+		s, _ := strconv.Atoi(m[1])
+		e, _ := strconv.Atoi(m[2])
+		if season > 0 && s != season {
+			return -1
+		}
+		if e == ep {
+			return 1
+		}
+		return -1
+	}
+	// A pack for the right season is usable: the play handler picks the episode
+	// file out of it. A pack for a different season is not.
+	if m := reSeason.FindStringSubmatch(title); m != nil {
+		if season > 0 {
+			if sn, _ := strconv.Atoi(m[1]); sn != season {
+				return -1
+			}
+		}
+		return 0
+	}
+	if m := reDashEp.FindStringSubmatch(title); m != nil {
+		if e, _ := strconv.Atoi(m[1]); e == ep {
+			return 1
+		}
+		return -1
+	}
+	if m := reEpOnly.FindStringSubmatch(title); m != nil {
+		if e, _ := strconv.Atoi(m[1]); e == ep {
+			return 1
+		}
+		return -1
+	}
+	return 0
 }
