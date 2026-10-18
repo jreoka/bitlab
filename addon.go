@@ -74,7 +74,7 @@ type StreamResponse struct {
 func (s *Server) manifestFor(k Key) Manifest {
 	return Manifest{
 		ID:          "org.bitlab." + k.ID,
-		Version:     "2.2.1",
+		Version:     "2.2.2",
 		Name:        "Bitlab",
 		Description: "Self-hosted streaming hub. Manifest: " + k.Label,
 		Resources:   []string{"stream"},
@@ -182,6 +182,11 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, 200, StreamResponse{Streams: []Stream{s.autoRow(s.baseURL(r), k, typ, rawID)}})
+
+	// The list is already on the client's screen; decide behind it. The search
+	// results and the warm probes are in hand here, so by the time the row is
+	// clicked there is usually nothing left to work out.
+	go s.resolveAhead(rawID, typ, season, results)
 }
 
 func bestCachedFile(files []CachedFile) (int, bool) {

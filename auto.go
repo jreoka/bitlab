@@ -267,117 +267,14 @@ func (s *Server) pickAuto(ctx context.Context, typ, rawID, baseID string, season
 		return autoPick{}, fmt.Errorf("no releases for %q", title)
 	}
 
-	stalled := s.store.StalledHashes(rawID, stallWindow)
-	cands := make([]*autoCand, 0, len(results))
-	skippedCam, skippedStall := 0, 0
-	for _, r := range results {
-		tier := classifyTier(r.Title)
-		if tier == tierCam {
-			skippedCam++
-			continue
-		}
-		if stalled[r.InfoHash] {
-			skippedStall++
-			continue
-		}
-		c := &autoCand{
-			Result: r,
-			tier:   tier,
-			res:    resolutionFromName(r.Title),
-			need:   neededMbps(r, typ, season),
-			have:   estimatedMbps(r.Seeders),
-		}
-		if c.need <= 0 {
-			c.need = 8
-		}
-		cands = append(cands, c)
-	}
+	cands := s.autoCands(results, typ, rawID, season)
 	if len(cands) == 0 {
-		return autoPick{}, fmt.Errorf("no candidates (cam=%d stalled=%d)", skippedCam, skippedStall)
+		return autoPick{}, fmt.Errorf("no candidates for %q", title)
 	}
-
-	// Cheap pre-score on name and swarm to decide who is worth probing.
-	sort.SliceStable(cands, func(i, j int) bool { return prescore(cands[i]) > prescore(cands[j]) })
-
-	// Probing costs a metadata wait and a few megabytes of swarm traffic, so
-	// spend it on releases that could actually win: one already below the gate
-	// on its seeder estimate is not worth opening at all.
-	probe := make([]*autoCand, 0, probeLimit)
-	for _, c := range cands {
-		if len(probe) >= probeLimit {
-			break
-		}
-		if c.have/c.need >= 1.0 {
-			probe = append(probe, c)
-		}
-	}
-	if len(probe) == 0 {
-		// Everything looks starved on paper. Probe a few anyway: the seeder
-		// estimate is a guess and the measurement is not.
-		n := 3
-		if len(cands) < n {
-			n = len(cands)
-		}
-		probe = cands[:n]
-	}
-
-	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
-	var wg sync.WaitGroup
-	for _, c := range probe {
-		wg.Add(1)
-		go func(c *autoCand) {
-			defer wg.Done()
-			s.probeCand(probeCtx, c)
-		}(c)
-	}
-	wg.Wait()
-
-	// Rank: gate on throughput, then score.
-	best, fallback := chooseAuto(cands, func(c *autoCand, headroom float64) {
-		src := ""
-		if !c.measured {
-			src = " (estimated)"
-		}
-		s.log.Printf("auto %s: %s at %.1f/%.1f Mbps (%.2fx)%s below gate", rawID, c.Title, c.have, c.need, headroom, src)
-	})
+	best := s.decide(ctx, cands, rawID, true)
 	if best == nil {
-		// Nothing clears the gate. Take the release most likely to play at all
-		// rather than the prettiest one: at this point a 4K WEB-DL that might
-		// scrape 25 Mbps is exactly what leaves the player buffering.
-		if best = chooseFallback(cands); best == nil {
-			best = fallback // every candidate demoted: better to try than to 404
-		}
-		s.log.Printf("auto %s: nothing passed the gate, falling back to %q (%.2fx)", rawID, best.Title, best.have/best.need)
+		return autoPick{}, fmt.Errorf("no usable release for %q", title)
 	}
-
-	// The one release whose throughput really matters is the one about to be
-	// streamed. If it won on an estimate, measure it now: this is the difference
-	// between a quick start and the player buffering through a cold metadata
-	// wait, and if it fails the gate on measurement the next candidate takes it.
-	if best != nil && !best.measured {
-		verifyCtx, vcancel := context.WithTimeout(ctx, 12*time.Second)
-		s.probeCand(verifyCtx, best)
-		vcancel()
-		switch {
-		case !best.measured:
-			// Its own header would not come down: the swarm is cold or dead.
-			// Serving it means the player waits for metadata that never lands,
-			// so hand over a release that did answer instead.
-			if alt := chooseFallback(cands); alt != nil && alt != best && alt.measured {
-				s.log.Printf("auto %s: %q did not respond to a probe, using %q instead", rawID, best.Title, alt.Title)
-				best = alt
-			}
-		case best.have/best.need < gateHeadroom:
-			s.log.Printf("auto %s: %q measured %.1f/%.1f Mbps, below the gate", rawID, best.Title, best.have, best.need)
-			best.gated = true
-			if alt, _ := chooseAuto(cands, nil); alt != nil {
-				s.log.Printf("auto %s: switching to %q", rawID, alt.Title)
-				best = alt
-			}
-		}
-	}
-
 	s.store.SaveAutoPick(rawID, best.InfoHash, best.Label(), best.score)
 	return autoPick{
 		InfoHash: best.InfoHash,
@@ -470,15 +367,7 @@ func prescore(o *autoCand) float64 {
 // that goes stale.
 func (s *Server) probeCand(ctx context.Context, c *autoCand) {
 	if p, ok := s.store.GetProbe(c.InfoHash); ok {
-		c.tracks = p.TrackInfo
-		c.probed = true
-		if h := p.heightLabel(); h > 0 {
-			c.res = h
-		}
-		if age := time.Since(time.Unix(p.ProbedAt, 0)); age < time.Hour && p.Mbps > 0 {
-			c.have = p.Mbps
-			c.measured = true
-		}
+		s.applyProbe(c, p)
 		return
 	}
 	ti, ok := s.probeAndSave(ctx, c.Result)
@@ -541,6 +430,217 @@ func (s *Server) warmProbe(res Result) {
 	}
 	s.log.Printf("probe %s: %dx%d video=%d audio=%d subs=%d %.1f Mbps",
 		res.InfoHash[:8], ti.Width, ti.Height, ti.Video, ti.Audio, ti.Subs, ti.Mbps)
+}
+
+// autoCands turns indexer rows into rankable candidates: cam/3D and demoted
+// releases are dropped here, before anything is measured.
+func (s *Server) autoCands(results []Result, typ, rawID string, season int) []*autoCand {
+	stalled := s.store.StalledHashes(rawID, stallWindow)
+	cands := make([]*autoCand, 0, len(results))
+	skippedCam, skippedStall := 0, 0
+	for _, r := range results {
+		tier := classifyTier(r.Title)
+		if tier == tierCam {
+			skippedCam++
+			continue
+		}
+		if stalled[r.InfoHash] {
+			skippedStall++
+			continue
+		}
+		c := &autoCand{
+			Result: r,
+			tier:   tier,
+			res:    resolutionFromName(r.Title),
+			need:   neededMbps(r, typ, season),
+			have:   estimatedMbps(r.Seeders),
+		}
+		if c.need <= 0 {
+			c.need = 8
+		}
+		cands = append(cands, c)
+	}
+	if len(cands) == 0 && (skippedCam > 0 || skippedStall > 0) {
+		s.log.Printf("auto %s: no candidates (cam=%d stalled=%d)", rawID, skippedCam, skippedStall)
+	}
+	return cands
+}
+
+// decide ranks candidates, measuring the plausible ones, and returns the
+// release to play. probeNow runs the probe batch itself; when false it leans on
+// the probes the warm pass already started (resolveAhead's case).
+func (s *Server) decide(ctx context.Context, cands []*autoCand, rawID string, probeNow bool) *autoCand {
+	// Cheap pre-score on name and swarm to decide who is worth probing.
+	sort.SliceStable(cands, func(i, j int) bool { return prescore(cands[i]) > prescore(cands[j]) })
+
+	if probeNow {
+		// Probing costs a metadata wait and a few megabytes of swarm traffic, so
+		// spend it on releases that could actually win: one already below the
+		// gate on its seeder estimate is not worth opening at all.
+		probe := make([]*autoCand, 0, probeLimit)
+		for _, c := range cands {
+			if len(probe) >= probeLimit {
+				break
+			}
+			if c.have/c.need >= 1.0 {
+				probe = append(probe, c)
+			}
+		}
+		if len(probe) == 0 {
+			// Everything looks starved on paper. Probe a few anyway: the seeder
+			// estimate is a guess and the measurement is not.
+			n := 3
+			if len(cands) < n {
+				n = len(cands)
+			}
+			probe = cands[:n]
+		}
+
+		probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		defer cancel()
+		var wg sync.WaitGroup
+		for _, c := range probe {
+			wg.Add(1)
+			go func(c *autoCand) {
+				defer wg.Done()
+				s.probeCand(probeCtx, c)
+			}(c)
+		}
+		wg.Wait()
+	} else {
+		// Pick up whatever the warm probes already cached.
+		for _, c := range cands[:min(len(cands), probeLimit)] {
+			if p, ok := s.store.GetProbe(c.InfoHash); ok {
+				s.applyProbe(c, p)
+			}
+		}
+	}
+
+	// Rank: gate on throughput, then score.
+	best, fallback := chooseAuto(cands, func(c *autoCand, headroom float64) {
+		src := ""
+		if !c.measured {
+			src = " (estimated)"
+		}
+		s.log.Printf("auto %s: %s at %.1f/%.1f Mbps (%.2fx)%s below gate", rawID, c.Title, c.have, c.need, headroom, src)
+	})
+	if best == nil {
+		// Nothing clears the gate. Take the release most likely to play at all
+		// rather than the prettiest one: a 4K WEB-DL that might scrape 25 Mbps
+		// is exactly what leaves the player buffering.
+		if best = chooseFallback(cands); best == nil {
+			best = fallback // every candidate demoted: better to try than to 404
+		}
+		if best != nil {
+			s.log.Printf("auto %s: nothing passed the gate, falling back to %q (%.2fx)", rawID, best.Title, best.have/best.need)
+		}
+	}
+	if best == nil {
+		return nil
+	}
+
+	// The one release whose throughput really matters is the one about to be
+	// streamed. If it won on an estimate, measure it now: that is the difference
+	// between a quick start and the player buffering through a cold metadata
+	// wait, and if it fails the gate on measurement the next candidate takes it.
+	if !best.measured {
+		verifyCtx, vcancel := context.WithTimeout(ctx, 8*time.Second)
+		s.probeCand(verifyCtx, best)
+		vcancel()
+		switch {
+		case !best.measured:
+			// Its own header would not come down: the swarm is cold or dead.
+			// Serving it means waiting on metadata that never lands, so hand
+			// over a release that did answer instead.
+			if alt := chooseFallback(cands); alt != nil && alt != best && alt.measured {
+				s.log.Printf("auto %s: %q did not respond to a probe, using %q instead", rawID, best.Title, alt.Title)
+				best = alt
+			}
+		case best.have/best.need < gateHeadroom:
+			s.log.Printf("auto %s: %q measured %.1f/%.1f Mbps, below the gate", rawID, best.Title, best.have, best.need)
+			best.gated = true
+			if alt, _ := chooseAuto(cands, nil); alt != nil {
+				s.log.Printf("auto %s: switching to %q", rawID, alt.Title)
+				best = alt
+			}
+		}
+	}
+	return best
+}
+
+// applyProbe copies a cached probe onto a candidate.
+func (s *Server) applyProbe(c *autoCand, p Probe) {
+	c.tracks = p.TrackInfo
+	c.probed = true
+	if h := p.heightLabel(); h > 0 {
+		c.res = h
+	}
+	if age := time.Since(time.Unix(p.ProbedAt, 0)); age < time.Hour && p.Mbps > 0 {
+		c.have = p.Mbps
+		c.measured = true
+	}
+}
+
+// resolveAhead decides the pick while the stream list is on screen. The search
+// has already run and the warm probes are in flight, so a click a few seconds
+// later can be served without deciding anything — which is the difference
+// between a two-second start and a cold search behind the player's spinner.
+func (s *Server) resolveAhead(rawID, typ string, season int, results []Result) {
+	if ih, _, at, ok := s.store.GetAutoPick(rawID); ok {
+		if time.Since(time.Unix(at, 0)) < autoPickTTL && !s.store.StalledHashes(rawID, stallWindow)[ih] {
+			return // a good pick exists; the click will reuse it
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	// Give the warm probes a few seconds to land before ranking.
+	for i := 0; i < 15; i++ {
+		if s.probeCoverage(results, 3) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second):
+		}
+	}
+
+	cands := s.autoCands(results, typ, rawID, season)
+	if len(cands) == 0 {
+		return
+	}
+	best := s.decide(ctx, cands, rawID, false)
+	if best == nil {
+		return
+	}
+	// A click may have decided first; never overwrite a pick that is in use.
+	if ih, _, at, ok := s.store.GetAutoPick(rawID); ok {
+		if time.Since(time.Unix(at, 0)) < autoPickTTL {
+			_ = ih
+			return
+		}
+	}
+	s.store.SaveAutoPick(rawID, best.InfoHash, best.Label(), best.score)
+	s.log.Printf("auto %s: pre-decided %s (%s)", rawID, best.Title, best.Label())
+}
+
+// probeCoverage reports whether at least want of the first few candidates have
+// a cached probe yet.
+func (s *Server) probeCoverage(results []Result, want int) bool {
+	if len(results) == 0 {
+		return true
+	}
+	n := 0
+	for i, r := range results {
+		if i >= probeLimit+1 {
+			break
+		}
+		if _, ok := s.store.GetProbe(r.InfoHash); ok {
+			n++
+		}
+	}
+	return n >= want
 }
 
 // Label is what the auto row shows once it has played: the concrete thing that
