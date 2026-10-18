@@ -31,19 +31,21 @@ type Config struct {
 }
 
 type Server struct {
-	cfg        Config
-	store      *Store
-	engine     *Engine
-	http       *http.Client
-	log        *log.Logger
-	start      time.Time
-	sessionKey []byte
-	bytesOut   int64
-	hints      sync.Map // infohash -> []string trackers, learned from search results
-	ixCache    sync.Map // indexer+query -> cached results for a few minutes
-	probeSem   chan struct{}
-	probeMu    sync.Mutex
-	probeBusy  map[string]bool
+	cfg         Config
+	store       *Store
+	engine      *Engine
+	http        *http.Client
+	log         *log.Logger
+	start       time.Time
+	sessionKey  []byte
+	bytesOut    int64
+	hints       sync.Map // infohash -> []string trackers, learned from search results
+	ixCache     sync.Map // indexer+query -> cached results for a few minutes
+	probeSem    chan struct{}
+	probeMu     sync.Mutex
+	probeBusy   map[string]bool
+	resolveMu   sync.Mutex
+	resolveBusy map[string]chan struct{}
 }
 
 // ---- addon protocol types ----
@@ -74,7 +76,7 @@ type StreamResponse struct {
 func (s *Server) manifestFor(k Key) Manifest {
 	return Manifest{
 		ID:          "org.bitlab." + k.ID,
-		Version:     "2.2.2",
+		Version:     "2.2.3",
 		Name:        "Bitlab",
 		Description: "Self-hosted streaming hub. Manifest: " + k.Label,
 		Resources:   []string{"stream"},

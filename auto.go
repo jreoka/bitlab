@@ -254,6 +254,28 @@ func (s *Server) pickAuto(ctx context.Context, typ, rawID, baseID string, season
 		}
 	}
 
+	// A decision for this item may already be running behind the list. It has
+	// the same search results and the same probes, so waiting for it is cheaper
+	// than running a second one from scratch.
+	s.resolveMu.Lock()
+	inflight := s.resolveBusy[rawID]
+	s.resolveMu.Unlock()
+	if inflight != nil {
+		select {
+		case <-inflight:
+		case <-time.After(6 * time.Second):
+		case <-ctx.Done():
+			return autoPick{}, ctx.Err()
+		}
+		if ih, label, at, ok := s.store.GetAutoPick(rawID); ok {
+			if time.Since(time.Unix(at, 0)) < autoPickTTL && !s.store.StalledHashes(rawID, stallWindow)[ih] {
+				s.log.Printf("auto %s: using the decision made behind the list (%s)", rawID, ih[:8])
+				name, _, _, _ := s.store.GetMedia(ih)
+				return autoPick{InfoHash: ih, Title: name, Label: label}, nil
+			}
+		}
+	}
+
 	title, year, err := s.resolveMeta(ctx, typ, baseID)
 	if err != nil {
 		return autoPick{}, fmt.Errorf("meta: %w", err)
@@ -591,12 +613,28 @@ func (s *Server) resolveAhead(rawID, typ string, season int, results []Result) {
 			return // a good pick exists; the click will reuse it
 		}
 	}
+	done := make(chan struct{})
+	s.resolveMu.Lock()
+	if s.resolveBusy == nil {
+		s.resolveBusy = map[string]chan struct{}{}
+	}
+	s.resolveBusy[rawID] = done
+	s.resolveMu.Unlock()
+	defer func() {
+		s.resolveMu.Lock()
+		delete(s.resolveBusy, rawID)
+		s.resolveMu.Unlock()
+		close(done)
+	}()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	// Give the warm probes a few seconds to land before ranking.
-	for i := 0; i < 15; i++ {
-		if s.probeCoverage(results, 3) {
+	// Give the warm probes a few seconds to land before ranking. Waiting the
+	// full budget is worse than ranking early: by the time the user clicks, a
+	// late decision is no decision at all.
+	for i := 0; i < 8; i++ {
+		if s.probeCoverage(results, 2) {
 			break
 		}
 		select {
