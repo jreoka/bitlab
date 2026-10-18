@@ -566,7 +566,7 @@ func (s *Server) decide(ctx context.Context, cands []*autoCand, rawID string, pr
 	// between a quick start and the player buffering through a cold metadata
 	// wait, and if it fails the gate on measurement the next candidate takes it.
 	if !best.measured {
-		verifyCtx, vcancel := context.WithTimeout(ctx, 8*time.Second)
+		verifyCtx, vcancel := context.WithTimeout(ctx, 6*time.Second)
 		s.probeCand(verifyCtx, best)
 		vcancel()
 		switch {
@@ -633,8 +633,8 @@ func (s *Server) resolveAhead(rawID, typ string, season int, results []Result) {
 	// Give the warm probes a few seconds to land before ranking. Waiting the
 	// full budget is worse than ranking early: by the time the user clicks, a
 	// late decision is no decision at all.
-	for i := 0; i < 8; i++ {
-		if s.probeCoverage(results, 2) {
+	for i := 0; i < 3; i++ {
+		if s.probeCoverage(results, 1) {
 			break
 		}
 		select {

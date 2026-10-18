@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const version = "2.2.4"
+const version = "2.2.5"
 
 var defaultTrackers = []string{
 	// HTTP(S) first: some hosts block outbound UDP, which kills both DHT and
