@@ -63,9 +63,9 @@ spec:
               /work/marlin --version 2>/dev/null || true
           env:
             - name: BINARY_URL
-              value: https://github.com/jreoka/marlin/releases/download/v1.5.5/marlin-linux-amd64
+              value: https://github.com/jreoka/marlin/releases/download/v1.5.6/marlin-linux-amd64
             - name: BINARY_SHA
-              value: 821850cdc364fa3fb2939fcb2dec5e19dc9325d15fdbd3473c53b57c05c5d6e0
+              value: f257ac44799ce72aa5c3f1b5e7c783b01190d0c834de91e4b986e708152d7c09
           volumeMounts:
             - name: bin
               mountPath: /work
