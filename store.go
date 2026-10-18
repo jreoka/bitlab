@@ -11,29 +11,43 @@ import (
 
 var (
 	ErrKeyNotFound = errors.New("manifest key not recognised")
-	ErrKeyRevoked  = errors.New("manifest key revoked")
+	ErrKeyPaused   = errors.New("manifest key paused")
 	ErrKeyExpired  = errors.New("manifest key expired")
 	ErrNoKeys      = errors.New("no manifest keys exist")
 )
 
-// Key is a revocable per-user manifest credential.
+// Key is a per-user manifest credential. Revoking deletes it outright;
+// pausing keeps the row (and its statistics) but stops it resolving.
 type Key struct {
 	ID        string `json:"id"`
 	Label     string `json:"label"`
 	Note      string `json:"note"`
 	Token     string `json:"token"`
+	Status    string `json:"status"` // active | paused
 	CreatedAt int64  `json:"created_at"`
 	LastUsed  int64  `json:"last_used_at"`
 	Requests  int64  `json:"requests"`
 	Bytes     int64  `json:"bytes"`
-	Revoked   bool   `json:"revoked"`
+	ExpiresAt int64  `json:"expires_at"`
+}
+
+func (k Key) Paused() bool { return k.Status == "paused" }
+
+// Session is one signed-in admin browser.
+type Session struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	IP        string `json:"ip"`
+	UA        string `json:"ua"`
+	CreatedAt int64  `json:"created_at"`
+	LastSeen  int64  `json:"last_seen_at"`
 	ExpiresAt int64  `json:"expires_at"`
 }
 
 // Indexer is one configured search source.
 type Indexer struct {
 	ID       string `json:"id"`
-	Kind     string `json:"kind"` // torznab | apibay
+	Kind     string `json:"kind"` // torznab | knaben | apibay
 	Name     string `json:"name"`
 	URL      string `json:"url"`
 	APIKey   string `json:"api_key"`
@@ -53,7 +67,7 @@ type Store struct {
 }
 
 func OpenStore(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)")
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)")
 	if err != nil {
 		return nil, err
 	}
@@ -79,8 +93,16 @@ CREATE TABLE IF NOT EXISTS keys (
   last_used_at INTEGER NOT NULL DEFAULT 0,
   requests INTEGER NOT NULL DEFAULT 0,
   bytes INTEGER NOT NULL DEFAULT 0,
-  revoked INTEGER NOT NULL DEFAULT 0,
   expires_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL DEFAULT '',
+  ip TEXT NOT NULL DEFAULT '',
+  ua TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS indexers (
   id TEXT PRIMARY KEY,
@@ -109,7 +131,54 @@ CREATE TABLE IF NOT EXISTS meta_cache (
   expires_at INTEGER NOT NULL
 );
 `)
-	return err
+	if err != nil {
+		return err
+	}
+	// `status` replaces the old boolean `revoked`; revoking now deletes the key,
+	// so any key that was revoked under the old scheme goes away.
+	if !s.hasColumn("keys", "status") {
+		if _, err := s.db.Exec(`ALTER TABLE keys ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`); err != nil {
+			return err
+		}
+	}
+	if s.hasColumn("keys", "revoked") {
+		if _, err := s.db.Exec(`DELETE FROM keys WHERE revoked=1`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) hasColumn(table, col string) bool {
+	rows, err := s.db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false
+		}
+		if name == col {
+			return true
+		}
+	}
+	return false
+}
+
+// --- keys ---
+
+const keyCols = `id,token,label,note,status,created_at,last_used_at,requests,bytes,expires_at`
+
+func scanKey(sc interface{ Scan(...any) error }) (Key, error) {
+	var k Key
+	err := sc.Scan(&k.ID, &k.Token, &k.Label, &k.Note, &k.Status, &k.CreatedAt, &k.LastUsed,
+		&k.Requests, &k.Bytes, &k.ExpiresAt)
+	return k, err
 }
 
 func (s *Store) CreateKey(label, note string, ttl time.Duration) (Key, error) {
@@ -123,26 +192,24 @@ func (s *Store) CreateKey(label, note string, ttl time.Duration) (Key, error) {
 		exp = time.Now().Add(ttl).Unix()
 	}
 	now := time.Now().Unix()
-	_, err := s.db.Exec(`INSERT INTO keys(id,token,label,note,created_at,expires_at) VALUES(?,?,?,?,?,?)`,
-		id, token, label, note, now, exp)
+	_, err := s.db.Exec(`INSERT INTO keys(id,token,label,note,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?)`,
+		id, token, label, note, "active", now, exp)
 	if err != nil {
 		return Key{}, err
 	}
-	return Key{ID: id, Token: token, Label: label, Note: note, CreatedAt: now, ExpiresAt: exp}, nil
+	return Key{ID: id, Token: token, Label: label, Note: note, Status: "active", CreatedAt: now, ExpiresAt: exp}, nil
 }
 
 func (s *Store) ListKeys() ([]Key, error) {
-	rows, err := s.db.Query(`SELECT id,token,label,note,created_at,last_used_at,requests,bytes,revoked,expires_at
-		FROM keys ORDER BY created_at DESC`)
+	rows, err := s.db.Query(`SELECT ` + keyCols + ` FROM keys ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := []Key{}
 	for rows.Next() {
-		var k Key
-		if err := rows.Scan(&k.ID, &k.Token, &k.Label, &k.Note, &k.CreatedAt, &k.LastUsed,
-			&k.Requests, &k.Bytes, &k.Revoked, &k.ExpiresAt); err != nil {
+		k, err := scanKey(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, k)
@@ -151,32 +218,30 @@ func (s *Store) ListKeys() ([]Key, error) {
 }
 
 func (s *Store) KeyByToken(token string) (Key, error) {
-	var k Key
-	err := s.db.QueryRow(`SELECT id,token,label,note,created_at,last_used_at,requests,bytes,revoked,expires_at
-		FROM keys WHERE token=?`, token).Scan(&k.ID, &k.Token, &k.Label, &k.Note, &k.CreatedAt,
-		&k.LastUsed, &k.Requests, &k.Bytes, &k.Revoked, &k.ExpiresAt)
+	k, err := scanKey(s.db.QueryRow(`SELECT `+keyCols+` FROM keys WHERE token=?`, token))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Key{}, ErrKeyNotFound
 	}
 	if err != nil {
 		return Key{}, err
 	}
-	if k.Revoked {
-		return k, ErrKeyRevoked
-	}
+	// Expiry means deletion, not just refusal: purge the row so nothing lingers.
 	if k.ExpiresAt > 0 && time.Now().Unix() > k.ExpiresAt {
+		s.DeleteKey(k.ID)
 		return k, ErrKeyExpired
+	}
+	if k.Paused() {
+		return k, ErrKeyPaused
 	}
 	return k, nil
 }
 
-func (s *Store) SetKeyRevoked(id string, revoked bool) error {
-	res, err := s.db.Exec(`UPDATE keys SET revoked=? WHERE id=?`, boolInt(revoked), id)
+func (s *Store) SetKeyStatus(id, status string) error {
+	res, err := s.db.Exec(`UPDATE keys SET status=? WHERE id=?`, status, id)
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
+	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrKeyNotFound
 	}
 	return nil
@@ -193,6 +258,16 @@ func (s *Store) DeleteKey(id string) error {
 	return nil
 }
 
+// DeleteExpiredKeys purges every key past its expiry and reports the count.
+func (s *Store) DeleteExpiredKeys() int64 {
+	res, err := s.db.Exec(`DELETE FROM keys WHERE expires_at>0 AND expires_at<?`, time.Now().Unix())
+	if err != nil {
+		return 0
+	}
+	n, _ := res.RowsAffected()
+	return n
+}
+
 func (s *Store) TouchKey(id string) {
 	s.db.Exec(`UPDATE keys SET last_used_at=?, requests=requests+1 WHERE id=?`, time.Now().Unix(), id)
 }
@@ -206,9 +281,86 @@ func (s *Store) AddKeyBytes(id string, n int64) {
 
 func (s *Store) ActiveKeyCount() int {
 	var n int
-	s.db.QueryRow(`SELECT count(*) FROM keys WHERE revoked=0 AND (expires_at=0 OR expires_at>?)`,
+	s.db.QueryRow(`SELECT count(*) FROM keys WHERE status='active' AND (expires_at=0 OR expires_at>?)`,
 		time.Now().Unix()).Scan(&n)
 	return n
+}
+
+// --- sessions ---
+
+func (s *Store) CreateSession(name, ip, ua string, ttl time.Duration) (Session, error) {
+	now := time.Now()
+	sess := Session{
+		ID:        randHex(16),
+		Name:      name,
+		IP:        ip,
+		UA:        ua,
+		CreatedAt: now.Unix(),
+		LastSeen:  now.Unix(),
+		ExpiresAt: now.Add(ttl).Unix(),
+	}
+	_, err := s.db.Exec(`INSERT INTO sessions(id,name,ip,ua,created_at,last_seen_at,expires_at) VALUES(?,?,?,?,?,?,?)`,
+		sess.ID, sess.Name, sess.IP, sess.UA, sess.CreatedAt, sess.LastSeen, sess.ExpiresAt)
+	if err != nil {
+		return Session{}, err
+	}
+	s.db.Exec(`DELETE FROM sessions WHERE expires_at<?`, now.Unix())
+	return sess, nil
+}
+
+func (s *Store) GetSession(id string) (Session, bool) {
+	var sess Session
+	err := s.db.QueryRow(`SELECT id,name,ip,ua,created_at,last_seen_at,expires_at FROM sessions WHERE id=?`, id).
+		Scan(&sess.ID, &sess.Name, &sess.IP, &sess.UA, &sess.CreatedAt, &sess.LastSeen, &sess.ExpiresAt)
+	if err != nil {
+		return Session{}, false
+	}
+	if sess.ExpiresAt < time.Now().Unix() {
+		s.DeleteSession(id)
+		return Session{}, false
+	}
+	return sess, true
+}
+
+func (s *Store) TouchSession(id string) {
+	s.db.Exec(`UPDATE sessions SET last_seen_at=? WHERE id=? AND last_seen_at<?`,
+		time.Now().Unix(), id, time.Now().Add(-60*time.Second).Unix())
+}
+
+func (s *Store) DeleteSession(id string) error {
+	_, err := s.db.Exec(`DELETE FROM sessions WHERE id=?`, id)
+	return err
+}
+
+func (s *Store) DeleteOtherSessions(keepID string) {
+	s.db.Exec(`DELETE FROM sessions WHERE id<>?`, keepID)
+}
+
+func (s *Store) ListSessions() ([]Session, error) {
+	rows, err := s.db.Query(`SELECT id,name,ip,ua,created_at,last_seen_at,expires_at FROM sessions ORDER BY last_seen_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Session{}
+	for rows.Next() {
+		var sess Session
+		if err := rows.Scan(&sess.ID, &sess.Name, &sess.IP, &sess.UA, &sess.CreatedAt, &sess.LastSeen, &sess.ExpiresAt); err != nil {
+			return nil, err
+		}
+		out = append(out, sess)
+	}
+	return out, rows.Err()
+}
+
+// PruneSessions drops expired rows and keeps only the newest n.
+func (s *Store) PruneSessions(keep int) {
+	s.db.Exec(`DELETE FROM sessions WHERE expires_at<?`, time.Now().Unix())
+	var n int
+	s.db.QueryRow(`SELECT count(*) FROM sessions`).Scan(&n)
+	if n > keep {
+		s.db.Exec(`DELETE FROM sessions WHERE id IN (SELECT id FROM sessions ORDER BY last_seen_at ASC LIMIT ?)`, n-keep)
+	}
 }
 
 // --- indexers ---
@@ -262,6 +414,11 @@ func (s *Store) GetSetting(k, def string) string {
 
 func (s *Store) SetSetting(k, v string) error {
 	_, err := s.db.Exec(`INSERT INTO settings(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`, k, v)
+	return err
+}
+
+func (s *Store) DeleteSetting(k string) error {
+	_, err := s.db.Exec(`DELETE FROM settings WHERE k=?`, k)
 	return err
 }
 

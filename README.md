@@ -18,11 +18,15 @@ Marlin ──► Cinemeta (title lookup) ──► indexers (knaben / torznab)
 
 ## What you get
 
-- **One addon URL per user.** `https://marlin.example.com/k/<key>/manifest.json`. Keys are created in
-  the admin UI and can be revoked, expired, or deleted individually — revoking one leaves every other
-  device working, and no key ever sees another key's traffic.
-- **Admin UI** at `/admin`: keys with live usage counters, indexer management with a search tester,
-  live torrent list (peers, rate, progress), and streaming tunables. Nothing needs a restart.
+- **One addon URL per user.** `https://marlin.example.com/k/<key>/manifest.json`. Each key carries its
+  own usage stats and can be paused (stops working, keeps its history), given an expiry (`1d`, `30d`,
+  `1y`, or a date — the row is **deleted** when it lapses), or revoked, which deletes it outright.
+  Revoking one leaves every other device working, and no key ever sees another key's traffic.
+- **Admin UI** at `/admin`: key lifecycle in one click, indexer management with a search tester, live
+  torrent list (peers, rate, progress), and streaming tunables. Nothing needs a restart.
+- **Two-factor login** (TOTP, zero-config: scan the QR, keep the ten single-use recovery codes) and
+  **tracked sessions** — every login shows up as a device with its IP and last-seen time, and can be
+  revoked individually or all at once.
 - **Streaming that behaves like a CDN.** Byte-range requests are mapped onto piece priorities with a
   configurable read-ahead (default 64 MiB), metadata is warmed in the background while you browse the
   stream list, and DHT/PEX/LSD plus a public tracker list are used so the first peer typically answers
@@ -103,15 +107,19 @@ The landing page at `/` lists every active key's manifest URL, so you can copy i
 Everything the UI does is a small JSON API under `/admin/api`, session-cookie authenticated:
 
 ```
-POST   /admin/api/login              {"password":"..."}
+POST   /admin/api/login              {"password":"...","code":"123456"}
 GET    /admin/api/overview           keys, indexers, torrents, cache, uptime
-POST   /admin/api/keys               {"label","note","days"}
-POST   /admin/api/keys/{id}/revoke   {"revoked":true|false}
-DELETE /admin/api/keys/{id}
+POST   /admin/api/keys               {"label","note","expires":"30d"}
+POST   /admin/api/keys/{id}/pause    {"paused":true|false}
+DELETE /admin/api/keys/{id}          revoke = delete, effective immediately
 POST   /admin/api/indexers           {id?,kind,name,url,api_key,enabled}
 POST   /admin/api/indexers/test?q=   search a single indexer without saving it
 GET    /admin/api/search?q=tt0111161&type=movie
 POST   /admin/api/settings           {"cache_gb","idle_minutes","readahead_mb"}
+GET    /admin/api/security           2FA state + tracked sessions
+POST   /admin/api/2fa/begin|enable|disable
+DELETE /admin/api/sessions/{id}      sign one browser out
+POST   /admin/api/sessions/revoke-others
 DELETE /admin/api/torrents/{infohash}
 POST   /admin/api/play               {"magnet":"magnet:?xt=..."} → direct stream URL
 ```

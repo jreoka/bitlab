@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const version = "1.4.2"
+const version = "1.5.0"
 
 var defaultTrackers = []string{
 	"udp://tracker.opentrackr.org:1337/announce",
@@ -149,6 +149,19 @@ func main() {
 		IdleTimeout:       0,
 	}
 
+	// Expired keys are deleted, not merely refused — sweep them even if nobody
+	// ever presents the token again.
+	go func() {
+		t := time.NewTicker(time.Minute)
+		defer t.Stop()
+		for range t.C {
+			if n := store.DeleteExpiredKeys(); n > 0 {
+				lg.Printf("purged %d expired manifest key(s)", n)
+			}
+			store.PruneSessions(50)
+		}
+	}()
+
 	go func() {
 		lg.Printf("marlin %s listening on %s (data=%s, cache=%s)", version, cfg.Addr, cfg.DataDir, humanBytes(cfg.CacheMaxBytes))
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -203,13 +216,19 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/api/overview", s.requireAdmin(s.handleOverview))
 	mux.HandleFunc("GET /admin/api/keys", s.requireAdmin(s.handleOverview))
 	mux.HandleFunc("POST /admin/api/keys", s.requireAdmin(s.handleCreateKey))
-	mux.HandleFunc("POST /admin/api/keys/{id}/revoke", s.requireAdmin(s.handleRevokeKey))
+	mux.HandleFunc("POST /admin/api/keys/{id}/pause", s.requireAdmin(s.handlePauseKey))
 	mux.HandleFunc("DELETE /admin/api/keys/{id}", s.requireAdmin(s.handleDeleteKey))
 	mux.HandleFunc("POST /admin/api/indexers", s.requireAdmin(s.handleSaveIndexer))
 	mux.HandleFunc("DELETE /admin/api/indexers/{id}", s.requireAdmin(s.handleDeleteIndexer))
 	mux.HandleFunc("POST /admin/api/indexers/test", s.requireAdmin(s.handleTestIndexer))
 	mux.HandleFunc("GET /admin/api/search", s.requireAdmin(s.handleSearch))
 	mux.HandleFunc("POST /admin/api/settings", s.requireAdmin(s.handleSettings))
+	mux.HandleFunc("GET /admin/api/security", s.requireAdmin(s.handleSecurity))
+	mux.HandleFunc("POST /admin/api/2fa/begin", s.requireAdmin(s.handle2FABegin))
+	mux.HandleFunc("POST /admin/api/2fa/enable", s.requireAdmin(s.handle2FAEnable))
+	mux.HandleFunc("POST /admin/api/2fa/disable", s.requireAdmin(s.handle2FADisable))
+	mux.HandleFunc("DELETE /admin/api/sessions/{id}", s.requireAdmin(s.handleDeleteSession))
+	mux.HandleFunc("POST /admin/api/sessions/revoke-others", s.requireAdmin(s.handleRevokeOtherSessions))
 	mux.HandleFunc("DELETE /admin/api/torrents/{infohash}", s.requireAdmin(s.handleDropTorrent))
 	mux.HandleFunc("POST /admin/api/play", s.requireAdmin(s.handleQuickPlay))
 }

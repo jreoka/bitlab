@@ -14,14 +14,14 @@
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
 code,pre,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-a{color:var(--accent)}
 button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);background:#151b25;color:var(--text);padding:7px 12px;transition:.15s}
 button:hover{background:#1b2331;border-color:#2a3648}
 button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
 button.primary:hover{background:#2f6fe0}
 button.danger{color:#ff9c9c;border-color:#3a1f22;background:#1a1113}
-button.danger:hover{background:#261417}
+button.danger:hover{background:#2a1518}
 button.ghost{background:transparent}
+button:disabled{opacity:.45;cursor:not-allowed}
 input,select{font:inherit;background:#0b0f16;border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 10px;outline:none;width:100%}
 input:focus,select:focus{border-color:#2f4a72;box-shadow:0 0 0 3px #3b82f61a}
 label{display:block;font-size:12px;color:var(--muted);margin:0 0 5px;letter-spacing:.02em}
@@ -52,27 +52,42 @@ tr:last-child td{border-bottom:0}
 .stat .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
 .stat .v{font-size:19px;font-weight:650;margin-top:3px;letter-spacing:-.02em}
 .hidden{display:none!important}
-.toast{position:fixed;right:18px;bottom:18px;background:#16202e;border:1px solid #2a3a51;padding:11px 15px;border-radius:10px;font-size:13px;box-shadow:0 10px 30px #0008;opacity:0;transform:translateY(8px);transition:.2s;z-index:9}
+.toast{position:fixed;right:18px;bottom:18px;background:#16202e;border:1px solid #2a3a51;padding:11px 15px;border-radius:10px;font-size:13px;box-shadow:0 10px 30px #0008;opacity:0;transform:translateY(8px);transition:.2s;z-index:9;max-width:420px}
 .toast.on{opacity:1;transform:none}
 .toast.err{border-color:#4a2126;background:#241416}
-.login{max-width:350px;margin:14vh auto;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:26px}
+.login{max-width:370px;margin:12vh auto;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:26px}
 .login h1{margin-bottom:18px;font-size:17px}
+.login .field{margin-bottom:12px}
 .keytag{font-size:11px;background:#12202c;color:#7dd3fc;border:1px solid #1b3348;padding:2px 7px;border-radius:6px}
+.badge{font-size:10.5px;padding:2px 7px;border-radius:999px;border:1px solid #22303f;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.badge.active{color:#7ee2b8;border-color:#1c3a30;background:#0f1f1a}
+.badge.paused{color:#ffd28a;border-color:#3a2f17;background:#1f1a0f}
+.badge.expired{color:#ff9c9c;border-color:#3a1f22;background:#1f1214}
 .searchres{display:grid;gap:8px;margin-top:14px;max-height:360px;overflow:auto}
 .sr{display:flex;gap:12px;justify-content:space-between;align-items:center;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:9px 12px;font-size:12.5px}
 .sr .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.actions{display:flex;gap:6px;justify-content:flex-end}
+.actions{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
 .muted{color:var(--muted)}
 .tiny{font-size:11px}
+.qr{background:#fff;padding:8px;border-radius:10px;width:212px;height:212px;display:grid;place-items:center}
+.qr img{width:196px;height:196px;display:block}
+.codes{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-top:12px}
+.codes code{background:#0b0f16;border:1px solid var(--line);border-radius:7px;padding:7px 9px;text-align:center;font-size:12.5px;letter-spacing:.04em}
+.split{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;align-items:start}
 </style>
 </head>
 <body>
 
 <div id="login" class="login hidden">
   <h1>Marlin admin</h1>
-  <label>Password</label>
-  <input id="pw" type="password" autocomplete="current-password" autofocus>
-  <div style="height:14px"></div>
+  <div class="field">
+    <label>Password</label>
+    <input id="pw" type="password" autocomplete="current-password" autofocus>
+  </div>
+  <div class="field hidden" id="code-row">
+    <label>Two-factor code</label>
+    <input id="code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="123456 or a recovery code">
+  </div>
   <button class="primary" style="width:100%" onclick="doLogin()">Sign in</button>
   <p class="muted tiny" id="loginerr" style="min-height:18px;margin:10px 0 0"></p>
 </div>
@@ -94,6 +109,7 @@ tr:last-child td{border-bottom:0}
     <button class="on" data-tab="keys" onclick="tab('keys')">Manifest keys</button>
     <button data-tab="indexers" onclick="tab('indexers')">Indexers</button>
     <button data-tab="activity" onclick="tab('activity')">Activity</button>
+    <button data-tab="security" onclick="tab('security')">Security</button>
     <button data-tab="settings" onclick="tab('settings')">Settings</button>
   </div>
 
@@ -108,20 +124,29 @@ tr:last-child td{border-bottom:0}
 
     <div class="panel">
       <h2>New manifest key</h2>
-      <p class="hint">Each key is an independent Stremio/Nuvio addon URL. Revoking one leaves everyone else working.</p>
+      <p class="hint">Each key is its own Stremio/Nuvio addon URL with its own stats. Expired keys are deleted automatically.</p>
       <div class="row">
         <div><label>Label</label><input id="k-label" placeholder="living room tv"></div>
         <div><label>Note (optional)</label><input id="k-note" placeholder="who / what device"></div>
-        <div><label>Expires in days (0 = never)</label><input id="k-days" type="number" min="0" value="0"></div>
+        <div><label>Expires</label>
+          <select id="k-expires">
+            <option value="">never</option>
+            <option value="1d">1 day</option>
+            <option value="7d">7 days</option>
+            <option value="30d">30 days</option>
+            <option value="90d">90 days</option>
+            <option value="1y">1 year</option>
+          </select>
+        </div>
         <div><button class="primary" onclick="createKey()">Create key</button></div>
       </div>
     </div>
 
     <div class="panel">
       <h2>Keys</h2>
-      <p class="hint">Copy a manifest URL into Stremio → Addons → Install from URL, or paste it into Nuvio.</p>
+      <p class="hint">Pause keeps the key and its stats but stops it working. Revoke deletes it — the URL dies immediately and the entry is gone.</p>
       <table>
-        <thead><tr><th>Key</th><th>Manifest URL</th><th>Used</th><th>Traffic</th><th></th></tr></thead>
+        <thead><tr><th>Key</th><th>Manifest URL</th><th>Expires</th><th>Used</th><th>Traffic</th><th></th></tr></thead>
         <tbody id="keys"></tbody>
       </table>
     </div>
@@ -134,11 +159,11 @@ tr:last-child td{border-bottom:0}
       <p class="hint">Torznab works with Prowlarr, Jackett and nZEDb (paste the full <code>/api</code> URL and its key). <code>knaben</code> and <code>apibay</code> are public and need no key.</p>
       <div class="row">
         <div><label>Kind</label>
-          <select id="ix-kind"><option value="torznab">torznab</option><option value="apibay">apibay</option></select>
+          <select id="ix-kind"><option value="torznab">torznab</option><option value="knaben">knaben</option><option value="apibay">apibay</option></select>
         </div>
         <div><label>Name</label><input id="ix-name" placeholder="prowlarr"></div>
         <div><label>URL</label><input id="ix-url" placeholder="http://prowlarr:9696/1/api"></div>
-        <div><label>API key</label><input id="ix-key" placeholder="optional for apibay"></div>
+        <div><label>API key</label><input id="ix-key" placeholder="optional for public indexers"></div>
       </div>
       <div style="height:12px"></div>
       <div style="display:flex;gap:8px">
@@ -190,6 +215,50 @@ tr:last-child td{border-bottom:0}
     </div>
   </section>
 
+  <!-- SECURITY -->
+  <section id="tab-security" class="hidden">
+    <div class="panel">
+      <h2>Two-factor authentication</h2>
+      <p class="hint">TOTP — works with 1Password, Authy, Google Authenticator, Aegis, anything on <code>otpauth://</code>.</p>
+      <div id="tfa-off">
+        <button class="primary" onclick="begin2FA()">Enable two-factor</button>
+      </div>
+      <div id="tfa-setup" class="hidden">
+        <div class="split">
+          <div>
+            <label>1. Scan this in your authenticator</label>
+            <div class="qr" id="qr-box"></div>
+            <p class="tiny muted">Or enter the secret by hand: <code id="totp-secret"></code></p>
+            <label>2. Enter the 6-digit code it shows</label>
+            <input id="totp-code" inputmode="numeric" placeholder="123456" style="max-width:200px">
+            <div style="height:10px"></div>
+            <button class="primary" onclick="enable2FA()">Confirm and enable</button>
+          </div>
+          <button class="ghost" onclick="cancel2FA()">Cancel</button>
+        </div>
+      </div>
+      <div id="tfa-on" class="hidden">
+        <p style="margin:0 0 12px"><span class="ok">Two-factor is on.</span> <span class="muted tiny" id="recovery-left"></span></p>
+        <button class="danger" onclick="disable2FA()">Disable two-factor</button>
+      </div>
+      <div id="recovery-box" class="hidden">
+        <h2 style="margin-top:20px">Recovery codes</h2>
+        <p class="hint">Each of these signs you in once if you lose the authenticator. They are shown only now — store them somewhere safe.</p>
+        <div class="codes" id="recovery-codes"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Signed-in sessions</h2>
+      <p class="hint">Every successful login is tracked. Revoking a session signs that browser out on its next request.</p>
+      <table>
+        <thead><tr><th>Device</th><th>IP</th><th>Last seen</th><th>Started</th><th></th></tr></thead>
+        <tbody id="sessions"></tbody>
+      </table>
+      <div style="margin-top:12px"><button class="danger" onclick="revokeOthers()">Sign out everywhere else</button></div>
+    </div>
+  </section>
+
   <!-- SETTINGS -->
   <section id="tab-settings" class="hidden">
     <div class="panel">
@@ -209,18 +278,19 @@ tr:last-child td{border-bottom:0}
 <div class="toast" id="toast"></div>
 
 <script>
-let state = {overview:null, timer:null};
+let state = {overview:null, security:null};
 const $ = s => document.querySelector(s);
 const esc = s => String(s??'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 function toast(msg, isErr){
   const t = $('#toast'); t.textContent = msg; t.className = 'toast on' + (isErr?' err':'');
-  clearTimeout(t._h); t._h = setTimeout(()=>t.className='toast', 2600);
+  clearTimeout(t._h); t._h = setTimeout(()=>t.className='toast', isErr?4200:2600);
 }
 async function api(path, opts){
   const r = await fetch(path, Object.assign({headers:{'Content-Type':'application/json'}}, opts||{}));
   let j = null; try { j = await r.json(); } catch(e){}
-  if (r.status === 401){ showLogin(); throw new Error('signed out'); }
+  if (r.status === 401 && j && j.twofa) return j;      // password ok, code needed
+  if (r.status === 401) { showLogin(); throw new Error('signed out'); }
   if (!r.ok) throw new Error((j && j.error) || ('HTTP ' + r.status));
   return j;
 }
@@ -229,26 +299,33 @@ function showApp(){ $('#login').classList.add('hidden'); $('#app').classList.rem
 
 async function doLogin(){
   $('#loginerr').textContent = '';
+  const body = {password: $('#pw').value};
+  const code = $('#code').value.trim();
+  if (code) body.code = code;
   try {
-    const r = await fetch('/admin/api/login', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({password: $('#pw').value})});
-    const j = await r.json();
-    if (!r.ok) { $('#loginerr').textContent = j.error || 'failed'; return; }
+    const r = await fetch('/admin/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    const j = await r.json().catch(()=>({}));
+    if (!r.ok) {
+      if (j.twofa) { $('#code-row').classList.remove('hidden'); $('#code').focus(); $('#loginerr').textContent = 'Password accepted — enter your code.'; return; }
+      $('#loginerr').textContent = j.error || 'failed';
+      return;
+    }
     showApp(); refresh();
   } catch(e){ $('#loginerr').textContent = 'network error'; }
 }
-
-async function logout(){ await fetch('/admin/api/logout',{method:'POST'}); showLogin(); }
+async function logout(){ await fetch('/admin/api/logout',{method:'POST'}); location.reload(); }
 
 function tab(name){
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
-  ['keys','indexers','activity','settings'].forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== name));
+  ['keys','indexers','activity','security','settings'].forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== name));
+  if (name === 'security') loadSecurity();
   if (name === 'settings' && state.overview) fillSettings(state.overview);
 }
 
 async function refresh(){
   try {
     const o = await api('/admin/api/overview');
+    if (!o || o.twofa) return;
     state.overview = o;
     $('#ver').textContent = 'v' + o.version;
     $('#chipcache').textContent = 'cache ' + bytes(o.cache_bytes) + ' / ' + bytes(o.cache_max_bytes);
@@ -274,27 +351,45 @@ function bytes(n){
 }
 function uptime(s){
   const d = Math.floor(s/86400), h = Math.floor(s%86400/3600), m = Math.floor(s%3600/60);
-  return d ? d+'d '+h+'h' : h ? h+'h '+m+'m' : m+'m';
+  return d ? d+'d '+h+'h' : h ? h+'h '+m+'m' : Math.max(m,1)+'m';
 }
-function when(ts){ if(!ts) return '—'; const d = new Date(ts*1000); return d.toLocaleString(); }
+function when(ts){ if(!ts) return '—'; return new Date(ts*1000).toLocaleString(); }
+function ago(ts){
+  if(!ts) return '—';
+  const d = Math.max(0, Math.floor(Date.now()/1000 - ts));
+  if (d < 90) return d + 's ago';
+  if (d < 5400) return Math.round(d/60) + 'm ago';
+  if (d < 172800) return Math.round(d/3600) + 'h ago';
+  return Math.round(d/86400) + 'd ago';
+}
+function expiryLabel(ts){
+  if (!ts) return '<span class="muted">never</span>';
+  const left = ts - Date.now()/1000;
+  if (left <= 0) return '<span class="bad">expired</span>';
+  if (left < 86400) return '<span class="warnc">' + Math.round(left/3600) + 'h left</span>';
+  return Math.round(left/86400) + 'd left <span class="tiny muted">· ' + new Date(ts*1000).toLocaleDateString() + '</span>';
+}
 
 function renderKeys(keys, base){
   const tb = $('#keys');
-  if (!keys.length){ tb.innerHTML = '<tr><td colspan="5" class="muted">No keys yet.</td></tr>'; return; }
+  if (!keys.length){ tb.innerHTML = '<tr><td colspan="6" class="muted">No keys yet.</td></tr>'; return; }
   const origin = base || location.origin;
   tb.innerHTML = keys.map(k => {
     const url = origin + '/k/' + k.token + '/manifest.json';
-    const state = k.revoked ? '<span class="bad">revoked</span>'
-      : (k.expires_at && k.expires_at*1000 < Date.now() ? '<span class="warnc">expired</span>' : '<span class="ok">active</span>');
+    const expired = k.expires_at && k.expires_at*1000 < Date.now();
+    const badge = expired ? '<span class="badge expired">expired</span>'
+      : k.status === 'paused' ? '<span class="badge paused">paused</span>'
+      : '<span class="badge active">active</span>';
     return `<tr>
-      <td><b>${esc(k.label)}</b><br><span class="tiny muted">${esc(k.note||'')} ${state}</span><br><span class="keytag mono">${esc(k.id)}</span></td>
+      <td><b>${esc(k.label)}</b> ${badge}<br><span class="tiny muted">${esc(k.note||'')}</span><br><span class="keytag mono">${esc(k.id)}</span></td>
       <td><div class="url mono">${esc(url)}</div></td>
-      <td class="tiny muted">${when(k.last_used_at)}<br>${k.requests} req</td>
+      <td class="tiny">${expiryLabel(k.expires_at)}</td>
+      <td class="tiny muted">${ago(k.last_used_at)}<br>${k.requests} req</td>
       <td class="tiny">${bytes(k.bytes)}</td>
       <td><div class="actions">
         <button class="ghost" onclick="copy('${esc(url)}')">Copy</button>
-        <button class="${k.revoked?'':'danger'}" onclick="revoke('${k.id}',${k.revoked?0:1})">${k.revoked?'Restore':'Revoke'}</button>
-        <button class="ghost" onclick="delKey('${k.id}','${esc(k.label)}')">✕</button>
+        <button class="ghost" onclick="pauseKey('${k.id}',${k.status==='paused'?0:1})">${k.status==='paused'?'Resume':'Pause'}</button>
+        <button class="danger" onclick="revokeKey('${k.id}','${esc(k.label)}')">Revoke</button>
       </div></td></tr>`;
   }).join('');
 }
@@ -335,29 +430,30 @@ function fillSettings(o){
   $('#set-read').value = 64;
 }
 
+/* ---- keys ---- */
 async function createKey(){
   const label = $('#k-label').value.trim() || 'key';
   const note = $('#k-note').value.trim();
-  const days = parseInt($('#k-days').value || '0', 10);
+  const expires = $('#k-expires').value;
   try {
-    const k = await api('/admin/api/keys', {method:'POST', body: JSON.stringify({label, note, days})});
+    await api('/admin/api/keys', {method:'POST', body: JSON.stringify({label, note, expires})});
     $('#k-label').value = ''; $('#k-note').value = '';
-    toast('Key created');
-    refresh();
+    toast('Key created'); refresh();
   } catch(e){ toast(e.message, true); }
 }
-async function revoke(id, on){
-  try { await api('/admin/api/keys/'+id+'/revoke', {method:'POST', body: JSON.stringify({revoked: !!on})});
-    toast(on ? 'Key revoked' : 'Key restored'); refresh(); } catch(e){ toast(e.message, true); }
+async function pauseKey(id, paused){
+  try { await api('/admin/api/keys/'+id+'/pause', {method:'POST', body: JSON.stringify({paused: !!paused})});
+    toast(paused ? 'Key paused' : 'Key resumed'); refresh(); } catch(e){ toast(e.message, true); }
 }
-async function delKey(id, label){
-  if (!confirm('Delete key "'+label+'" permanently?')) return;
-  try { await api('/admin/api/keys/'+id, {method:'DELETE'}); toast('Deleted'); refresh(); } catch(e){ toast(e.message, true); }
+async function revokeKey(id, label){
+  if (!confirm('Revoke "'+label+'"?\n\nThis deletes the key permanently — the manifest URL stops working immediately and its stats are gone.')) return;
+  try { await api('/admin/api/keys/'+id, {method:'DELETE'}); toast('Key revoked and deleted'); refresh(); } catch(e){ toast(e.message, true); }
 }
 function copy(text){
   navigator.clipboard.writeText(text).then(()=>toast('Copied manifest URL')).catch(()=>toast('Copy failed',true));
 }
 
+/* ---- indexers ---- */
 async function saveIndexer(){
   const body = {kind:$('#ix-kind').value, name:$('#ix-name').value.trim() || 'indexer',
     url:$('#ix-url').value.trim(), api_key:$('#ix-key').value.trim(), enabled:true};
@@ -371,12 +467,12 @@ async function testIndexer(){
   try {
     const r = await api('/admin/api/indexers/test?q=' + encodeURIComponent('big buck bunny'), {method:'POST', body: JSON.stringify(body)});
     if (r.error){ $('#ixtest').innerHTML = '<div class="bad tiny">'+esc(r.error)+'</div>'; return; }
-    $('#ixtest').innerHTML = r.results.map(x => `<div class="sr"><span class="t">${esc(x.Title)}</span><span class="tiny muted">${x.Seeders} seeds · ${bytes(x.Size)}</span></div>`).join('')
+    $('#ixtest').innerHTML = (r.results||[]).map(x => `<div class="sr"><span class="t">${esc(x.Title)}</span><span class="tiny muted">${x.Seeders} seeds · ${bytes(x.Size)}</span></div>`).join('')
       || '<div class="muted tiny">no results</div>';
   } catch(e){ $('#ixtest').innerHTML = '<div class="bad tiny">'+esc(e.message)+'</div>'; }
 }
 async function toggleIndexer(id, on){
-  const ix = state.overview.indexers.find(i => i.id === id);
+  const ix = ((state.overview && state.overview.indexers)||[]).find(i => i.id === id);
   if (!ix) return;
   ix.enabled = !!on;
   try { await api('/admin/api/indexers', {method:'POST', body: JSON.stringify(ix)}); refresh(); } catch(e){ toast(e.message,true); }
@@ -390,9 +486,8 @@ async function search(){
   $('#searchres').innerHTML = '<div class="muted tiny">searching…</div>';
   try {
     const r = await api('/admin/api/search?q=' + encodeURIComponent(q) + '&type=' + $('#q-type').value);
-    const rows = r.results.map(x => `<div class="sr"><span class="t">${esc(x.Title)}</span>
-      <span class="tiny muted">${x.Seeders} seeds · ${bytes(x.Size)} · ${esc(x.Indexer)}</span>
-      <span class="tiny mono muted">${esc(x.InfoHash.slice(0,10))}</span></div>`).join('');
+    const rows = (r.results||[]).map(x => `<div class="sr"><span class="t">${esc(x.Title)}</span>
+      <span class="tiny muted">${x.Seeders} seeds · ${bytes(x.Size)} · ${esc(x.Indexer)}</span></div>`).join('');
     const errs = (r.errors||[]).map(e => `<div class="warnc tiny">${esc(e)}</div>`).join('');
     $('#searchres').innerHTML = (rows || '<div class="muted tiny">no results</div>') + errs;
   } catch(e){ $('#searchres').innerHTML = '<div class="bad tiny">'+esc(e.message)+'</div>'; }
@@ -407,10 +502,64 @@ async function quickPlay(){
     $('#quickres').innerHTML = `<div class="sr"><a href="${esc(r.url)}" target="_blank" class="mono tiny">${esc(r.url)}</a></div>`;
   } catch(e){ toast(e.message,true); }
 }
+
+/* ---- security ---- */
+async function loadSecurity(){
+  try {
+    const s = await api('/admin/api/security');
+    state.security = s;
+    $('#tfa-off').classList.toggle('hidden', s.two_factor);
+    $('#tfa-on').classList.toggle('hidden', !s.two_factor);
+    $('#tfa-setup').classList.add('hidden');
+    if (s.two_factor) $('#recovery-left').textContent = s.recovery_left + ' recovery codes left';
+    const tb = $('#sessions');
+    tb.innerHTML = (s.sessions||[]).map(x => `<tr>
+      <td><b>${esc(x.name||'Browser')}</b> ${x.id===s.current?'<span class="badge active">this device</span>':''}</td>
+      <td class="tiny mono">${esc(x.ip||'—')}</td>
+      <td class="tiny muted">${ago(x.last_seen_at)}</td>
+      <td class="tiny muted">${when(x.created_at)}</td>
+      <td><div class="actions">${x.id===s.current?'':'<button class="ghost" onclick="revokeSession(\''+x.id+'\')">Revoke</button>'}</div></td>
+    </tr>`).join('') || '<tr><td colspan="5" class="muted">No sessions.</td></tr>';
+  } catch(e){ toast(e.message, true); }
+}
+async function begin2FA(){
+  try {
+    const r = await api('/admin/api/2fa/begin', {method:'POST'});
+    $('#qr-box').innerHTML = '<img src="' + r.qr + '" alt="TOTP QR">';
+    $('#totp-secret').textContent = r.secret;
+    $('#tfa-off').classList.add('hidden'); $('#tfa-on').classList.add('hidden');
+    $('#tfa-setup').classList.remove('hidden'); $('#recovery-box').classList.add('hidden');
+    $('#totp-code').focus();
+  } catch(e){ toast(e.message, true); }
+}
+function cancel2FA(){ $('#tfa-setup').classList.add('hidden'); loadSecurity(); }
+async function enable2FA(){
+  try {
+    const r = await api('/admin/api/2fa/enable', {method:'POST', body: JSON.stringify({code: $('#totp-code').value.trim()})});
+    $('#recovery-codes').innerHTML = (r.recovery_codes||[]).map(c => '<code>'+esc(c)+'</code>').join('');
+    $('#tfa-setup').classList.add('hidden');
+    $('#recovery-box').classList.remove('hidden');
+    toast('Two-factor enabled'); loadSecurity();
+  } catch(e){ toast(e.message, true); }
+}
+async function disable2FA(){
+  const pw = prompt('Confirm your admin password to disable two-factor:');
+  if (!pw) return;
+  try { await api('/admin/api/2fa/disable', {method:'POST', body: JSON.stringify({password: pw})});
+    toast('Two-factor disabled'); $('#recovery-box').classList.add('hidden'); loadSecurity(); } catch(e){ toast(e.message, true); }
+}
+async function revokeSession(id){
+  try { await api('/admin/api/sessions/'+id, {method:'DELETE'}); toast('Session revoked'); loadSecurity(); } catch(e){ toast(e.message, true); }
+}
+async function revokeOthers(){
+  if (!confirm('Sign out every other session?')) return;
+  try { await api('/admin/api/sessions/revoke-others', {method:'POST'}); toast('Other sessions signed out'); loadSecurity(); } catch(e){ toast(e.message, true); }
+}
+
 async function saveSettings(){
   try {
     await api('/admin/api/settings', {method:'POST', body: JSON.stringify({
-      cache_gb: parseInt($('#set-cache').value||'40',10),
+      cache_gb: parseInt($('#set-cache').value||'16',10),
       idle_minutes: parseInt($('#set-idle').value||'20',10),
       readahead_mb: parseInt($('#set-read').value||'64',10)})});
     toast('Settings saved'); refresh();
@@ -424,7 +573,11 @@ document.addEventListener('keydown', e => {
   try {
     const r = await fetch('/admin/api/overview');
     if (r.ok) { showApp(); await refresh(); setInterval(refresh, 5000); }
-    else showLogin();
+    else {
+      const j = await r.json().catch(()=>({}));
+      if (j && j.twofa) $('#code-row').classList.remove('hidden');
+      showLogin();
+    }
   } catch(e){ showLogin(); }
 })();
 </script>

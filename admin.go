@@ -2,11 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"crypto/subtle"
 	"embed"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -78,33 +74,6 @@ func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request) {
 	w.Write(b)
 }
 
-// sessionValue is "<unix-expiry>.<hex hmac>".
-func (s *Server) signSession(exp int64) string {
-	msg := strconv.FormatInt(exp, 10)
-	mac := hmac.New(sha256.New, s.sessionKey)
-	mac.Write([]byte(msg))
-	return msg + "." + hex.EncodeToString(mac.Sum(nil))
-}
-
-func (s *Server) validSession(r *http.Request) bool {
-	c, err := r.Cookie("marlin_session")
-	if err != nil {
-		return false
-	}
-	parts := strings.SplitN(c.Value, ".", 2)
-	if len(parts) != 2 {
-		return false
-	}
-	exp, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil || exp < time.Now().Unix() {
-		return false
-	}
-	mac := hmac.New(sha256.New, s.sessionKey)
-	mac.Write([]byte(parts[0]))
-	want := hex.EncodeToString(mac.Sum(nil))
-	return hmac.Equal([]byte(want), []byte(parts[1]))
-}
-
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if loginWindow.blocked(ip) {
@@ -113,39 +82,55 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		Password string `json:"password"`
+		Code     string `json:"code"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		httpError(w, 400, "bad json")
 		return
 	}
-	if subtle.ConstantTimeCompare([]byte(body.Password), []byte(s.cfg.AdminPassword)) != 1 {
+	if !s.checkPassword(body.Password) {
 		loginWindow.fail(ip)
 		s.log.Printf("admin login failed from %s", ip)
 		httpError(w, 401, "wrong password")
 		return
 	}
+	if s.twoFactorEnabled() {
+		if strings.TrimSpace(body.Code) == "" {
+			// Password was right, so this is not a failed attempt — just ask for the code.
+			writeJSON(w, 401, map[string]any{"error": "two-factor code required", "twofa": true})
+			return
+		}
+		if !s.checkSecondFactor(body.Code) {
+			loginWindow.fail(ip)
+			s.log.Printf("two-factor failure from %s", ip)
+			httpError(w, 401, "invalid two-factor code")
+			return
+		}
+	}
 	loginWindow.reset(ip)
-	exp := time.Now().Add(7 * 24 * time.Hour).Unix()
-	http.SetCookie(w, &http.Cookie{
-		Name:     "marlin_session",
-		Value:    s.signSession(exp),
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   r.TLS != nil || strings.Contains(r.Header.Get("X-Forwarded-Proto"), "https"),
-		Expires:  time.Unix(exp, 0),
-	})
-	writeJSON(w, 200, map[string]any{"ok": true})
+	ua := r.UserAgent()
+	sess, err := s.store.CreateSession(sessionName(ua), ip, ua, 7*24*time.Hour)
+	if err != nil {
+		httpError(w, 500, err.Error())
+		return
+	}
+	s.store.PruneSessions(50)
+	s.issueCookie(w, r, sess)
+	s.log.Printf("admin login from %s (%s)", ip, sess.Name)
+	writeJSON(w, 200, map[string]any{"ok": true, "session": sess.ID})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if sess, ok := s.currentSession(r); ok {
+		s.store.DeleteSession(sess.ID)
+	}
 	http.SetCookie(w, &http.Cookie{Name: "marlin_session", Value: "", Path: "/", MaxAge: -1})
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 func (s *Server) requireAdmin(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.validSession(r) {
+		if _, ok := s.currentSession(r); !ok {
 			httpError(w, 401, "not signed in")
 			return
 		}
@@ -194,7 +179,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		CacheBytes: s.engine.CacheBytes(),
 		CacheMax:   s.engine.maxCacheBytes,
 		Uptime:     int64(time.Since(s.start).Seconds()),
-		Version:    "1.4.2",
+		Version:    "1.5.0",
 		BaseURL:    s.cfg.BaseURL,
 		KeyCount:   s.store.ActiveKeyCount(),
 		MediaRows:  s.store.MediaCacheCount(),
@@ -204,13 +189,18 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Label string `json:"label"`
-		Note  string `json:"note"`
-		Days  int    `json:"days"`
+		Label   string `json:"label"`
+		Note    string `json:"note"`
+		Expires string `json:"expires"`
+		Days    int    `json:"days"`
 	}
 	json.NewDecoder(r.Body).Decode(&body)
-	var ttl time.Duration
-	if body.Days > 0 {
+	ttl, err := parseTTL(body.Expires)
+	if err != nil {
+		httpError(w, 400, err.Error())
+		return
+	}
+	if ttl == 0 && body.Days > 0 {
 		ttl = time.Duration(body.Days) * 24 * time.Hour
 	}
 	k, err := s.store.CreateKey(strings.TrimSpace(body.Label), strings.TrimSpace(body.Note), ttl)
@@ -222,15 +212,20 @@ func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, k)
 }
 
-func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handlePauseKey(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body struct {
-		Revoked bool `json:"revoked"`
+		Paused bool `json:"paused"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		body.Revoked = true
+		httpError(w, 400, "bad json")
+		return
 	}
-	if err := s.store.SetKeyRevoked(id, body.Revoked); err != nil {
+	status := "active"
+	if body.Paused {
+		status = "paused"
+	}
+	if err := s.store.SetKeyStatus(id, status); err != nil {
 		code := 500
 		if errors.Is(err, ErrKeyNotFound) {
 			code = 404
@@ -238,8 +233,8 @@ func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
 		httpError(w, code, err.Error())
 		return
 	}
-	s.log.Printf("key %s revoked=%v", id, body.Revoked)
-	writeJSON(w, 200, map[string]any{"ok": true, "revoked": body.Revoked})
+	s.log.Printf("key %s status=%s", id, status)
+	writeJSON(w, 200, map[string]any{"ok": true, "status": status})
 }
 
 func (s *Server) handleDeleteKey(w http.ResponseWriter, r *http.Request) {
@@ -247,7 +242,7 @@ func (s *Server) handleDeleteKey(w http.ResponseWriter, r *http.Request) {
 		httpError(w, 404, err.Error())
 		return
 	}
-	s.log.Printf("key %s deleted", r.PathValue("id"))
+	s.log.Printf("key %s revoked (deleted)", r.PathValue("id"))
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 

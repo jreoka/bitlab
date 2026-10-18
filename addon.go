@@ -286,8 +286,8 @@ func (s *Server) authKey(w http.ResponseWriter, r *http.Request) (Key, bool) {
 		return k, true
 	case errors.Is(err, ErrKeyNotFound):
 		httpError(w, 401, "unknown manifest key")
-	case errors.Is(err, ErrKeyRevoked):
-		httpError(w, 410, "this manifest key was revoked")
+	case errors.Is(err, ErrKeyPaused):
+		httpError(w, 403, "this manifest key is paused")
 	case errors.Is(err, ErrKeyExpired):
 		httpError(w, 410, "this manifest key expired")
 	default:

@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func newTestServer(t *testing.T) (*Server, *http.ServeMux) {
@@ -46,29 +47,34 @@ func TestManifestLifecycle(t *testing.T) {
 		t.Fatalf("bad manifest: %+v", m)
 	}
 
-	if err := s.store.SetKeyRevoked(k.ID, true); err != nil {
+	if err := s.store.SetKeyStatus(k.ID, "paused"); err != nil {
 		t.Fatal(err)
 	}
-	if rec := get("/k/" + k.Token + "/manifest.json"); rec.Code != http.StatusGone {
-		t.Fatalf("revoked key: want 410, got %d", rec.Code)
+	if rec := get("/k/" + k.Token + "/manifest.json"); rec.Code != http.StatusForbidden {
+		t.Fatalf("paused key: want 403, got %d", rec.Code)
 	}
-	if rec := get("/k/" + k.Token + "/play/" + "0123456789abcdef0123456789abcdef01234567"); rec.Code != http.StatusGone {
-		t.Fatalf("revoked play: want 410, got %d", rec.Code)
+	if rec := get("/k/" + k.Token + "/play/" + "0123456789abcdef0123456789abcdef01234567"); rec.Code != http.StatusForbidden {
+		t.Fatalf("paused play: want 403, got %d", rec.Code)
 	}
 
-	// Restoring puts the same URL back in service — no reinstall on the player.
-	if err := s.store.SetKeyRevoked(k.ID, false); err != nil {
+	// Resuming puts the same URL back in service — no reinstall on the player.
+	if err := s.store.SetKeyStatus(k.ID, "active"); err != nil {
 		t.Fatal(err)
 	}
 	if rec := get("/k/" + k.Token + "/manifest.json"); rec.Code != 200 {
-		t.Fatalf("restored key: want 200, got %d", rec.Code)
+		t.Fatalf("resumed key: want 200, got %d", rec.Code)
 	}
 
+	// Revoke deletes: the URL and the row both go.
 	if err := s.store.DeleteKey(k.ID); err != nil {
 		t.Fatal(err)
 	}
 	if rec := get("/k/" + k.Token + "/manifest.json"); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("deleted key: want 401, got %d", rec.Code)
+		t.Fatalf("revoked key: want 401, got %d", rec.Code)
+	}
+	keys, _ := s.store.ListKeys()
+	if len(keys) != 0 {
+		t.Fatalf("revoke should delete the row, %d left", len(keys))
 	}
 }
 
@@ -86,6 +92,10 @@ func TestUnknownAndExpiredKeys(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/k/"+k.Token+"/manifest.json", nil))
 	if rec.Code != http.StatusGone {
 		t.Fatalf("expired key: want 410, got %d", rec.Code)
+	}
+	// Using an expired key deletes it, not just refuses it.
+	if keys, _ := s.store.ListKeys(); len(keys) != 0 {
+		t.Fatalf("expired key should be purged on use, %d rows left", len(keys))
 	}
 }
 
@@ -121,22 +131,30 @@ func TestReleaseLabel(t *testing.T) {
 	}
 }
 
-func TestSessionSigning(t *testing.T) {
-	s := &Server{sessionKey: []byte("k")}
-	v := s.signSession(4102444800)
-	r := httptest.NewRequest("GET", "/admin", nil)
-	r.AddCookie(&http.Cookie{Name: "marlin_session", Value: v})
-	if !s.validSession(r) {
+func TestSessionCookieAndRevocation(t *testing.T) {
+	st := newTestStore(t)
+	s := &Server{store: st, sessionKey: []byte("k")}
+	sess, err := st.CreateSession("test", "127.0.0.1", "ua", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withCookie := func(v string) *http.Request {
+		r := httptest.NewRequest("GET", "/admin", nil)
+		r.AddCookie(&http.Cookie{Name: "marlin_session", Value: v})
+		return r
+	}
+	if _, ok := s.currentSession(withCookie(sess.ID + "." + s.sessionMAC(sess.ID))); !ok {
 		t.Fatal("valid session rejected")
 	}
-	r2 := httptest.NewRequest("GET", "/admin", nil)
-	r2.AddCookie(&http.Cookie{Name: "marlin_session", Value: v + "x"})
-	if s.validSession(r2) {
-		t.Fatal("tampered session accepted")
+	if _, ok := s.currentSession(withCookie(sess.ID + "." + "deadbeef")); ok {
+		t.Fatal("tampered signature accepted")
 	}
-	r3 := httptest.NewRequest("GET", "/admin", nil)
-	r3.AddCookie(&http.Cookie{Name: "marlin_session", Value: s.signSession(1000)})
-	if s.validSession(r3) {
-		t.Fatal("expired session accepted")
+	if _, ok := s.currentSession(withCookie("no-dot-here")); ok {
+		t.Fatal("malformed cookie accepted")
+	}
+	// Server-side revocation is the point of tracked sessions.
+	st.DeleteSession(sess.ID)
+	if _, ok := s.currentSession(withCookie(sess.ID + "." + s.sessionMAC(sess.ID))); ok {
+		t.Fatal("revoked session still valid")
 	}
 }
