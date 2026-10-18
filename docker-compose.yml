@@ -1,0 +1,15 @@
+services:
+  marlin:
+    build: .
+    image: ghcr.io/jreoka/marlin:latest
+    container_name: marlin
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    environment:
+      MARLIN_ADMIN_PASSWORD: ${MARLIN_ADMIN_PASSWORD:-change-me}
+      MARLIN_BASE_URL: ${MARLIN_BASE_URL:-}
+      MARLIN_CACHE_GB: ${MARLIN_CACHE_GB:-40}
+      MARLIN_IDLE_MINUTES: ${MARLIN_IDLE_MINUTES:-20}
+    volumes:
+      - ./data:/data

@@ -1,0 +1,501 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"mime"
+	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/anacrolix/torrent"
+	"github.com/anacrolix/torrent/metainfo"
+)
+
+var errInfoTimeout = errors.New("timed out waiting for torrent metadata (no peers?)")
+
+type activity struct {
+	readers    int
+	lastAccess time.Time
+	label      string
+	size       int64
+	rate       float64
+	prevBytes  int64
+	prevAt     time.Time
+}
+
+// Engine owns the BitTorrent client and turns it into an HTTP byte source.
+type Engine struct {
+	cl            *torrent.Client
+	dataDir       string
+	trackers      []string
+	store         *Store
+	maxCacheBytes int64
+	idleTimeout   time.Duration
+
+	mu       sync.Mutex
+	addLocks map[string]*sync.Mutex
+	act      map[string]*activity
+	warmSem  chan struct{}
+	log      *log.Logger
+	closed   bool
+}
+
+func NewEngine(cfg Config, store *Store, lg *log.Logger) (*Engine, error) {
+	cc := torrent.NewDefaultClientConfig()
+	cc.DataDir = cfg.DataDir
+	cc.Seed = false
+	cc.NoUpload = false
+	cc.DisableAggressiveUpload = true
+	cc.ListenPort = cfg.TorrentPort
+	cc.EstablishedConnsPerTorrent = 80
+	cc.HalfOpenConnsPerTorrent = 40
+	cc.DisableWebtorrent = false
+	cc.DisablePEX = false
+	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
+		return nil, err
+	}
+	cl, err := torrent.NewClient(cc)
+	if err != nil {
+		return nil, fmt.Errorf("torrent client: %w", err)
+	}
+	e := &Engine{
+		cl:            cl,
+		dataDir:       cfg.DataDir,
+		trackers:      cfg.Trackers,
+		store:         store,
+		maxCacheBytes: cfg.CacheMaxBytes,
+		idleTimeout:   cfg.IdleTimeout,
+		addLocks:      map[string]*sync.Mutex{},
+		act:           map[string]*activity{},
+		warmSem:       make(chan struct{}, 4),
+		log:           lg,
+	}
+	go e.janitor()
+	return e, nil
+}
+
+func (e *Engine) Close() { e.cl.Close() }
+
+func (e *Engine) lockFor(ih string) *sync.Mutex {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	l, ok := e.addLocks[ih]
+	if !ok {
+		l = &sync.Mutex{}
+		e.addLocks[ih] = l
+	}
+	return l
+}
+
+func (e *Engine) activity(ih string) *activity {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	a, ok := e.act[ih]
+	if !ok {
+		a = &activity{lastAccess: time.Now(), prevAt: time.Now()}
+		e.act[ih] = a
+	}
+	return a
+}
+
+// ensure returns a torrent handle, adding the magnet if it is not loaded yet.
+func (e *Engine) ensure(ih, name string, extra []string) (*torrent.Torrent, error) {
+	h := metainfo.NewHashFromHex(ih)
+	if t, ok := e.cl.Torrent(h); ok {
+		return t, nil
+	}
+	l := e.lockFor(ih)
+	l.Lock()
+	defer l.Unlock()
+	if t, ok := e.cl.Torrent(h); ok {
+		return t, nil
+	}
+	trs := append([]string{}, e.trackers...)
+	for _, t := range extra {
+		if t != "" && !contains(trs, t) {
+			trs = append(trs, t)
+		}
+	}
+	t, err := e.cl.AddMagnet(magnetURI(ih, name, trs))
+	if err != nil {
+		return nil, err
+	}
+	a := e.activity(ih)
+	a.label = name
+	return t, nil
+}
+
+func contains(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+func waitInfo(ctx context.Context, t *torrent.Torrent) error {
+	select {
+	case <-t.GotInfo():
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Warm pulls metadata in the background so the click that follows is instant.
+func (e *Engine) Warm(ih, name string, extra []string) {
+	select {
+	case e.warmSem <- struct{}{}:
+	default:
+		return
+	}
+	go func() {
+		defer func() { <-e.warmSem }()
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		t, err := e.ensure(ih, name, extra)
+		if err != nil {
+			return
+		}
+		if err := waitInfo(ctx, t); err != nil {
+			return
+		}
+		e.recordMedia(t)
+	}()
+}
+
+func (e *Engine) recordMedia(t *torrent.Torrent) {
+	info := t.Info()
+	if info == nil {
+		return
+	}
+	var files []CachedFile
+	for i, f := range t.Files() {
+		if !isVideo(f.DisplayPath()) {
+			continue
+		}
+		files = append(files, CachedFile{Idx: i, Path: f.DisplayPath(), Size: f.Length()})
+	}
+	e.store.SaveMedia(t.InfoHash().HexString(), info.Name, t.Length(), files)
+}
+
+func isVideo(p string) bool {
+	ext := strings.ToLower(filepath.Ext(p))
+	return videoExts[ext]
+}
+
+// chooseFile picks the file to serve: an explicit index if valid, else the
+// largest video file, skipping samples. Pure so it can be tested directly.
+func chooseFile(paths []string, sizes []int64, want int) (int, error) {
+	if len(paths) == 0 {
+		return 0, errors.New("torrent has no files")
+	}
+	if want >= 0 && want < len(paths) {
+		return want, nil
+	}
+	best := -1
+	for i, p := range paths {
+		lp := strings.ToLower(p)
+		if !isVideo(lp) {
+			continue
+		}
+		if strings.Contains(lp, "sample") && len(paths) > 1 {
+			continue
+		}
+		if best < 0 || sizes[i] > sizes[best] {
+			best = i
+		}
+	}
+	if best < 0 {
+		for i := range paths {
+			if best < 0 || sizes[i] > sizes[best] {
+				best = i
+			}
+		}
+	}
+	if best < 0 {
+		return 0, errors.New("no playable file found")
+	}
+	return best, nil
+}
+
+// handlePlay streams one file out of a torrent with full Range support.
+func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
+	key, ok := s.authKey(w, r)
+	if !ok {
+		return
+	}
+	ih := strings.ToLower(r.PathValue("infohash"))
+	if len(ih) != 40 {
+		httpError(w, 400, "bad infohash")
+		return
+	}
+	hint := r.URL.Query().Get("n")
+	wantIdx := -1
+	if f := r.URL.Query().Get("f"); f != "" {
+		if n, err := strconv.Atoi(f); err == nil {
+			wantIdx = n
+		}
+	}
+
+	var extra []string
+	if v, ok := s.hints.Load(ih); ok {
+		extra = v.([]string)
+	}
+	t, err := s.engine.ensure(ih, hint, append(extra, r.URL.Query()["tr"]...))
+	if err != nil {
+		httpError(w, 500, "torrent: "+err.Error())
+		return
+	}
+
+	// Metadata is usually already warm by the time a player asks.
+	ctx := r.Context()
+	infoCtx, cancel := context.WithTimeout(ctx, s.cfg.InfoTimeout)
+	defer cancel()
+	if err := waitInfo(infoCtx, t); err != nil {
+		httpError(w, 504, "waiting for metadata: "+err.Error())
+		return
+	}
+	s.engine.recordMedia(t)
+
+	allFiles := t.Files()
+	paths := make([]string, len(allFiles))
+	sizes := make([]int64, len(allFiles))
+	for i, ff := range allFiles {
+		paths[i] = ff.DisplayPath()
+		sizes[i] = ff.Length()
+	}
+	idx, err := chooseFile(paths, sizes, wantIdx)
+	if err != nil {
+		httpError(w, 404, err.Error())
+		return
+	}
+	f := allFiles[idx]
+
+	act := s.engine.activity(ih)
+	s.engine.mu.Lock()
+	act.readers++
+	act.lastAccess = time.Now()
+	act.size = f.Length()
+	s.engine.mu.Unlock()
+	defer func() {
+		s.engine.mu.Lock()
+		act.readers--
+		act.lastAccess = time.Now()
+		s.engine.mu.Unlock()
+	}()
+
+	reader := f.NewReader()
+	reader.SetReadahead(s.cfg.ReadaheadBytes)
+	reader.SetResponsive()
+	reader.SetContext(ctx)
+	defer reader.Close()
+
+	name := filepath.Base(f.DisplayPath())
+	if ct := mime.TypeByExtension(filepath.Ext(name)); ct != "" {
+		w.Header().Set("Content-Type", ct)
+	} else {
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", name))
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Marlin-File", strconv.Itoa(idx))
+
+	cw := &countingWriter{ResponseWriter: w, n: &s.bytesOut}
+	http.ServeContent(cw, r, name, time.Time{}, reader)
+	s.store.AddKeyBytes(key.ID, cw.written)
+	s.log.Printf("play %s key=%s file=%d served=%s range=%q", ih[:8], key.ID, idx, humanBytes(cw.written), r.Header.Get("Range"))
+}
+
+type countingWriter struct {
+	http.ResponseWriter
+	n       *int64
+	written int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.ResponseWriter.Write(p)
+	c.written += int64(n)
+	return n, err
+}
+
+// janitor drops idle torrents and keeps the disk cache under budget.
+func (e *Engine) janitor() {
+	tick := time.NewTicker(30 * time.Second)
+	defer tick.Stop()
+	evictTick := 0
+	for range tick.C {
+		e.mu.Lock()
+		closed := e.closed
+		e.mu.Unlock()
+		if closed {
+			return
+		}
+		now := time.Now()
+		for _, t := range e.cl.Torrents() {
+			ih := t.InfoHash().HexString()
+			a := e.activity(ih)
+			e.mu.Lock()
+			if t.Info() != nil {
+				a.size = t.Length()
+			}
+			if a.prevAt.Before(now) {
+				dt := now.Sub(a.prevAt).Seconds()
+				if dt > 0 {
+					cur := t.BytesCompleted()
+					a.rate = float64(cur-a.prevBytes) / dt
+					a.prevBytes = cur
+				}
+			}
+			a.prevAt = now
+			idle := now.Sub(a.lastAccess)
+			readers := a.readers
+			e.mu.Unlock()
+
+			if readers == 0 && idle > e.idleTimeout {
+				e.log.Printf("drop idle torrent %s (%s idle)", ih[:8], idle.Round(time.Second))
+				t.Drop()
+				e.mu.Lock()
+				delete(e.act, ih)
+				e.mu.Unlock()
+			}
+		}
+		evictTick++
+		if evictTick%4 == 0 {
+			e.evict()
+		}
+	}
+}
+
+func (e *Engine) evict() {
+	if e.maxCacheBytes <= 0 {
+		return
+	}
+	size, err := dirSize(e.dataDir)
+	if err != nil || size <= e.maxCacheBytes {
+		return
+	}
+	type cand struct {
+		ih   string
+		when time.Time
+		dir  string
+		size int64
+	}
+	var cands []cand
+	for _, t := range e.cl.Torrents() {
+		info := t.Info()
+		if info == nil || t.BytesCompleted() < t.Length() {
+			continue
+		}
+		ih := t.InfoHash().HexString()
+		a := e.activity(ih)
+		e.mu.Lock()
+		readers := a.readers
+		when := a.lastAccess
+		e.mu.Unlock()
+		if readers > 0 {
+			continue
+		}
+		cands = append(cands, cand{ih: ih, when: when, dir: filepath.Join(e.dataDir, info.Name), size: t.Length()})
+	}
+	sort.Slice(cands, func(i, j int) bool { return cands[i].when.Before(cands[j].when) })
+	for _, c := range cands {
+		if size <= e.maxCacheBytes {
+			break
+		}
+		if t, ok := e.cl.Torrent(metainfo.NewHashFromHex(c.ih)); ok {
+			t.Drop()
+		}
+		base := filepath.Clean(e.dataDir)
+		if filepath.Dir(filepath.Clean(c.dir)) == base {
+			if err := os.RemoveAll(c.dir); err != nil {
+				e.log.Printf("evict %s: %v", c.ih[:8], err)
+				continue
+			}
+		}
+		e.mu.Lock()
+		delete(e.act, c.ih)
+		e.mu.Unlock()
+		e.store.db.Exec(`DELETE FROM media_cache WHERE infohash=?`, c.ih)
+		size -= c.size
+		e.log.Printf("evicted %s (%s) to stay under cache budget", c.ih[:8], humanBytes(c.size))
+	}
+}
+
+// dirSize reports allocated bytes, not apparent size: torrent files are
+// sparse while streaming, so St_blocks is the honest number.
+func dirSize(root string) (int64, error) {
+	var total int64
+	err := filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		if st, ok := info.Sys().(*syscall.Stat_t); ok {
+			total += st.Blocks * 512
+			return nil
+		}
+		total += info.Size()
+		return nil
+	})
+	return total, err
+}
+
+type TorrentView struct {
+	InfoHash    string  `json:"infohash"`
+	Name        string  `json:"name"`
+	Size        int64   `json:"size"`
+	Completed   int64   `json:"completed"`
+	Progress    float64 `json:"progress"`
+	Peers       int     `json:"peers"`
+	Seeders     int     `json:"seeders"`
+	Rate        float64 `json:"rate"`
+	Readers     int     `json:"readers"`
+	IdleSeconds int64   `json:"idle_seconds"`
+}
+
+func (e *Engine) Views() []TorrentView {
+	var out []TorrentView
+	for _, t := range e.cl.Torrents() {
+		ih := t.InfoHash().HexString()
+		a := e.activity(ih)
+		st := t.Stats()
+		e.mu.Lock()
+		v := TorrentView{
+			InfoHash:    ih,
+			Readers:     a.readers,
+			Rate:        a.rate,
+			IdleSeconds: int64(time.Since(a.lastAccess).Seconds()),
+			Name:        a.label,
+		}
+		e.mu.Unlock()
+		if info := t.Info(); info != nil {
+			v.Name = info.Name
+		}
+		v.Size = t.Length()
+		v.Completed = t.BytesCompleted()
+		if v.Size > 0 {
+			v.Progress = float64(v.Completed) / float64(v.Size)
+		}
+		v.Peers = st.ActivePeers
+		v.Seeders = st.ConnectedSeeders
+		out = append(out, v)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].IdleSeconds < out[j].IdleSeconds })
+	return out
+}
+
+func (e *Engine) CacheBytes() int64 {
+	n, _ := dirSize(e.dataDir)
+	return n
+}

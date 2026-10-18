@@ -1,0 +1,7 @@
+/marlin
+/data/
+/testdata/
+*.db
+*.db-shm
+*.db-wal
+.venv/
