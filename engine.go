@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"mime"
 	"net/http"
@@ -54,7 +55,7 @@ func NewEngine(cfg Config, store *Store, lg *log.Logger) (*Engine, error) {
 	cc.DataDir = cfg.DataDir
 	cc.Seed = false
 	cc.NoUpload = false
-	cc.DisableAggressiveUpload = true
+	cc.DisableAggressiveUpload = false
 	cc.ListenPort = cfg.TorrentPort
 	cc.EstablishedConnsPerTorrent = 80
 	cc.HalfOpenConnsPerTorrent = 40
@@ -313,7 +314,10 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Marlin-File", strconv.Itoa(idx))
 
 	cw := &countingWriter{ResponseWriter: w, n: &s.bytesOut}
-	http.ServeContent(cw, r, name, time.Time{}, reader)
+	// ServeContent probes the size with Seek(0, End) before writing anything.
+	// Answering that arithmetically avoids telling the torrent client to
+	// prioritise the tail of the file, which delays the first byte.
+	http.ServeContent(cw, r, name, time.Time{}, &sizedReader{r: reader, size: f.Length()})
 	s.store.AddKeyBytes(key.ID, cw.written)
 	s.log.Printf("play %s key=%s file=%d served=%s range=%q", ih[:8], key.ID, idx, humanBytes(cw.written), r.Header.Get("Range"))
 }
@@ -498,4 +502,50 @@ func (e *Engine) Views() []TorrentView {
 func (e *Engine) CacheBytes() int64 {
 	n, _ := dirSize(e.dataDir)
 	return n
+}
+
+// sizedReader answers size queries locally so the first read goes to byte 0.
+type sizedReader struct {
+	r    io.ReadSeeker
+	size int64
+	pos  int64
+}
+
+func (s *sizedReader) Read(p []byte) (int, error) {
+	if s.pos >= s.size {
+		return 0, io.EOF
+	}
+	if int64(len(p)) > s.size-s.pos {
+		p = p[:s.size-s.pos]
+	}
+	n, err := s.r.Read(p)
+	s.pos += int64(n)
+	return n, err
+}
+
+func (s *sizedReader) Seek(off int64, whence int) (int64, error) {
+	var target int64
+	switch whence {
+	case io.SeekStart:
+		target = off
+	case io.SeekCurrent:
+		target = s.pos + off
+	case io.SeekEnd:
+		target = s.size + off
+	default:
+		return 0, errors.New("bad whence")
+	}
+	if target < 0 {
+		return 0, errors.New("negative seek")
+	}
+	if target > s.size {
+		target = s.size
+	}
+	if target != s.pos {
+		if _, err := s.r.Seek(target, io.SeekStart); err != nil {
+			return 0, err
+		}
+		s.pos = target
+	}
+	return s.pos, nil
 }
