@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const version = "1.6.2"
+const version = "1.6.3"
 
 var defaultTrackers = []string{
 	// HTTP(S) first: some hosts block outbound UDP, which kills both DHT and
@@ -239,6 +239,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 		// No public landing page: the root is just a door to the console.
 		http.Redirect(w, r, "/admin", http.StatusFound)
 	})
+
+	// icon (both names: some clients probe /favicon.ico directly)
+	mux.HandleFunc("GET /favicon.svg", s.handleFavicon)
+	mux.HandleFunc("GET /favicon.ico", s.handleFavicon)
 
 	// admin
 	mux.HandleFunc("GET /admin", s.handleAdminPage)

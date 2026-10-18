@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Marlin">
+  <rect width="64" height="64" rx="14" fill="#0f1319"/>
+  <rect x="0.5" y="0.5" width="63" height="63" rx="13.5" fill="none" stroke="#1e242e"/>
+  <path d="M18 46V20l14 16 14-16v26" fill="none" stroke="#5b8cff" stroke-width="6"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-//go:embed web/admin.html
+//go:embed web/admin.html web/favicon.svg
 var webFS embed.FS
 
 type adminCtxKey struct{}
@@ -61,6 +61,17 @@ func clientIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
+	b, err := webFS.ReadFile("web/favicon.svg")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "image/svg+xml")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Write(b)
 }
 
 func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request) {
@@ -179,7 +190,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		CacheBytes: s.engine.CacheBytes(),
 		CacheMax:   s.engine.maxCacheBytes,
 		Uptime:     int64(time.Since(s.start).Seconds()),
-		Version:    "1.6.2",
+		Version:    "1.6.3",
 		BaseURL:    s.cfg.BaseURL,
 		KeyCount:   s.store.ActiveKeyCount(),
 		MediaRows:  s.store.MediaCacheCount(),
