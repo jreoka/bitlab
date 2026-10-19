@@ -65,7 +65,7 @@ spec:
             - name: BINARY_URL
               value: https://github.com/jreoka/bitlab/releases/download/v2.2.12/bitlab-linux-amd64
             - name: BINARY_SHA
-              value: cafffc727c3c89d20b9739c77721262f612a826ffe9f7f6cc64416446cfb5a0d
+              value: c9d5829dd70e8365b6e2954ba87b2e40713768aeffe59b8858f812b5c22a6707
           volumeMounts:
             - name: bin
               mountPath: /work
