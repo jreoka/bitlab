@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,6 +42,7 @@ type Server struct {
 	bytesOut   int64
 	hints      sync.Map // infohash -> []string trackers, learned from search results
 	ixCache    sync.Map // indexer+query -> cached results for a few minutes
+	epCache    sync.Map // imdb id -> ordered [season, episode] pairs
 }
 
 // ---- addon protocol types ----
@@ -71,7 +73,7 @@ type StreamResponse struct {
 func (s *Server) manifestFor(k Key) Manifest {
 	return Manifest{
 		ID:          "org.bitlab." + k.ID,
-		Version:     "2.0.0",
+		Version:     "2.3.0",
 		Name:        "Bitlab",
 		Description: "Self-hosted streaming hub. Manifest: " + k.Label,
 		Resources:   []string{"stream"},
@@ -90,6 +92,47 @@ func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Cache-Control", "max-age=300")
 	json.NewEncoder(w).Encode(s.manifestFor(k))
+}
+
+// fixEpisodeNumber reconciles the client's numbering with the show's. Anime
+// catalogs number episodes continuously and file them all under season 1, while
+// releases name them by season: a request for S01E51 of a 25+25 episode show
+// means S03E01, and searching "S01E51" finds nothing.
+func (s *Server) fixEpisodeNumber(imdbID string, season, ep int) (int, int) {
+	if ep <= 0 || season <= 0 {
+		return season, ep
+	}
+	v, ok := s.epCache.Load(imdbID)
+	if !ok {
+		return season, ep
+	}
+	return remapEpisode(v.([][2]int), season, ep)
+}
+
+// remapEpisode treats ep as an absolute number when it cannot fit the season it
+// was filed under.
+func remapEpisode(eps [][2]int, season, ep int) (int, int) {
+	if len(eps) == 0 {
+		return season, ep
+	}
+	// Only the first season can be the one carrying a continuous count; an
+	// out-of-range number anywhere else is just bad data.
+	if season != eps[0][0] {
+		return season, ep
+	}
+	inSeason := 0
+	for _, e := range eps {
+		if e[0] == season {
+			inSeason++
+		}
+	}
+	if ep <= inSeason {
+		return season, ep // it fits: no remapping needed
+	}
+	if ep <= len(eps) {
+		return eps[ep-1][0], eps[ep-1][1]
+	}
+	return season, ep
 }
 
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
@@ -115,6 +158,10 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, StreamResponse{Streams: []Stream{}})
 		return
 	}
+
+	// Reconcile the client's numbering with the show's before searching: an
+	// absolute episode number filed under season 1 is a different season here.
+	season, ep = s.fixEpisodeNumber(baseID, season, ep)
 
 	query := title
 	if typ == "series" && season > 0 {
@@ -280,13 +327,15 @@ func truncate(s string, n int) string {
 
 // resolveMeta looks up a title for an IMDb id via Cinemeta (Stremio's public catalogue).
 func (s *Server) resolveMeta(ctx context.Context, typ, imdbID string) (string, int, error) {
-	ck := "meta:" + typ + ":" + imdbID
+	ck := "meta2:" + typ + ":" + imdbID
 	if v, ok := s.store.GetCachedMeta(ck); ok {
 		var m struct {
-			Name string `json:"name"`
-			Year int    `json:"year"`
+			Name string   `json:"name"`
+			Year int      `json:"year"`
+			Eps  [][2]int `json:"eps"`
 		}
 		if json.Unmarshal([]byte(v), &m) == nil && m.Name != "" {
+			s.epCache.Store(imdbID, m.Eps)
 			return m.Name, m.Year, nil
 		}
 	}
@@ -309,6 +358,10 @@ func (s *Server) resolveMeta(ctx context.Context, typ, imdbID string) (string, i
 			Name        string `json:"name"`
 			Year        string `json:"year"`
 			ReleaseInfo string `json:"releaseInfo"`
+			Videos      []struct {
+				Season  int `json:"season"`
+				Episode int `json:"episode"`
+			} `json:"videos"`
 		} `json:"meta"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
@@ -326,7 +379,22 @@ func (s *Server) resolveMeta(ctx context.Context, typ, imdbID string) (string, i
 		yearStr = yearStr[:4]
 	}
 	year, _ := strconv.Atoi(yearStr)
-	b, _ := json.Marshal(map[string]any{"name": name, "year": year})
+	// The episode list is what tells us whether the client is numbering
+	// episodes per season or continuously.
+	eps := make([][2]int, 0, len(payload.Meta.Videos))
+	for _, v := range payload.Meta.Videos {
+		if v.Season > 0 && v.Episode > 0 {
+			eps = append(eps, [2]int{v.Season, v.Episode})
+		}
+	}
+	sort.Slice(eps, func(i, j int) bool {
+		if eps[i][0] != eps[j][0] {
+			return eps[i][0] < eps[j][0]
+		}
+		return eps[i][1] < eps[j][1]
+	})
+	s.epCache.Store(imdbID, eps)
+	b, _ := json.Marshal(map[string]any{"name": name, "year": year, "eps": eps})
 	s.store.CacheMeta(ck, string(b), 30*24*time.Hour)
 	return name, year, nil
 }

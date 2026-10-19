@@ -242,17 +242,34 @@ func chooseFileForEpisode(paths []string, sizes []int64, want, season, ep int) (
 		return want, nil
 	}
 	if ep > 0 {
+		numbered := 0
 		for i, p := range paths {
 			if !isVideo(p) {
 				continue
 			}
-			if episodeSignal(filepath.Base(p), season, ep) > 0 {
+			base := filepath.Base(p)
+			switch sig := episodeSignal(base, season, ep); {
+			case sig > 0:
 				return i, nil
+			case sig < 0:
+				numbered++ // this file states an episode, just not this one
 			}
 		}
+		// Files that name their episodes, none of which is the one asked for:
+		// the release does not contain this episode and must not fall through to
+		// "largest file" — that plays an arbitrary episode, which is how a
+		// season-1 pack answered a request for season 3.
+		if numbered > 0 {
+			return -1, errNoEpisode
+		}
+		// Nothing in the release is numbered (a single episode plus an extra, or
+		// a film): there is nothing to match, so largest is the best guess.
 	}
 	return chooseFile(paths, sizes, want)
 }
+
+// errNoEpisode means the release does not contain the requested episode.
+var errNoEpisode = errors.New("release has no file for this episode")
 
 func chooseFile(paths []string, sizes []int64, want int) (int, error) {
 	if len(paths) == 0 {
@@ -342,10 +359,23 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 	}
 	idx, err := chooseFileForEpisode(paths, sizes, wantIdx, seasonWanted, epWanted)
 	if err != nil {
+		if errors.Is(err, errNoEpisode) {
+			// Deterministic, not transient: this release can never serve this
+			// episode, so say so instead of playing a different one.
+			s.log.Printf("play %s S%02dE%02d: %v", ih[:8], seasonWanted, epWanted, err)
+		}
 		httpError(w, 404, err.Error())
 		return
 	}
 	f := allFiles[idx]
+
+	// A range past the end cannot be served. The release is fine; the player is
+	// holding a byte offset from a different file (it switched sources or rows
+	// with the player open), so say exactly that.
+	if start, ok := rangeStart(r.Header.Get("Range")); ok && start >= f.Length() {
+		s.log.Printf("play %s: range starts at %d but this file is %s — the player is holding an offset from another release; reopening the episode resets it",
+			ih[:8], start, humanBytes(f.Length()))
+	}
 
 	act := s.engine.activity(ih)
 	s.engine.mu.Lock()
@@ -398,6 +428,27 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(cw, r, name, time.Time{}, &sizedReader{r: reader, size: f.Length()})
 	s.store.AddKeyBytes(key.ID, cw.written)
 	s.log.Printf("play %s key=%s file=%d served=%s range=%q", ih[:8], key.ID, idx, humanBytes(cw.written), r.Header.Get("Range"))
+}
+
+// rangeStart reads the first byte offset out of a Range header.
+func rangeStart(h string) (int64, bool) {
+	h = strings.TrimSpace(h)
+	if !strings.HasPrefix(h, "bytes=") {
+		return 0, false
+	}
+	spec := strings.TrimSpace(strings.TrimPrefix(h, "bytes="))
+	if i := strings.IndexByte(spec, ','); i >= 0 {
+		spec = spec[:i] // a player asking for several ranges gets the first
+	}
+	dash := strings.IndexByte(spec, '-')
+	if dash <= 0 {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(spec[:dash]), 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 type countingWriter struct {
