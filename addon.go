@@ -148,6 +148,13 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	for _, e := range errs {
 		s.log.Printf("stream %s: %s", rawID, e)
 	}
+	// Indexers answer with whatever their fuzzy matcher liked; keep only what
+	// could plausibly be this title, this year.
+	if filtered, dropped := filterRelevant(results, typ, title, year, season); dropped > 0 {
+		s.log.Printf("stream %s: dropped %d of %d candidates that do not match %q (%d)",
+			rawID, dropped, len(results), title, year)
+		results = filtered
+	}
 	if len(results) == 0 {
 		s.log.Printf("stream %s: no results for %q", rawID, query)
 		writeJSON(w, 200, StreamResponse{Streams: []Stream{}})
