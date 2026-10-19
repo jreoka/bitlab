@@ -48,9 +48,16 @@ func (s *Server) searchAll(ctx context.Context, queries []string, typ string, se
 	}
 	var enabled []Indexer
 	for _, ix := range indexers {
-		if ix.Enabled {
-			enabled = append(enabled, ix)
+		if !ix.Enabled {
+			continue
 		}
+		// Anime indexers only carry series. Asked for a movie they answer with
+		// episodes of anything sharing a word with the title, which is how a
+		// 2026 film once played a 23-minute episode.
+		if typ == "movie" && (ix.Kind == "nyaa" || ix.Kind == "animetosho") {
+			continue
+		}
+		enabled = append(enabled, ix)
 	}
 	if len(enabled) == 0 {
 		return nil, []string{"no indexers configured"}
