@@ -225,3 +225,23 @@ func TestCleanTitleDropsPunctuation(t *testing.T) {
 		t.Fatalf("cleanTitle = %q, want %q", got, want)
 	}
 }
+
+// Anime trackers list promos, subtitle tracks and rar uploads beside the film.
+func TestFilterRelevantDropsNonFeatureUploads(t *testing.T) {
+	in := []Result{
+		{Title: "[Hanasaku-Emblem] ReZero kara Hajimeru Isekai Seikatsu - Memory Snow PV (720p Hi444PP).mkv"},
+		{Title: "[KiruaSubs] Re Zero kara Hajimeru Isekai Seikatsu-Memory Snow OVA.rar"},
+		{Title: "[SNuser] ReZero OVA 2 Hyouketsu no Kizuna subs.ass"},
+		{Title: "[FLE] Re ZERO Starting Life in Another World - Memory Snow (2018) (BD 1080p HEVC FLAC) [Dual Audio] [287D999E].mkv"},
+		{Title: "[SCY] Re:ZERO -Starting Life in Another World- Memory Snow (2018) v2 (BD 1080p x264 10-bit Hi10P FLAC 2.0) [D4B1A6F8].mkv"},
+	}
+	got, dropped := filterRelevant(in, "movie", "Re:ZERO -Starting Life in Another World- Memory Snow", []string{"Memory Snow"}, 2018, 0)
+	if dropped != 3 || len(got) != 2 {
+		t.Fatalf("dropped = %d, kept = %d, want 3 and 2: %+v", dropped, len(got), got)
+	}
+	for _, r := range got {
+		if looksLikeNonFeature(r.Title) {
+			t.Fatalf("kept a non-feature: %q", r.Title)
+		}
+	}
+}

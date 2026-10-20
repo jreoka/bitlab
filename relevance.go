@@ -25,7 +25,20 @@ var (
 	}
 	reYearInName = regexp.MustCompile(`\b(19|20)\d{2}\b`)
 	reNonAlnum   = regexp.MustCompile(`[^a-z0-9]+`)
+	// A promo clip is not the film, and anime trackers file these beside it:
+	// "[Hanasaku-Emblem] … Memory Snow PV (720p Hi444PP).mkv".
+	rePromo = regexp.MustCompile(`(?i)(?:^|[\s._\-\[\(])(pv|ncop|nced|creditless)(?:[\s._\-\]\)]|$)`)
+	// An archive or a subtitle track holds no video at all.
+	reNonVideo = regexp.MustCompile(`(?i)\.(rar|zip|7z|ass|srt|ssa|sub|idx|iso|mka|mp3|flac|jpg|jpeg|png)$`)
 )
+
+// looksLikeNonFeature reports a release that can never play as the film: a
+// promo clip, an archive or a subtitle upload. Only whole tokens and a trailing
+// extension count, so a release that merely mentions FLAC or PV inside its name
+// ("[Dual Audio] … FLAC") stays.
+func looksLikeNonFeature(name string) bool {
+	return rePromo.MatchString(name) || reNonVideo.MatchString(name)
+}
 
 // normName flattens a release name to lowercase letters and digits, so
 // "The.Uprising.2026.2160p.WEB-DL" and "The Uprising (2026)" compare.
@@ -128,6 +141,10 @@ func filterRelevant(results []Result, typ, title string, aliases []string, year,
 	keep := make([]Result, 0, len(results))
 	dropped := 0
 	for _, r := range results {
+		if looksLikeNonFeature(r.Title) {
+			dropped++
+			continue
+		}
 		matched := false
 		for _, t := range titles {
 			if titleMatches(r.Title, t) {
