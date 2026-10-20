@@ -426,7 +426,15 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 		paths[i] = ff.DisplayPath()
 		sizes[i] = ff.Length()
 	}
-	idx, err := chooseFileForEpisode(paths, sizes, wantIdx, seasonWanted, epWanted)
+	// A movie row carries the film's names instead of an episode: the release may
+	// hold several films and the play handler has to pick this one.
+	titles := r.URL.Query()["t"]
+	var idx int
+	if len(titles) > 0 && epWanted == 0 {
+		idx, err = chooseFileForTitle(paths, sizes, -1, titles)
+	} else {
+		idx, err = chooseFileForEpisode(paths, sizes, wantIdx, seasonWanted, epWanted)
+	}
 	if err != nil {
 		if errors.Is(err, errNoEpisode) {
 			// Deterministic, not transient: this release can never serve this
@@ -780,4 +788,68 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// chooseFileForTitle picks the film a movie torrent was asked for. A release can
+// hold several films — an OVA pack, a trilogy — and "largest file" then plays
+// whichever happens to be biggest, which is how Memory Snow played The Frozen
+// Bond. Words every file carries (the franchise line) say nothing about which
+// film a file is, so only the discriminating ones count.
+func chooseFileForTitle(paths []string, sizes []int64, want int, hints []string) (int, error) {
+	if want >= 0 && want < len(paths) {
+		return want, nil
+	}
+	words := hintWords(strings.Join(hints, " "))
+	if len(words) == 0 {
+		return chooseFile(paths, sizes, want)
+	}
+	sets := make([]map[string]bool, len(paths))
+	for i, p := range paths {
+		if !isVideo(p) {
+			continue
+		}
+		set := map[string]bool{}
+		for _, w := range reNonAlnum.Split(strings.ToLower(filepath.Base(p)), -1) {
+			if w != "" {
+				set[w] = true
+			}
+		}
+		sets[i] = set
+	}
+	disc := make([]string, 0, len(words))
+	for _, w := range words {
+		inAll, any := true, false
+		for _, set := range sets {
+			if set == nil {
+				continue
+			}
+			any = true
+			if !set[w] {
+				inAll = false
+				break
+			}
+		}
+		if any && !inAll {
+			disc = append(disc, w)
+		}
+	}
+	best, bestHits := -1, 0
+	for i, set := range sets {
+		if set == nil {
+			continue
+		}
+		hits := 0
+		for _, w := range disc {
+			if set[w] {
+				hits++
+			}
+		}
+		if hits > bestHits || (hits == bestHits && best >= 0 && hits > 0 && sizes[i] > sizes[best]) {
+			best, bestHits = i, hits
+		}
+	}
+	if best >= 0 && bestHits > 0 {
+		return best, nil
+	}
+	return chooseFile(paths, sizes, want)
 }

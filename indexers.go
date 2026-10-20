@@ -51,12 +51,11 @@ func (s *Server) searchAll(ctx context.Context, queries []string, typ string, se
 		if !ix.Enabled {
 			continue
 		}
-		// Anime indexers only carry series. Asked for a movie they answer with
-		// episodes of anything sharing a word with the title, which is how a
-		// 2026 film once played a 23-minute episode.
-		if typ == "movie" && (ix.Kind == "nyaa" || ix.Kind == "animetosho") {
-			continue
-		}
+		// Anime indexers are asked for films too: Memory Snow and The Frozen
+		// Bond only exist on nyaa/animetosho, and skipping them returned an
+		// empty list for every anime film. The old blanket skip stood in for a
+		// relevance gate that now rejects episode names and disagreeing years
+		// on its own.
 		enabled = append(enabled, ix)
 	}
 	if len(enabled) == 0 {

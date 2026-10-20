@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -207,4 +208,83 @@ func atoiSafe(s string) int {
 		n = n*10 + int(c-'0')
 	}
 	return n
+}
+
+// reTitleSep splits a franchise name from the work it is selling: a colon, or a
+// dash with whitespace on one side. "Spider-Man" has neither and stays whole;
+// "Re:ZERO -Starting Life in Another World- Memory Snow" splits into four.
+var reTitleSep = regexp.MustCompile(`\s*:\s*|\s+-+\s*|\s*-+\s+`)
+
+// reGenericTail rejects a trailing segment that names a part rather than a work,
+// so "Dune: Part Two" never becomes a search for "Part Two".
+var reGenericTail = regexp.MustCompile(`(?i)^(part|chapter|volume|vol|season|episode|movie|the movie)\b`)
+
+// titleForms lists the names a film is filed under: the Cinemeta title, then the
+// part after the franchise separator when that part stands on its own.
+func titleForms(title string) []string {
+	title = strings.TrimSpace(title)
+	forms := []string{title}
+	last := ""
+	for _, s := range reTitleSep.Split(title, -1) {
+		if s = strings.TrimSpace(s); s != "" {
+			last = s
+		}
+	}
+	if !strings.EqualFold(last, title) && len(last) >= 6 &&
+		len(strings.Fields(last)) >= 2 && !reGenericTail.MatchString(last) {
+		forms = append(forms, last)
+	}
+	return forms
+}
+
+// reNonWord flattens punctuation while keeping case, so a cleaned query still
+// reads like a title.
+var reNonWord = regexp.MustCompile(`[^A-Za-z0-9]+`)
+
+// cleanTitle is the title with the punctuation indexers do not match on
+// removed. "Re:ZERO -Starting Life in Another World- Memory Snow" returns zero
+// hits from every indexer; the same words separated by spaces return dozens.
+func cleanTitle(title string) string {
+	return strings.Join(strings.Fields(reNonWord.ReplaceAllString(title, " ")), " ")
+}
+
+// withYear appends the year when there is one.
+func withYear(q string, year int) string {
+	if year > 0 {
+		return fmt.Sprintf("%s %d", q, year)
+	}
+	return q
+}
+
+// dedupeStrings drops blanks and case-insensitive repeats, keeping order — the
+// first queries are the ones small indexers are allowed to run.
+func dedupeStrings(in []string) []string {
+	seen := make(map[string]bool, len(in))
+	out := in[:0]
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" || seen[strings.ToLower(s)] {
+			continue
+		}
+		seen[strings.ToLower(s)] = true
+		out = append(out, s)
+	}
+	return out
+}
+
+// hintWords are the words a release name would use for a title. Two-letter
+// words are kept because "Part II" and "Part III" differ only there.
+func hintWords(s string) []string {
+	var out []string
+	for _, w := range reNonAlnum.Split(strings.ToLower(s), -1) {
+		switch w {
+		case "", "the", "and", "of", "to", "in", "a", "an":
+			continue
+		}
+		if len(w) < 2 {
+			continue
+		}
+		out = append(out, w)
+	}
+	return out
 }

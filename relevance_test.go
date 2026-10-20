@@ -185,3 +185,43 @@ func TestFilterRelevantDropsAnotherSeasonsEpisode(t *testing.T) {
 		t.Fatalf("season 4 lost its own episode: %+v", got4)
 	}
 }
+
+// A franchise name is a search dead end: releases are filed under the part.
+func TestTitleForms(t *testing.T) {
+	cases := []struct {
+		title string
+		want  []string
+	}{
+		{"Re:ZERO -Starting Life in Another World- Memory Snow",
+			[]string{"Re:ZERO -Starting Life in Another World- Memory Snow", "Memory Snow"}},
+		{"Re: Zero kara Hajimeru Isekai Seikatsu: Hyouketsu no Kizuna",
+			[]string{"Re: Zero kara Hajimeru Isekai Seikatsu: Hyouketsu no Kizuna", "Hyouketsu no Kizuna"}},
+		{"Spider-Man: Across the Spider-Verse",
+			[]string{"Spider-Man: Across the Spider-Verse", "Across the Spider-Verse"}},
+		{"Dune: Part Two", []string{"Dune: Part Two"}}, // "Part Two" names a part, not a work
+		{"Spirited Away", []string{"Spirited Away"}},   // nothing to split
+		{"Spider-Man", []string{"Spider-Man"}},         // a hyphen is not a separator
+		{"The Lord of the Rings: The Two Towers",
+			[]string{"The Lord of the Rings: The Two Towers", "The Two Towers"}},
+	}
+	for _, c := range cases {
+		got := titleForms(c.title)
+		if len(got) != len(c.want) {
+			t.Errorf("titleForms(%q) = %q, want %q", c.title, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("titleForms(%q)[%d] = %q, want %q", c.title, i, got[i], c.want[i])
+			}
+		}
+	}
+}
+
+func TestCleanTitleDropsPunctuation(t *testing.T) {
+	got := cleanTitle("Re:ZERO -Starting Life in Another World- Memory Snow")
+	want := "Re ZERO Starting Life in Another World Memory Snow"
+	if got != want {
+		t.Fatalf("cleanTitle = %q, want %q", got, want)
+	}
+}

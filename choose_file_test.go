@@ -105,3 +105,59 @@ func TestChooseFileForEpisodeRefusesAnOpaqueBatch(t *testing.T) {
 		t.Fatalf("expected errNoEpisode for an unnumbered batch, got %d, %v", idx, err)
 	}
 }
+
+// A release that holds several films must serve the one that was asked for, not
+// the largest file: Memory Snow and The Frozen Bond ship in one OVA pack.
+func TestChooseFileForTitlePicksTheFilm(t *testing.T) {
+	paths := []string{
+		"ReZero - Starting Life In Another World - The Frozen Bond - OVA BD.mkv",
+		"ReZero - Starting Life In Another World - Memory Snow - OVA BD.mkv",
+	}
+	sizes := []int64{3 << 30, 2 << 30} // the wrong film is the bigger one
+
+	idx, err := chooseFileForTitle(paths, sizes, -1, []string{"Re:ZERO -Starting Life in Another World- Memory Snow", "Memory Snow"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if idx != 1 {
+		t.Fatalf("expected Memory Snow (1), got %d", idx)
+	}
+
+	idx, err = chooseFileForTitle(paths, sizes, -1, []string{"The Frozen Bond"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if idx != 0 {
+		t.Fatalf("expected The Frozen Bond (0), got %d", idx)
+	}
+}
+
+// Roman numerals are the only thing separating the parts of a trilogy.
+func TestChooseFileForTitleReadsPartNumbers(t *testing.T) {
+	paths := []string{
+		"Back To The Future 1985 Remastered 1080p BluRay HEVC x265 5.1 BONE.mkv",
+		"Back To The Future Part II 1989 Remastered 1080p BluRay HEVC x265 5.1 BONE.mkv",
+		"Back To The Future Part III 1990 Remastered 1080p BluRay HEVC x265 5.1 BONE.mkv",
+	}
+	sizes := []int64{1469 << 20, 1448 << 20, 1446 << 20}
+	idx, err := chooseFileForTitle(paths, sizes, -1, []string{"Back to the Future Part II"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if idx != 1 {
+		t.Fatalf("expected Part II (1), got %d", idx)
+	}
+}
+
+// A single film plus featurettes still plays the film.
+func TestChooseFileForTitleFallsBackToLargest(t *testing.T) {
+	paths := []string{"Featurettes/Behind the Scenes.mkv", "The Invite (2026) (1080p BluRay x265 Ghost).mkv"}
+	sizes := []int64{300 << 20, 6 << 30}
+	idx, err := chooseFileForTitle(paths, sizes, -1, []string{"The Invite"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if idx != 1 {
+		t.Fatalf("expected the film (1), got %d", idx)
+	}
+}

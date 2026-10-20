@@ -76,7 +76,7 @@ type StreamResponse struct {
 func (s *Server) manifestFor(k Key) Manifest {
 	return Manifest{
 		ID:          "org.bitlab." + k.ID,
-		Version:     "2.9.4",
+		Version:     "2.9.5",
 		Name:        "Bitlab",
 		Description: "Self-hosted streaming hub. Manifest: " + k.Label,
 		Resources:   []string{"stream"},
@@ -178,12 +178,10 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	query := title
 	if typ == "series" && season > 0 {
 		query = fmt.Sprintf("%s S%02dE%02d", title, season, ep)
-	} else if year > 0 {
-		query = fmt.Sprintf("%s %d", title, year)
 	}
 
 	queries := []string{query}
-	var aliases []string
+	var aliases, playHints []string
 	if typ == "series" && season > 0 {
 		// Older seasons are usually only available as a batch, which is never
 		// titled "S01E01" — ask for the season as well as the episode.
@@ -208,14 +206,43 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		// Japanese release year, which is two or three years before the date
 		// Cinemeta reports. Asking only for the English title left Spirited Away
 		// with 1 row out of 40; the alias is the only way to see the rest.
-		aliases = s.animeAliases(ctx, title)
+		// Releases are filed under the part of a franchise name, not the whole
+		// line: "Re:ZERO -Starting Life in Another World- Memory Snow" returns
+		// zero hits from knaben, nyaa and animetosho, while "Memory Snow 2018"
+		// returns thirty. The same name is a *bundle* entry on AniList — one
+		// record covering both OVAs — so the part is also the only name that
+		// identifies which film this is.
+		forms := titleForms(title)
+		lookup := title
+		if len(forms) > 1 {
+			lookup = forms[1]
+			queries = append(queries, withYear(forms[1], year))
+		}
+		aliases = s.animeAliases(ctx, lookup)
+		for _, f := range forms[1:] {
+			aliases = append(aliases, f) // the part is what releases say
+		}
 		for i, alias := range aliases {
 			if i >= 2 {
 				break
 			}
-			queries = append(queries, alias)
+			queries = append(queries, withYear(alias, year))
 		}
+		if clean := cleanTitle(title); clean != "" && !strings.EqualFold(clean, title) {
+			queries = append(queries, clean)
+		}
+		// The year goes last: appending it to an anime film's name is what made
+		// nyaa and animetosho answer with nothing at all, while the relevance
+		// gate still drops a release whose name carries a different year.
+		queries = append(queries, withYear(title, year))
+		// Every name this film goes by is a hint for the play handler, which has
+		// to pick the right film out of a release that holds several.
+		for _, h := range append(append([]string{}, forms...), aliases...) {
+			playHints = append(playHints, titleForms(h)...)
+		}
+		playHints = dedupeStrings(playHints)
 	}
+	queries = dedupeStrings(queries)
 	results, errs := s.searchAll(ctx, queries, typ, season, ep, baseID)
 	for _, e := range errs {
 		s.log.Printf("stream %s: %s", rawID, e)
@@ -254,13 +281,19 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			// Tells the play handler which file to pick inside a season pack.
 			link += fmt.Sprintf("&s=%d&e=%d", season, ep)
 		}
-		// Only movies get a cached file hint: for a series the episode decides
-		// the file, and "largest file" would point at the wrong episode in a pack.
+		// A movie torrent can hold several films (an OVA pack, a trilogy), so the
+		// play handler needs the title to pick the right file. Series rows carry
+		// the episode instead: "largest file" would be the wrong episode.
 		if typ == "movie" {
-			if _, _, files, ok := s.store.GetMedia(res.InfoHash); ok {
-				if idx, ok := bestCachedFile(files); ok {
-					link += "&f=" + strconv.Itoa(idx)
+			hints := playHints
+			if len(hints) == 0 {
+				hints = titleForms(title)
+			}
+			for i, h := range hints {
+				if i >= 4 {
+					break
 				}
+				link += "&t=" + url.QueryEscape(h)
 			}
 		}
 		bits := []string{}
@@ -289,27 +322,6 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, 200, StreamResponse{Streams: streams})
-}
-
-func bestCachedFile(files []CachedFile) (int, bool) {
-	best := -1
-	for i, f := range files {
-		if !isVideo(f.Path) || f.Size < 20<<20 {
-			continue
-		}
-		// A feature-length "sample" exists in remuxes; it must never be the
-		// file hint a movie plays.
-		if strings.Contains(strings.ToLower(f.Path), "sample") && len(files) > 1 {
-			continue
-		}
-		if best < 0 || f.Size > files[best].Size {
-			best = i
-		}
-	}
-	if best < 0 {
-		return 0, false
-	}
-	return files[best].Idx, true
 }
 
 func parseMediaID(id string) (base string, season, ep int) {
