@@ -711,6 +711,8 @@ var (
 	reDashEp = regexp.MustCompile(`(?i)(?:^|[\s\[])[-–]\s*0*(\d{1,4})(?:v\d)?\b`)
 	reEpOnly = regexp.MustCompile(`(?i)\bep?(\d{1,3})\b`)
 	reSeason = regexp.MustCompile(`(?i)\bs(\d{1,2})\b`)
+	// "Director's Cut" / 新編集版 re-edits renumber a run; see episodeSignal.
+	reRecut = regexp.MustCompile(`(?i)director'?s[\s._-]*cut|\bshin[\s._-]*henshuu-?ban\b|新編集版`)
 )
 
 // episodeSignal says whether a title is the episode we asked for (+1), a
@@ -727,6 +729,12 @@ func episodeSignal(title string, season, ep int) int {
 			return -1
 		}
 	}
+	// A recut is numbered on its own (Re:Zero's Director's Cut packs 25
+	// episodes into 13), so its "S01E04" is not the fourth broadcast episode.
+	// The row would play the wrong content, so it is not an answer for ep>0.
+	if reRecut.MatchString(title) {
+		return -1
+	}
 	if m := reSxxExx.FindStringSubmatch(title); m != nil {
 		s, _ := strconv.Atoi(m[1])
 		e, _ := strconv.Atoi(m[2])
@@ -737,12 +745,6 @@ func episodeSignal(title string, season, ep int) int {
 			return 1
 		}
 		return -1
-	}
-	// A pack for the right season is usable: the play handler picks the episode
-	// file out of it. A pack for a different season is not — releaseSeason
-	// answered that above, so anything that still names a season is neutral.
-	if releaseSeason(title, season) > 0 {
-		return 0
 	}
 	if m := reDashEp.FindStringSubmatch(title); m != nil {
 		if e, _ := strconv.Atoi(m[1]); e == ep {
@@ -756,6 +758,9 @@ func episodeSignal(title string, season, ep int) int {
 		}
 		return -1
 	}
+	// A pack for the right season is usable: the play handler picks the episode
+	// file out of it. A pack for a different season already answered -1 above,
+	// so naming a season here means it matches.
 	return 0
 }
 

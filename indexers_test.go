@@ -544,3 +544,29 @@ func TestApibaySearchReadsSeeders(t *testing.T) {
 		t.Errorf("result = %+v", res[0])
 	}
 }
+
+// Re:Zero S01E04 pulled up the airing season's episode twice: "… 4th Season -
+// 04" is an absolute number that reads as episode 4. A stated season must win.
+func TestEpisodeSignalRejectsAnotherSeasonAndRecuts(t *testing.T) {
+	cases := []struct {
+		title string
+		want  int
+	}{
+		{"[Erai-raws] Re Zero kara Hajimeru Isekai Seikatsu 4th Season - 04 [1080p]", -1},
+		{"[Erai-raws] Re Zero kara Hajimeru Isekai Seikatsu 3rd Season - 04 [1080p]", -1},
+		{"[Judas] Re.Zero kara Hajimeru Isekai Seikatsu (Season 2 Part 2) [1080p]", -1},
+		{"Re.Zero.Starting.Life.in.Another.World.S01.1080p.BluRay.x264", 0},
+		{"[SubsPlease] Re Zero kara Hajimeru Isekai Seikatsu - 04 (1080p)", 1},
+		{"Re ZERO -Starting Life in Another World- Director's Cut S01E04 MULTi 1080p", -1},
+		{"[224] Re.Zero kara Hajimeru Isekai Seikatsu - Shin Henshuu-ban [BDRip 1080p]", -1},
+	}
+	for _, c := range cases {
+		if got := episodeSignal(c.title, 1, 4); got != c.want {
+			t.Errorf("episodeSignal(%q, 1, 4) = %d, want %d", c.title, got, c.want)
+		}
+	}
+	// The same release is the right answer for its own season.
+	if got := episodeSignal("[Erai-raws] Re Zero kara Hajimeru Isekai Seikatsu 4th Season - 04 [1080p]", 4, 4); got != 1 {
+		t.Errorf("season four's own episode judged %d, want 1", got)
+	}
+}
