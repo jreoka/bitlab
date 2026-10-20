@@ -188,7 +188,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		CacheBytes: s.engine.CacheBytes(),
 		CacheMax:   s.engine.maxCacheBytes,
 		Uptime:     int64(time.Since(s.start).Seconds()),
-		Version:    "2.4.2",
+		Version:    "2.4.3",
 		BaseURL:    s.cfg.BaseURL,
 		KeyCount:   s.store.ActiveKeyCount(),
 		MediaRows:  s.store.MediaCacheCount(),
@@ -417,31 +417,3 @@ func (s *Server) handleDropTorrent(w http.ResponseWriter, r *http.Request) {
 	httpError(w, 404, "torrent not loaded")
 }
 
-func (s *Server) handleQuickPlay(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Magnet string `json:"magnet"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		httpError(w, 400, "bad json")
-		return
-	}
-	ih, err := infohashFromMagnet(body.Magnet)
-	if err != nil {
-		httpError(w, 400, err.Error())
-		return
-	}
-	keys, _ := s.store.ListKeys()
-	if len(keys) == 0 {
-		httpError(w, 400, "create a manifest key first")
-		return
-	}
-	link := s.baseURL(r) + "/k/" + keys[0].Token + "/play/" + ih
-	writeJSON(w, 200, map[string]any{"infohash": ih, "url": link})
-}
-
-func infohashFromMagnet(m string) (string, error) {
-	if sub := ihRe.FindStringSubmatch(m); sub != nil {
-		return strings.ToLower(sub[1]), nil
-	}
-	return "", errors.New("no infohash in magnet link")
-}

@@ -104,7 +104,6 @@ select{
 select:hover{border-color:#2e343d}
 label{display:block;font-size:11px;color:var(--faint);margin:0 0 5px;letter-spacing:.05em;text-transform:uppercase;font-weight:600}
 .row{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));align-items:end}
-.row-inline{grid-template-columns:minmax(0,1fr) auto}
 .narrow{max-width:180px}
 .mt{margin-top:16px}
 .block{width:100%}
@@ -172,7 +171,6 @@ tr:last-child td{border-bottom:0}
 
 /* ---------- misc ---------- */
 .list-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid var(--line-soft);border-radius:4px;background:var(--surface);font-size:13px}
-.searchres{display:grid;gap:6px;margin-top:12px;max-height:340px;overflow:auto}
 .empty{padding:22px 0;text-align:center;color:var(--faint);font-size:13px}
 .hidden{display:none!important}
 .split{display:grid;grid-template-columns:minmax(0,1fr) 220px;gap:20px;align-items:start}
@@ -237,8 +235,7 @@ tr:last-child td{border-bottom:0}
   button{min-height:40px}
   button.icon{min-height:0;width:38px;height:38px}
   button.ghost{min-height:36px}
-  .row,.row-inline{grid-template-columns:1fr}
-  .row-inline > div:last-child button{width:100%}
+  .row{grid-template-columns:1fr}
 
   .keys-toolbar{flex-wrap:wrap}
   .keys-toolbar input{flex:1 1 100%;order:1}
@@ -401,15 +398,6 @@ tr:last-child td{border-bottom:0}
           </table>
         </div>
       </div>
-      <div class="card">
-        <h2>Quick play</h2>
-        <p class="hint">Paste a magnet link to get a direct HTTP stream URL (uses your first key).</p>
-        <div class="row row-inline">
-          <div><label for="magnet">Magnet</label><input id="magnet" placeholder="magnet:?xt=urn:btih:..."></div>
-          <div><button onclick="quickPlay()">Get stream URL</button></div>
-        </div>
-        <div id="quickres" class="searchres"></div>
-      </div>
     </section>
 
     <!-- SECURITY -->
@@ -475,7 +463,6 @@ const ICON = {
   pause:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M9 5v14M15 5v14"/></svg>',
   play:'<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg>',
   trash:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4.5A1.5 1.5 0 0 1 9.5 3h5A1.5 1.5 0 0 1 16 4.5V6m2.5 0 .8 13.1A1.9 1.9 0 0 1 17.4 21H6.6a1.9 1.9 0 0 1-1.9-1.9L5.5 6"/></svg>',
-  key:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M11 12 20 3M15 7l3 3M18 4l3 3"/></svg>'
 };
 const titles = {
   keys:['Manifest keys','One addon URL per device, individually revocable.'],
@@ -598,7 +585,7 @@ function keysPage(delta){
 function renderKeys(keys, base){
   const box = $('#keys');
   if (!keys.length){
-    box.innerHTML = '<div class="empty">'+ICON.key+(state.keysQ ? 'No keys match “'+esc(state.keysQ)+'”.' : 'No keys yet — create one above and paste its manifest URL into Stremio.')+'</div>';
+    box.innerHTML = '<div class="empty">'+(state.keysQ ? 'No keys match “'+esc(state.keysQ)+'”.' : 'No keys yet — create one above and paste its manifest URL into Stremio.')+'</div>';
     return;
   }
   const origin = base || location.origin;
@@ -679,13 +666,6 @@ function copyUrl(btn, text){
 async function dropTorrent(ih){
   try { await api('/admin/api/torrents/'+ih, {method:'DELETE'}); toast('Torrent dropped'); refresh(); }
   catch(e){ toast(e.message, true); }
-}
-async function quickPlay(){
-  $('#quickres').innerHTML = '';
-  try {
-    const r = await api('/admin/api/play', {method:'POST', body: JSON.stringify({magnet: $('#magnet').value.trim()})});
-    $('#quickres').innerHTML = `<div class="list-row"><a href="${esc(r.url)}" target="_blank" class="mono tiny" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.url)}</a></div>`;
-  } catch(e){ toast(e.message, true); }
 }
 
 /* ---- security ---- */

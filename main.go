@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const version = "2.4.2"
+const version = "2.4.3"
 
 var defaultTrackers = []string{
 	// HTTP(S) first: some hosts block outbound UDP, which kills both DHT and
@@ -302,7 +302,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /admin/api/sessions/{id}", s.requireAdmin(s.handleDeleteSession))
 	mux.HandleFunc("POST /admin/api/sessions/revoke-others", s.requireAdmin(s.handleRevokeOtherSessions))
 	mux.HandleFunc("DELETE /admin/api/torrents/{infohash}", s.requireAdmin(s.handleDropTorrent))
-	mux.HandleFunc("POST /admin/api/play", s.requireAdmin(s.handleQuickPlay))
 }
 
 func (s *Server) middleware(next http.Handler) http.Handler {
