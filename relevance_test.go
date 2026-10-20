@@ -38,9 +38,9 @@ func TestFilterRelevantRejectsACloserDifferentTitle(t *testing.T) {
 
 func TestFilterRelevantYearGate(t *testing.T) {
 	in := []Result{
-		{Title: "Uprising.2014.1080p.BluRay"},          // wrong film, right words
-		{Title: "Uprising.2025.1080p.WEB-DL"},          // a year either side is fine
-		{Title: "Uprising.1080p.WEB-DL"},               // no year at all: allowed
+		{Title: "Uprising.2014.1080p.BluRay"}, // wrong film, right words
+		{Title: "Uprising.2025.1080p.WEB-DL"}, // a year either side is fine
+		{Title: "Uprising.1080p.WEB-DL"},      // no year at all: allowed
 	}
 	got, dropped := filterRelevant(in, "movie", "Uprising", nil, 2026, 0)
 	if dropped != 1 {
@@ -54,8 +54,8 @@ func TestTitleMatches(t *testing.T) {
 		want        bool
 	}{
 		{"The.Uprising.2026.2160p", "The Uprising", true},
-		{"Uprising.2026.1080p", "The Uprising", true},          // article dropped by the group
-		{"Pacific.Rim.Uprising.2018", "The Uprising", false},   // the trap
+		{"Uprising.2026.1080p", "The Uprising", true},        // article dropped by the group
+		{"Pacific.Rim.Uprising.2018", "The Uprising", false}, // the trap
 		{"The.Uprising.2026", "Pacific Rim Uprising", false},
 		{"Severance.S02E01.1080p", "Severance", true},
 		{"", "Severance", false},
@@ -125,5 +125,63 @@ func TestFilterRelevantMovieWithoutAliasesStaysStrict(t *testing.T) {
 	got, dropped := filterRelevant(in, "movie", "Spirited Away", nil, 2003, 0)
 	if dropped != 1 || len(got) != 1 || got[0].Title != "Spirited.Away.2003.1080p" {
 		t.Fatalf("got %+v (dropped %d)", got, dropped)
+	}
+}
+
+// The bug this exists for: Re:Zero S01E04 listed (and played) "[Erai-raws] …
+// 4th Season - 04" twice, because "Show - 04" means absolute episode 4 and the
+// "4th Season" token was invisible to the episode parser.
+func TestReleaseSeasonMarkers(t *testing.T) {
+	cases := []struct {
+		name string
+		want int
+		got  int
+	}{
+		{"[Erai-raws] Re Zero kara Hajimeru Isekai Seikatsu 4th Season - 04 [1080p]", 1, 4},
+		{"[Erai-raws] Re Zero kara Hajimeru Isekai Seikatsu 4th Season - 04 [1080p]", 4, 4},
+		{"Show 2nd Season Part 2 (39-50)", 2, 2},
+		{"Show Season 03 (1080p)", 3, 3},
+		{"Show.S04E04.1080p.WEB-DL", 4, 4},
+		{"Show S01E04 1080p", 1, 1},
+		{"Show (Season 01 + Season 02 + Director's Cut) [BD]", 1, 1},
+		{"Show S01-03 + OVAs", 2, 0}, // a range containing the request is a pack
+		{"Show S01-03 + OVAs", 4, 1}, // outside the range: it is not season four
+		{"Show - 04 [1080p]", 1, 0},  // no season stated at all
+		{"The.Uprising.2026.2160p.WEB-DL.DDP5.1", 1, 0},
+	}
+	for _, c := range cases {
+		if got := releaseSeason(c.name, c.want); got != c.got {
+			t.Errorf("releaseSeason(%q, want %d) = %d, want %d", c.name, c.want, got, c.got)
+		}
+	}
+}
+
+func TestFilterRelevantDropsAnotherSeasonsEpisode(t *testing.T) {
+	in := []Result{
+		{Title: "[Erai-raws] Re Zero kara Hajimeru Isekai Seikatsu 4th Season - 04 [1080p CR WEB-DL AVC AAC]"},
+		{Title: "[Judas] Re.Zero kara Hajimeru Isekai Seikatsu (Season 2 Part 2) [1080p][HEVC]"},
+		{Title: "Re.Zero.Starting.Life.in.Another.World.S01.1080p.BluRay.x264"},
+		{Title: "[Anime Time] Re:Zero kara Hajimeru Isekai Seikatsu (Season 01 + Season 02) [BD]"},
+	}
+	alias := []string{"Re:Zero kara Hajimeru Isekai Seikatsu"}
+	got, dropped := filterRelevant(in, "series", "Re: Zero - Starting Life in Another World", alias, 2016, 1)
+	if dropped != 2 {
+		t.Fatalf("dropped = %d, want 2 (%+v)", dropped, got)
+	}
+	for _, r := range got {
+		if releaseSeason(r.Title, 1) > 1 {
+			t.Fatalf("kept another season: %q", r.Title)
+		}
+	}
+	// The same list for season 4 must still offer the season-four episode.
+	got4, _ := filterRelevant(in, "series", "Re: Zero - Starting Life in Another World", alias, 2016, 4)
+	found := false
+	for _, r := range got4 {
+		if releaseSeason(r.Title, 4) == 4 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("season 4 lost its own episode: %+v", got4)
 	}
 }

@@ -719,6 +719,14 @@ func episodeSignal(title string, season, ep int) int {
 	if ep <= 0 {
 		return 0
 	}
+	// A stated season wins over any episode marker: "Show 4th Season - 04"
+	// carries an absolute number that reads as episode 4, and treating it as
+	// one served a season-four episode of Re:Zero for S01E04.
+	if season > 0 {
+		if s := releaseSeason(title, season); s > 0 && s != season {
+			return -1
+		}
+	}
 	if m := reSxxExx.FindStringSubmatch(title); m != nil {
 		s, _ := strconv.Atoi(m[1])
 		e, _ := strconv.Atoi(m[2])
@@ -731,13 +739,9 @@ func episodeSignal(title string, season, ep int) int {
 		return -1
 	}
 	// A pack for the right season is usable: the play handler picks the episode
-	// file out of it. A pack for a different season is not.
-	if m := reSeason.FindStringSubmatch(title); m != nil {
-		if season > 0 {
-			if sn, _ := strconv.Atoi(m[1]); sn != season {
-				return -1
-			}
-		}
+	// file out of it. A pack for a different season is not — releaseSeason
+	// answered that above, so anything that still names a season is neutral.
+	if releaseSeason(title, season) > 0 {
 		return 0
 	}
 	if m := reDashEp.FindStringSubmatch(title); m != nil {

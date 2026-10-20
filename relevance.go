@@ -147,9 +147,11 @@ func filterRelevant(results []Result, typ, title string, aliases []string, year,
 				dropped++
 				continue
 			}
-		} else if season > 1 {
-			// A later season must not be served an episode of season one.
-			if m := reSxxE.FindStringSubmatch(r.Title); m != nil && atoiSafe(m[1]) != season {
+		} else if season > 0 {
+			// A release that names its season must be for the season asked
+			// for. Season one needs the check as much as later seasons do:
+			// "… 4th Season - 04" was served as S01E04 for a year.
+			if s := releaseSeason(r.Title, season); s > 0 && s != season {
 				dropped++
 				continue
 			}
@@ -160,6 +162,41 @@ func filterRelevant(results []Result, typ, title string, aliases []string, year,
 }
 
 var reSxxE = regexp.MustCompile(`(?i)\bS(\d{1,2})\s*E(\d{1,3})\b`)
+
+// Season markers come in three shapes ("S04", "Season 4", "4th Season") and
+// anime release groups use the last one constantly: "[Erai-raws] Re Zero kara
+// Hajimeru Isekai Seikatsu 4th Season - 04" is a season-four episode that the
+// absolute-numbering rule ("Show - 04" is episode 4) happily served as S01E04.
+var (
+	reSeasonRange   = regexp.MustCompile(`(?i)\bS(\d{1,2})\s*[-–—]\s*(?:S)?(\d{1,2})\b`)
+	reSeasonOrdinal = regexp.MustCompile(`(?i)\b(\d{1,2})(?:st|nd|rd|th)[\s._-]+season\b`)
+	reSeasonLong    = regexp.MustCompile(`(?i)\bseason[\s._-]*(\d{1,2})\b`)
+	reSeasonShort   = regexp.MustCompile(`(?i)\bS(\d{1,2})(?:[\s._-]*E\d{1,3})?\b`)
+)
+
+// releaseSeason reports the season a release name states. It returns 0 when the
+// name says nothing about a season, or when it names a range that contains the
+// wanted one ("S01-S03" is a usable batch for any of them).
+func releaseSeason(name string, want int) int {
+	if m := reSeasonRange.FindStringSubmatch(name); m != nil {
+		lo, hi := atoiSafe(m[1]), atoiSafe(m[2])
+		if lo > hi {
+			lo, hi = hi, lo
+		}
+		if want > 0 && want >= lo && want <= hi {
+			return 0
+		}
+		return lo
+	}
+	for _, re := range []*regexp.Regexp{reSeasonOrdinal, reSeasonLong, reSeasonShort} {
+		if m := re.FindStringSubmatch(name); m != nil {
+			if s := atoiSafe(m[1]); s > 0 {
+				return s
+			}
+		}
+	}
+	return 0
+}
 
 func atoiSafe(s string) int {
 	n := 0
