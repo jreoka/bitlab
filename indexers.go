@@ -154,7 +154,7 @@ func indexerTimeout(kind string) time.Duration {
 	switch kind {
 	case "animetosho":
 		return 6 * time.Second
-	case "eztv", "yts":
+	case "eztv", "yts", "torrentio":
 		return 10 * time.Second
 	}
 	return 15 * time.Second
@@ -163,8 +163,8 @@ func indexerTimeout(kind string) time.Duration {
 // queriesFor trims the fan-out for indexers that throttle.
 func queriesFor(kind string, queries []string) []string {
 	switch kind {
-	case "eztv", "yts":
-		// Both answer an imdb id, so every extra query would be the same
+	case "eztv", "yts", "torrentio":
+		// All three answer an imdb id, so every extra query would be the same
 		// request again. Anime aliases buy nothing here either.
 		if len(queries) > 1 {
 			return queries[:1]
@@ -214,6 +214,8 @@ func (s *Server) searchIndexerUncached(ctx context.Context, ix Indexer, q string
 		return ytsSearch(ctx, s.http, ix, typ, imdbID, q)
 	case "animetosho":
 		return animeToshoSearch(ctx, s.http, ix, q)
+	case "torrentio":
+		return torrentioSearch(ctx, s.http, ix, typ, season, ep, imdbID)
 	case "torznab", "":
 		return torznabSearch(ctx, s.http, ix, q, typ, season, ep, imdbID)
 	default:
@@ -362,9 +364,12 @@ func apibaySearch(ctx context.Context, hc *http.Client, ix Indexer, q string) ([
 		ID       string `json:"id"`
 		Name     string `json:"name"`
 		InfoHash string `json:"info_hash"`
-		Seeders  string `json:"num_seeders"`
-		Leechers string `json:"num_leechers"`
+		// apibay sends "seeders"/"leechers". Reading num_seeders here left every
+		// row at zero, and dropDead then discarded the whole source.
+		Seeders  string `json:"seeders"`
+		Leechers string `json:"leechers"`
 		Size     string `json:"size"`
+		Category string `json:"category"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("bad json: %w", err)
@@ -372,6 +377,11 @@ func apibaySearch(ctx context.Context, hc *http.Client, ix Indexer, q string) ([
 	var out []Result
 	for _, r := range raw {
 		if r.ID == "0" || r.Name == "No results returned" || len(r.InfoHash) != 40 {
+			continue
+		}
+		// cat=0 includes every section of TPB; keep Video (2xx) only, so a title
+		// search cannot surface adult or software rows.
+		if r.Category != "" && !strings.HasPrefix(r.Category, "2") {
 			continue
 		}
 		seeds, _ := strconv.Atoi(r.Seeders)
@@ -1087,4 +1097,128 @@ func animeToshoSearch(ctx context.Context, hc *http.Client, ix Indexer, q string
 		})
 	}
 	return res, nil
+}
+
+// ---------- Torrentio (public aggregator, no key, imdb-id lookup) ----------
+
+// Torrentio answers by imdb id, so nothing has to be title-matched, and one
+// request covers every tracker it scrapes: 1337x, TorrentGalaxy, Rutracker,
+// RARBG's cache, MagnetDL and more — exactly the catalogues this pod cannot
+// reach itself (1337x 403s, tgx.rs times out from the cluster).
+//
+// Its stream `title` is structured text: release name, filename, then
+// "👤 seeders 💾 size ⚙️ source", optionally followed by a flags line.
+type torrentioStream struct {
+	Name          string `json:"name"`
+	Title         string `json:"title"`
+	InfoHash      string `json:"infoHash"`
+	FileIdx       *int   `json:"fileIdx"`
+	BehaviorHints struct {
+		Filename string `json:"filename"`
+	} `json:"behaviorHints"`
+	Sources []string `json:"sources"`
+}
+
+var (
+	reTioSeeds  = regexp.MustCompile(`👤\s*(\d+)`)
+	reTioSize   = regexp.MustCompile(`💾\s*([0-9]+(?:\.[0-9]+)?\s*[KMGT]?i?B)`)
+	reTioSrc    = regexp.MustCompile(`⚙️\s*([^\n]+)`)
+	reResToken  = regexp.MustCompile(`(?i)\b(2160p|1080p|720p|480p|4k|uhd)\b`)
+	reLatinWord = regexp.MustCompile(`[A-Za-z]{4,}`)
+	reHash40    = regexp.MustCompile(`^[0-9a-f]{40}$`)
+)
+
+func torrentioSearch(ctx context.Context, hc *http.Client, ix Indexer, typ string, season, ep int, imdbID string) ([]Result, error) {
+	if imdbID == "" || (typ == "series" && season <= 0) {
+		return nil, nil // Torrentio is keyed on imdb ids only
+	}
+	base := strings.TrimRight(ix.URL, "/")
+	if base == "" {
+		base = "https://torrentio.strem.fun"
+	}
+	id := imdbID
+	if typ == "series" {
+		id = fmt.Sprintf("%s:%d:%d", imdbID, season, ep)
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", base+"/stream/"+typ+"/"+id+".json", nil)
+	if err != nil {
+		return nil, err
+	}
+	// Torrentio answers 403 to Go's default UA from some networks.
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 404 {
+		return nil, nil // no catalogue entry for this id
+	}
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("http %d", resp.StatusCode)
+	}
+	body, err := readAllLimit(resp.Body, 16<<20)
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Streams []torrentioStream `json:"streams"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("bad json: %w", err)
+	}
+	out := make([]Result, 0, len(payload.Streams))
+	for _, st := range payload.Streams {
+		ih := strings.ToLower(strings.TrimSpace(st.InfoHash))
+		if !reHash40.MatchString(ih) {
+			continue
+		}
+		lines := strings.Split(strings.TrimSpace(st.Title), "\n")
+		name := strings.TrimSpace(lines[0])
+		if name == "" {
+			name = strings.TrimSpace(st.BehaviorHints.Filename)
+		}
+		// A purely Cyrillic name can neither be matched to the request nor read
+		// in the row list; those are mostly Rutracker/Rutor rips, and the same
+		// release almost always appears again with an English title.
+		if name == "" || !reLatinWord.MatchString(name) {
+			continue
+		}
+		// The quality token often lives only in the `name` field ("Torrentio\n1080p")
+		// while a Russian release name carries none; without it scoreResult reads
+		// the row as SD and buries a 1080p rip under 720p ones.
+		if q := torrentioQuality(st.Name); q != "" && !reResToken.MatchString(name) {
+			name += " " + q
+		}
+		meta := strings.Join(lines[1:], "\n")
+		r := Result{Title: name, InfoHash: ih, Indexer: ix.Name}
+		if m := reTioSeeds.FindStringSubmatch(meta); m != nil {
+			r.Seeders, _ = strconv.Atoi(m[1])
+		}
+		if m := reTioSize.FindStringSubmatch(meta); m != nil {
+			r.Size = parseSize(m[1])
+		}
+		if m := reTioSrc.FindStringSubmatch(meta); m != nil {
+			if src := strings.TrimSpace(m[1]); src != "" {
+				// Keep the upstream tracker visible: once Torrentio merges them
+				// it is the only clue about where a row came from.
+				r.Indexer = ix.Name + "/" + src
+			}
+		}
+		for _, src := range st.Sources {
+			if strings.HasPrefix(src, "tracker:") {
+				r.Trackers = append(r.Trackers, strings.TrimPrefix(src, "tracker:"))
+			}
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// torrentioQuality returns the second line of the stream name ("4k DV | HDR").
+func torrentioQuality(name string) string {
+	if i := strings.IndexByte(name, '\n'); i >= 0 {
+		return strings.TrimSpace(name[i+1:])
+	}
+	return ""
 }

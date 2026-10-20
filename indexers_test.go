@@ -441,3 +441,106 @@ func TestIndexerTimeoutShortensSlowSources(t *testing.T) {
 		t.Errorf("default timeout = %v", got)
 	}
 }
+
+const torrentioFixture = `{"streams":[
+ {"name":"Torrentio\n1080p",
+  "title":"The.Wire.S02.1080p.BluRay.x265-RARBG\nThe.Wire.S02E01.1080p.BluRay.x265-RARBG.mp4\n👤 408 💾 935.67 MB ⚙️ RARBG",
+  "infoHash":"C1607D2B2E9BD164638D453C169C727F6368289C","fileIdx":25,
+  "behaviorHints":{"filename":"The.Wire.S02E01.1080p.BluRay.x265-RARBG.mp4"},
+  "sources":["tracker:udp://tracker.opentrackr.org:1337/announce","dht:c1607d2b2e9bd164638d453c169c727f6368289c"]},
+ {"name":"Torrentio\n1080p",
+  "title":"Прослушка.Сезон.2.1080p.mkv\n👤 45 💾 9.1 GB ⚙️ Rutracker",
+  "infoHash":"3414a47523f5ae2f08f5fff5413b66790bf13dfa","sources":[]},
+ {"name":"Torrentio\n4k",
+  "title":"Матрица / The Matrix [1999 WEB-DL HDR10]\nМатрица.1999.WEB-DL.2160p.mkv\n👤 448 💾 18.45 GB ⚙️ Rutracker",
+  "infoHash":"61065ea115b7cc3e8db9fb5ab1f6f327f08bd1c9","sources":[]},
+ {"name":"Torrentio\n1080p","title":"no hash here\n👤 10 💾 1 GB ⚙️ 1337x","infoHash":"","sources":[]}
+]}`
+
+func TestTorrentioSearchParsesStreams(t *testing.T) {
+	var gotURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURL = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, torrentioFixture)
+	}))
+	defer srv.Close()
+
+	ix := Indexer{Kind: "torrentio", Name: "torrentio", URL: srv.URL}
+	res, err := torrentioSearch(context.Background(), srv.Client(), ix, "series", 2, 1, "tt0306414")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotURL != "/stream/series/tt0306414:2:1.json" {
+		t.Errorf("requested %q", gotURL)
+	}
+	if len(res) != 2 {
+		t.Fatalf("want 2 results (Cyrillic-only and hashless dropped), got %d: %+v", len(res), res)
+	}
+	if res[0].Seeders != 408 || res[0].Indexer != "torrentio/RARBG" || res[0].Size != parseSize("935.67 MB") {
+		t.Errorf("first = %+v", res[0])
+	}
+	if len(res[0].Trackers) != 1 || res[0].Trackers[0] != "udp://tracker.opentrackr.org:1337/announce" {
+		t.Errorf("trackers = %v", res[0].Trackers)
+	}
+	if res[1].Seeders != 448 || res[1].Size != parseSize("18.45 GB") {
+		t.Errorf("second = %+v", res[1])
+	}
+	// The release name has no resolution token of its own; the stream name's
+	// "4k" has to be appended or scoreResult reads a 4K rip as SD.
+	if strings.Contains(res[0].Title, "1080p 1080p") {
+		t.Errorf("quality duplicated: %q", res[0].Title)
+	}
+	if !strings.Contains(res[1].Title, "4k") {
+		t.Errorf("quality not carried over: %q", res[1].Title)
+	}
+	if !strings.Contains(res[1].Title, "The Matrix") {
+		t.Errorf("title = %q", res[1].Title)
+	}
+}
+
+func TestTorrentioAlsoQueriesMovies(t *testing.T) {
+	var gotURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURL = r.URL.Path
+		fmt.Fprint(w, `{"streams":[]}`)
+	}))
+	defer srv.Close()
+	ix := Indexer{Kind: "torrentio", Name: "torrentio", URL: srv.URL}
+	if _, err := torrentioSearch(context.Background(), srv.Client(), ix, "movie", 0, 0, "tt0133093"); err != nil {
+		t.Fatal(err)
+	}
+	if gotURL != "/stream/movie/tt0133093.json" {
+		t.Errorf("requested %q", gotURL)
+	}
+	// A series request without a season has nothing to look up.
+	if res, err := torrentioSearch(context.Background(), srv.Client(), ix, "series", 0, 0, "tt0133093"); err != nil || len(res) != 0 {
+		t.Errorf("seasonless series = %v, %v", res, err)
+	}
+}
+
+const apibayFixture = `[
+ {"id":"7349687","name":"The Matrix (1999) 1080p BrRip x264 - YIFY","info_hash":"D7A46713EAEE18C746B3254B7D1492A50FD9D6CE","seeders":"852","leechers":"131","size":"1992277407","category":"207"},
+ {"id":"81783075","name":"The Matrix 1999 CAM","info_hash":"1111111111111111111111111111111111111111","seeders":"3","leechers":"1","size":"800000000","category":"505"},
+ {"id":"0","name":"No results returned","info_hash":"0000000000000000000000000000000000000000"}
+]`
+
+func TestApibaySearchReadsSeeders(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, apibayFixture)
+	}))
+	defer srv.Close()
+	ix := Indexer{Kind: "apibay", Name: "apibay", URL: srv.URL}
+	res, err := apibaySearch(context.Background(), srv.Client(), ix, "The Matrix 1999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// apibay sends "seeders", not "num_seeders": reading the wrong key left every
+	// row at zero and dropDead then discarded the source entirely.
+	if len(res) != 1 {
+		t.Fatalf("want 1 result (non-Video category dropped), got %d: %+v", len(res), res)
+	}
+	if res[0].Seeders != 852 || res[0].Size != 1992277407 {
+		t.Errorf("result = %+v", res[0])
+	}
+}

@@ -63,9 +63,9 @@ spec:
               /work/bitlab --version 2>/dev/null || true
           env:
             - name: BINARY_URL
-              value: https://github.com/jreoka/bitlab/releases/download/v2.4.3/bitlab-linux-amd64
+              value: https://github.com/jreoka/bitlab/releases/download/v2.5.0/bitlab-linux-amd64
             - name: BINARY_SHA
-              value: 75a547a046f80770db1122b3526c4219cb4c295b0b46ca41e2c932679742468d
+              value: 43de79d72720d9322621518578e751ac06c9c2628ce9ab9574ef0470a38ea1d0
           volumeMounts:
             - name: bin
               mountPath: /work

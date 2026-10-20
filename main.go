@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const version = "2.4.3"
+const version = "2.5.0"
 
 var defaultTrackers = []string{
 	// HTTP(S) first: some hosts block outbound UDP, which kills both DHT and
@@ -139,6 +139,12 @@ func main() {
 			{Kind: "eztv", Name: "eztv"},
 			{Kind: "yts", Name: "yts"},
 			{Kind: "animetosho", Name: "animetosho"},
+			// Torrentio aggregates the trackers the pod cannot reach directly
+			// (1337x, TGx, Rutracker, RARBG's cache) and is keyed on imdb ids.
+			{Kind: "torrentio", Name: "torrentio"},
+			// apibay is TPB's own API: a second, deeper view of the catalogue
+			// knaben already serves, worth having for older releases.
+			{Kind: "apibay", Name: "apibay"},
 		} {
 			key := "seeded:" + def.Kind
 			if store.GetSetting(key, "") != "" {
