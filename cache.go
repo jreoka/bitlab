@@ -345,30 +345,3 @@ func (e *Engine) sweepCache(now time.Time) {
 			humanBytes(freed), freedCount, humanBytes(st.Used), humanBytes(e.maxCacheBytes), humanBytes(free))
 	}
 }
-
-// Purge drops a torrent and deletes its files, for the console's drop button.
-func (e *Engine) Purge(ih string) bool {
-	h := metainfo.NewHashFromHex(ih)
-	t, ok := e.cl.Torrent(h)
-	if !ok {
-		return false
-	}
-	var root string
-	if info := t.Info(); info != nil {
-		root = filepath.Join(e.dataDir, sanitizePathComponent(info.BestName()))
-	}
-	t.Drop()
-	if root != "" {
-		// A single-file torrent has no directory: its payload is either the
-		// promoted file itself or the .part next to it.
-		if err := removeAll(root); err != nil {
-			e.log.Printf("cache: purge %s: %v", ih[:8], err)
-		}
-		removeAll(root + ".part")
-	}
-	e.store.ForgetMedia(ih, "")
-	e.mu.Lock()
-	delete(e.act, ih)
-	e.mu.Unlock()
-	return true
-}

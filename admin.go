@@ -191,7 +191,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		CacheMax:   cache.Budget,
 		Cache:      cache,
 		Uptime:     int64(time.Since(s.start).Seconds()),
-		Version:    "2.7.0",
+		Version:    "2.7.1",
 		BaseURL:    s.cfg.BaseURL,
 		KeyCount:   s.store.ActiveKeyCount(),
 		MediaRows:  s.store.MediaCacheCount(),
@@ -406,13 +406,4 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		s.store.SetSetting("readahead_mb", strconv.Itoa(*body.ReadaheadMB))
 	}
 	s.handleOverview(w, r)
-}
-
-func (s *Server) handleDropTorrent(w http.ResponseWriter, r *http.Request) {
-	ih := strings.ToLower(r.PathValue("infohash"))
-	if s.engine.Purge(ih) {
-		writeJSON(w, 200, map[string]any{"ok": true})
-		return
-	}
-	httpError(w, 404, "torrent not loaded")
 }

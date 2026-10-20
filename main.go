@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const version = "2.7.0"
+const version = "2.7.1"
 
 // healthFreeFloor is the free space below which /readyz reports not-ready. The
 // cache sweep already holds BITLAB_CACHE_RESERVE_GB, so crossing this means the
@@ -359,7 +359,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/api/2fa/disable", s.requireAdmin(s.handle2FADisable))
 	mux.HandleFunc("DELETE /admin/api/sessions/{id}", s.requireAdmin(s.handleDeleteSession))
 	mux.HandleFunc("POST /admin/api/sessions/revoke-others", s.requireAdmin(s.handleRevokeOtherSessions))
-	mux.HandleFunc("DELETE /admin/api/torrents/{infohash}", s.requireAdmin(s.handleDropTorrent))
 }
 
 func (s *Server) middleware(next http.Handler) http.Handler {

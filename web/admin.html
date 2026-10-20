@@ -404,7 +404,7 @@ tr:last-child td{border-bottom:0}
         <p class="hint">Idle torrents are dropped automatically; their bytes stay until the cache policy reclaims them.</p>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Release</th><th>Progress</th><th>Peers</th><th>Rate</th><th>Readers</th><th></th></tr></thead>
+            <thead><tr><th>Release</th><th>Progress</th><th>Peers</th><th>Rate</th><th>Readers</th></tr></thead>
             <tbody id="torrents"></tbody>
           </table>
         </div>
@@ -646,7 +646,7 @@ function renderKeys(keys, base){
 function renderTorrents(list){
   const tb = $('#torrents');
   if (!list || !list.length){
-    tb.innerHTML = '<tr><td colspan="6" class="empty">Nothing loaded right now.</td></tr>';
+    tb.innerHTML = '<tr><td colspan="5" class="empty">Nothing loaded right now.</td></tr>';
     return;
   }
   tb.innerHTML = list.map(t => {
@@ -657,8 +657,7 @@ function renderTorrents(list){
       <td data-label="Progress"><div class="cell-v wide"><span class="bar"><i style="width:${pct}%"></i></span><span class="tiny muted num">${pct}%</span></div></td>
       <td data-label="Peers"><div class="cell-v num">${t.peers} <span class="tiny muted">(${t.seeders} seeds)</span></div></td>
       <td data-label="Rate"><div class="cell-v num">${t.rate ? bytes(t.rate)+'/s' : '—'}</div></td>
-      <td data-label="Readers"><div class="cell-v num">${t.readers ? '<span class="ok">'+t.readers+'</span>' : '<span class="muted">0</span>'}</div></td>
-      <td class="cell-action"><button class="ghost" onclick="dropTorrent('${t.infohash}')">Drop</button></td></tr>`;
+      <td data-label="Readers"><div class="cell-v num">${t.readers ? '<span class="ok">'+t.readers+'</span>' : '<span class="muted">0</span>'}</div></td></tr>`;
   }).join('');
 }
 
@@ -687,10 +686,6 @@ function copyUrl(btn, text){
     toast('Copied manifest URL');
     setTimeout(()=>{ btn.innerHTML = old; btn.classList.remove('copied'); }, 1400);
   }).catch(()=>toast('Copy failed',true));
-}
-async function dropTorrent(ih){
-  try { await api('/admin/api/torrents/'+ih, {method:'DELETE'}); toast('Torrent dropped'); refresh(); }
-  catch(e){ toast(e.message, true); }
 }
 
 /* ---- security ---- */
