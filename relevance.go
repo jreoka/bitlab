@@ -85,9 +85,10 @@ func titleMatches(name, title string) bool {
 }
 
 // yearAgrees accepts a release when the requested year is unknown, when the
-// name carries no year at all, or when the years are within one (festival runs
-// and staggered regional releases move the date by a year).
-func yearAgrees(name string, year int) bool {
+// name carries no year at all, or when the years are within slack (festival
+// runs and staggered regional releases move the date by a year; anime films
+// commonly differ by two or three between Japan and the West).
+func yearAgrees(name string, year, slack int) bool {
 	if year <= 0 {
 		return true
 	}
@@ -103,20 +104,37 @@ func yearAgrees(name string, year int) bool {
 	if diff < 0 {
 		diff = -diff
 	}
-	return diff <= 1
+	return diff <= slack
 }
 
 // filterRelevant drops candidates that cannot be the thing that was asked for.
 // Movies are held to all three checks; series already have their episode numbers
 // reconciled elsewhere, so they only lose the obvious cross-title matches.
-func filterRelevant(results []Result, typ, title string, year, season int) ([]Result, int) {
+//
+// aliases are the other names an anime is released under. A release titled in
+// romaji has to be allowed to stand for the English title the client asked for,
+// and its year may be the Japanese release date — hence the wider slack when
+// aliases are in play.
+func filterRelevant(results []Result, typ, title string, aliases []string, year, season int) ([]Result, int) {
 	if len(results) == 0 {
 		return results, 0
+	}
+	titles := append([]string{title}, aliases...)
+	slack := 1
+	if len(aliases) > 0 {
+		slack = 3
 	}
 	keep := make([]Result, 0, len(results))
 	dropped := 0
 	for _, r := range results {
-		if !titleMatches(r.Title, title) {
+		matched := false
+		for _, t := range titles {
+			if titleMatches(r.Title, t) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
 			dropped++
 			continue
 		}
@@ -125,7 +143,7 @@ func filterRelevant(results []Result, typ, title string, year, season int) ([]Re
 				dropped++
 				continue
 			}
-			if !yearAgrees(r.Title, year) {
+			if !yearAgrees(r.Title, year, slack) {
 				dropped++
 				continue
 			}

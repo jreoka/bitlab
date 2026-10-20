@@ -152,6 +152,13 @@ CREATE TABLE IF NOT EXISTS meta_cache (
 			return err
 		}
 	}
+	// The one-row Auto picker was rolled back at v2.3.0 and its tables were left
+	// behind with their rows. Nothing reads them; dropping keeps the file honest.
+	for _, t := range []string{"auto_picks", "auto_sessions", "stalls", "track_probes"} {
+		if _, err := s.db.Exec(`DROP TABLE IF EXISTS ` + t); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

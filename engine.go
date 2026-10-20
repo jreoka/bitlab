@@ -655,6 +655,19 @@ func (e *Engine) CacheStats() CacheStats {
 	return st
 }
 
+// DiskFree is the volume's available bytes, or -1 when the platform cannot
+// report it. The health endpoints use this instead of a full cache scan.
+func (e *Engine) DiskFree() int64 {
+	n, err := freeDiskSpace(e.dataDir)
+	if err != nil {
+		return -1
+	}
+	return n
+}
+
+// TorrentCount is how many handles the client currently holds.
+func (e *Engine) TorrentCount() int { return len(e.cl.Torrents()) }
+
 // sizedReader answers size queries locally so the first read goes to byte 0.
 type sizedReader struct {
 	r    io.ReadSeeker

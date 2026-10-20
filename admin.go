@@ -191,7 +191,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		CacheMax:   cache.Budget,
 		Cache:      cache,
 		Uptime:     int64(time.Since(s.start).Seconds()),
-		Version:    "2.6.0",
+		Version:    "2.7.0",
 		BaseURL:    s.cfg.BaseURL,
 		KeyCount:   s.store.ActiveKeyCount(),
 		MediaRows:  s.store.MediaCacheCount(),

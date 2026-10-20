@@ -15,7 +15,12 @@ import (
 	"time"
 )
 
-const version = "2.6.0"
+const version = "2.7.0"
+
+// healthFreeFloor is the free space below which /readyz reports not-ready. The
+// cache sweep already holds BITLAB_CACHE_RESERVE_GB, so crossing this means the
+// volume is genuinely out of room.
+const healthFreeFloor = int64(200) << 20
 
 var defaultTrackers = []string{
 	// HTTP(S) first: some hosts block outbound UDP, which kills both DHT and
@@ -232,6 +237,29 @@ func main() {
 		}
 	}()
 
+	// A periodic line beats a metrics stack on a box this size: it is the only
+	// history of how the cache and the swarm behaved between deploys. One line
+	// shortly after boot gives the baseline.
+	go func() {
+		logStats := func() {
+			st := eng.CacheStats()
+			free := "unknown"
+			if st.Free >= 0 {
+				free = humanBytes(st.Free)
+			}
+			lg.Printf("stats: torrents=%d cache=%s/%s free=%s entries=%d partial=%s reclaimed=%s",
+				eng.TorrentCount(), humanBytes(st.Used), humanBytes(st.Budget), free,
+				st.Entries, humanBytes(st.PartialBytes), humanBytes(st.EvictedBytes))
+		}
+		time.Sleep(15 * time.Second)
+		logStats()
+		t := time.NewTicker(10 * time.Minute)
+		defer t.Stop()
+		for range t.C {
+			logStats()
+		}
+	}()
+
 	go func() {
 		lg.Printf("bitlab %s listening on %s (data=%s, cache=%s)", version, cfg.Addr, cfg.DataDir, humanBytes(cfg.CacheMaxBytes))
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -271,7 +299,28 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /k/{token}/play/{infohash}/{fname}", s.handlePlay)
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, map[string]any{"ok": true, "version": version, "uptime": int64(time.Since(s.start).Seconds())})
+		// Always 200: this backs the liveness probe, and restarting the pod
+		// never fixes a full disk. The numbers are the diagnosis.
+		free := s.engine.DiskFree()
+		writeJSON(w, 200, map[string]any{
+			"ok":         true,
+			"version":    version,
+			"uptime":     int64(time.Since(s.start).Seconds()),
+			"free_bytes": free,
+			"degraded":   free >= 0 && free < healthFreeFloor,
+			"torrents":   s.engine.TorrentCount(),
+		})
+	})
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		// Readiness is where a full disk belongs: stop sending new plays to a
+		// pod that cannot write, without killing it.
+		free := s.engine.DiskFree()
+		degraded := free >= 0 && free < healthFreeFloor
+		status := 200
+		if degraded {
+			status = 503
+		}
+		writeJSON(w, status, map[string]any{"ready": !degraded, "free_bytes": free})
 	})
 	mux.HandleFunc("GET /manifest.json", func(w http.ResponseWriter, r *http.Request) {
 		httpError(w, 401, "use your personal manifest URL: /k/<key>/manifest.json")

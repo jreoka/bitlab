@@ -76,7 +76,7 @@ type StreamResponse struct {
 func (s *Server) manifestFor(k Key) Manifest {
 	return Manifest{
 		ID:          "org.bitlab." + k.ID,
-		Version:     "2.6.0",
+		Version:     "2.7.0",
 		Name:        "Bitlab",
 		Description: "Self-hosted streaming hub. Manifest: " + k.Label,
 		Resources:   []string{"stream"},
@@ -174,11 +174,12 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	queries := []string{query}
+	var aliases []string
 	if typ == "series" && season > 0 {
 		// Older seasons are usually only available as a batch, which is never
 		// titled "S01E01" — ask for the season as well as the episode.
 		queries = append(queries, fmt.Sprintf("%s S%02d", title, season))
-		aliases := s.animeAliases(ctx, title)
+		aliases = s.animeAliases(ctx, title)
 		for i, alias := range aliases {
 			if i >= 2 {
 				break
@@ -193,6 +194,18 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		if len(aliases) > 0 {
 			queries = append(queries, aliases[0])
 		}
+	} else if typ == "movie" {
+		// Anime films are indexed under their romaji title and usually carry the
+		// Japanese release year, which is two or three years before the date
+		// Cinemeta reports. Asking only for the English title left Spirited Away
+		// with 1 row out of 40; the alias is the only way to see the rest.
+		aliases = s.animeAliases(ctx, title)
+		for i, alias := range aliases {
+			if i >= 2 {
+				break
+			}
+			queries = append(queries, alias)
+		}
 	}
 	results, errs := s.searchAll(ctx, queries, typ, season, ep, baseID)
 	for _, e := range errs {
@@ -200,7 +213,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 	// Indexers answer with whatever their fuzzy matcher liked; keep only what
 	// could plausibly be this title, this year.
-	if filtered, dropped := filterRelevant(results, typ, title, year, season); dropped > 0 {
+	if filtered, dropped := filterRelevant(results, typ, title, aliases, year, season); dropped > 0 {
 		s.log.Printf("stream %s: dropped %d of %d candidates that do not match %q (%d)",
 			rawID, dropped, len(results), title, year)
 		results = filtered

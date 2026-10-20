@@ -11,7 +11,7 @@ func TestFilterRelevantRejectsEpisodesForMovies(t *testing.T) {
 		{Title: "The.Uprising.2026.2160p.WEB-DL.HDR.DDP5.1"},
 		{Title: "The Uprising (2026) 1080p BluRay x265"},
 	}
-	got, dropped := filterRelevant(in, "movie", "The Uprising", 2026, 0)
+	got, dropped := filterRelevant(in, "movie", "The Uprising", nil, 2026, 0)
 	if dropped != 2 {
 		t.Fatalf("dropped = %d, want 2", dropped)
 	}
@@ -30,7 +30,7 @@ func TestFilterRelevantRejectsACloserDifferentTitle(t *testing.T) {
 		{Title: "Pacific.Rim.Uprising.2018.1080p.BluRay"},
 		{Title: "The.Uprising.2026.1080p.WEB-DL"},
 	}
-	got, dropped := filterRelevant(in, "movie", "The Uprising", 2026, 0)
+	got, dropped := filterRelevant(in, "movie", "The Uprising", nil, 2026, 0)
 	if dropped != 1 || len(got) != 1 || got[0].Title != "The.Uprising.2026.1080p.WEB-DL" {
 		t.Fatalf("got %+v (dropped %d)", got, dropped)
 	}
@@ -42,7 +42,7 @@ func TestFilterRelevantYearGate(t *testing.T) {
 		{Title: "Uprising.2025.1080p.WEB-DL"},          // a year either side is fine
 		{Title: "Uprising.1080p.WEB-DL"},               // no year at all: allowed
 	}
-	got, dropped := filterRelevant(in, "movie", "Uprising", 2026, 0)
+	got, dropped := filterRelevant(in, "movie", "Uprising", nil, 2026, 0)
 	if dropped != 1 {
 		t.Fatalf("dropped = %d, want 1 (%+v)", dropped, got)
 	}
@@ -89,5 +89,41 @@ func TestLooksLikeEpisode(t *testing.T) {
 		if looksLikeEpisode(s) {
 			t.Errorf("looksLikeEpisode(%q) = true, want false", s)
 		}
+	}
+}
+
+// The bug this exists for: Spirited Away is filed as 2003 in Cinemeta but its
+// releases carry 2001 and most are titled in romaji. Without the alias and a
+// wider year window the list came back with 1 row out of 40.
+func TestFilterRelevantAnimeMovieAlias(t *testing.T) {
+	in := []Result{
+		{Title: "Sen.to.Chihiro.no.Kamikakushi.2001.1080p.BluRay.x265"},
+		{Title: "Spirited.Away.2003.1080p.BluRay"},
+		{Title: "Spirited.Away.1990.1080p.BluRay"}, // far from either year
+		{Title: "The.Cat.Returns.2002.1080p"},      // another film entirely
+	}
+	got, dropped := filterRelevant(in, "movie", "Spirited Away", []string{"Sen to Chihiro no Kamikakushi"}, 2003, 0)
+	if dropped != 2 {
+		t.Fatalf("dropped = %d, want 2 (%+v)", dropped, got)
+	}
+	if len(got) != 2 {
+		t.Fatalf("kept = %d, want 2: %+v", len(got), got)
+	}
+	for _, r := range got {
+		if r.Title == "Spirited.Away.1990.1080p.BluRay" || r.Title == "The.Cat.Returns.2002.1080p" {
+			t.Fatalf("kept a wrong film: %q", r.Title)
+		}
+	}
+}
+
+// Without aliases (a live-action film) the old strictness must remain.
+func TestFilterRelevantMovieWithoutAliasesStaysStrict(t *testing.T) {
+	in := []Result{
+		{Title: "Sen.to.Chihiro.no.Kamikakushi.2001.1080p"},
+		{Title: "Spirited.Away.2003.1080p"},
+	}
+	got, dropped := filterRelevant(in, "movie", "Spirited Away", nil, 2003, 0)
+	if dropped != 1 || len(got) != 1 || got[0].Title != "Spirited.Away.2003.1080p" {
+		t.Fatalf("got %+v (dropped %d)", got, dropped)
 	}
 }
