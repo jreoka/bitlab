@@ -20,8 +20,6 @@ import (
 	"github.com/anacrolix/torrent/metainfo"
 )
 
-var errInfoTimeout = errors.New("timed out waiting for torrent metadata (no peers?)")
-
 type activity struct {
 	readers       int
 	lastAccess    time.Time

@@ -17,8 +17,6 @@ import (
 //go:embed web/admin.html web/favicon.svg
 var webFS embed.FS
 
-type adminCtxKey struct{}
-
 type failWindow struct {
 	mu   sync.Mutex
 	hits map[string][]time.Time
@@ -190,7 +188,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		CacheBytes: s.engine.CacheBytes(),
 		CacheMax:   s.engine.maxCacheBytes,
 		Uptime:     int64(time.Since(s.start).Seconds()),
-		Version:    "2.4.0",
+		Version:    "2.4.1",
 		BaseURL:    s.cfg.BaseURL,
 		KeyCount:   s.store.ActiveKeyCount(),
 		MediaRows:  s.store.MediaCacheCount(),

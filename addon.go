@@ -73,7 +73,7 @@ type StreamResponse struct {
 func (s *Server) manifestFor(k Key) Manifest {
 	return Manifest{
 		ID:          "org.bitlab." + k.ID,
-		Version:     "2.4.0",
+		Version:     "2.4.1",
 		Name:        "Bitlab",
 		Description: "Self-hosted streaming hub. Manifest: " + k.Label,
 		Resources:   []string{"stream"},
@@ -292,8 +292,6 @@ func parseMediaID(id string) (base string, season, ep int) {
 	}
 	return
 }
-
-var qualityRe = regexp.MustCompile(`(?i)\b(2160p|4k|1080p|720p|480p|sd)\b`)
 
 func releaseLabel(title string) (string, string) {
 	q := "SD"

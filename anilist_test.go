@@ -32,8 +32,8 @@ func TestIsLatin(t *testing.T) {
 	if isLatin("进击的巨人") {
 		t.Error("CJK should fail")
 	}
-	if isLatin("ab") {
-		// two letters is the floor, still allowed
+	if !isLatin("ab") {
+		t.Error("two letters is the floor, so it should pass")
 	}
 }
 

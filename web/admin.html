@@ -121,7 +121,7 @@ select:hover{background-color:#0d1218}
 label{display:block;font-size:11.5px;color:var(--faint);margin:0 0 6px;letter-spacing:.04em;text-transform:uppercase;font-weight:600}
 .row{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));align-items:end}
 .muted{color:var(--faint)}
-.ok{color:var(--green)} .bad{color:var(--red)} .warnc{color:var(--warn)}
+.ok{color:var(--green)}
 .tiny{font-size:12px}
 
 /* ---------- metrics ---------- */
@@ -440,8 +440,7 @@ const ICON = {
   pause:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M9 5v14M15 5v14"/></svg>',
   play:'<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg>',
   trash:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4.5A1.5 1.5 0 0 1 9.5 3h5A1.5 1.5 0 0 1 16 4.5V6m2.5 0 .8 13.1A1.9 1.9 0 0 1 17.4 21H6.6a1.9 1.9 0 0 1-1.9-1.9L5.5 6"/></svg>',
-  key:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M11 12 20 3M15 7l3 3M18 4l3 3"/></svg>',
-  search:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>'
+  key:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M11 12 20 3M15 7l3 3M18 4l3 3"/></svg>'
 };
 const titles = {
   keys:['Manifest keys','One addon URL per device, individually revocable.'],
@@ -641,6 +640,17 @@ function copyUrl(btn, text){
     toast('Copied manifest URL');
     setTimeout(()=>{ btn.innerHTML = old; btn.classList.remove('copied'); }, 1400);
   }).catch(()=>toast('Copy failed',true));
+}
+async function dropTorrent(ih){
+  try { await api('/admin/api/torrents/'+ih, {method:'DELETE'}); toast('Torrent dropped'); refresh(); }
+  catch(e){ toast(e.message, true); }
+}
+async function quickPlay(){
+  $('#quickres').innerHTML = '';
+  try {
+    const r = await api('/admin/api/play', {method:'POST', body: JSON.stringify({magnet: $('#magnet').value.trim()})});
+    $('#quickres').innerHTML = `<div class="list-row"><a href="${esc(r.url)}" target="_blank" class="mono tiny" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.url)}</a></div>`;
+  } catch(e){ toast(e.message, true); }
 }
 
 /* ---- security ---- */

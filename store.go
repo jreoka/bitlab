@@ -521,10 +521,6 @@ func (s *Store) GetMedia(ih string) (string, int64, []CachedFile, bool) {
 	return name, size, cf, true
 }
 
-func (s *Store) TouchMedia(ih string) {
-	s.db.Exec(`UPDATE media_cache SET last_used=? WHERE infohash=?`, time.Now().Unix(), ih)
-}
-
 func (s *Store) MediaCacheCount() int {
 	var n int
 	s.db.QueryRow(`SELECT count(*) FROM media_cache`).Scan(&n)
