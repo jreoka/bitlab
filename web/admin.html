@@ -497,15 +497,14 @@ function revealLogin(){
   document.title = 'Sign in · Bitlab';
   $('#login').classList.remove('hidden'); $('#app').classList.add('hidden');
 }
-// The console has no anonymous state: an expired session goes back to the
-// login URL and returns to the tab it was on.
-function showLogin(){ location.replace('/login?next=' + encodeURIComponent(location.pathname)); }
-function showApp(){ $('#login').classList.add('hidden'); $('#app').classList.remove('hidden'); }
-// Only ever bounce back into the console, never to another origin.
-function nextPath(){
-  const n = new URLSearchParams(location.search).get('next') || '';
-  return /^\/admin(\/(keys|activity|security))?$/.test(n) ? n : '/admin/keys';
+// The console has no anonymous state: an expired session reloads the tab, which
+// the server answers with a redirect to /login plus a bitlab_next cookie, so the
+// visitor lands back here after signing in. The URL never carries ?next=.
+function showLogin(){
+  if (location.pathname === '/login') { revealLogin(); return; }
+  location.reload();
 }
+function showApp(){ $('#login').classList.add('hidden'); $('#app').classList.remove('hidden'); }
 
 async function doLogin(){
   $('#loginerr').textContent = '';
@@ -520,7 +519,7 @@ async function doLogin(){
       $('#loginerr').textContent = j.error || 'Sign-in failed';
       return;
     }
-    location.assign(nextPath());
+    location.assign(j.next || '/admin/keys');
   } catch(e){ $('#loginerr').textContent = 'Network error'; }
 }
 async function logout(){ await fetch('/admin/api/logout',{method:'POST'}); location.assign('/login'); }

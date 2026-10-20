@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -84,9 +83,22 @@ func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The console has no anonymous state: an unauthenticated visitor belongs on
-	// the login URL, and comes back here once signed in.
+	// the login URL, and comes back here once signed in. The destination rides
+	// in a short-lived cookie rather than ?next=, so the login URL stays clean
+	// and the path is not in the address bar, history or a proxy log.
 	if _, ok := s.currentSession(r); !ok {
-		http.Redirect(w, r, "/login?next="+url.QueryEscape(r.URL.Path), http.StatusFound)
+		if p := cleanNextPath(r.URL.Path); p != "/admin/keys" {
+			http.SetCookie(w, &http.Cookie{
+				Name:     "bitlab_next",
+				Value:    p,
+				Path:     "/",
+				MaxAge:   600,
+				HttpOnly: true,
+				SameSite: http.SameSiteLaxMode,
+				Secure:   r.TLS != nil || strings.Contains(r.Header.Get("X-Forwarded-Proto"), "https"),
+			})
+		}
+		http.Redirect(w, r, "/login", http.StatusFound)
 		return
 	}
 	s.serveAdminShell(w, r)
@@ -100,6 +112,18 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.serveAdminShell(w, r)
+}
+
+// cleanNextPath is the allow-list for where a sign-in may land. Only the
+// console tabs are accepted, so the cookie cannot be used as an open redirect.
+func cleanNextPath(p string) string {
+	switch strings.TrimSuffix(p, "/") {
+	case "/admin/activity":
+		return "/admin/activity"
+	case "/admin/security":
+		return "/admin/security"
+	}
+	return "/admin/keys"
 }
 
 func (s *Server) serveAdminShell(w http.ResponseWriter, r *http.Request) {
@@ -156,7 +180,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	s.store.PruneSessions(50)
 	s.issueCookie(w, r, sess)
 	s.log.Printf("admin login from %s (%s)", ip, sess.Name)
-	writeJSON(w, 200, map[string]any{"ok": true, "session": sess.ID})
+	// Where the visitor was headed before the redirect to /login, if anywhere.
+	next := "/admin/keys"
+	if c, err := r.Cookie("bitlab_next"); err == nil {
+		next = cleanNextPath(c.Value)
+		http.SetCookie(w, &http.Cookie{Name: "bitlab_next", Value: "", Path: "/", MaxAge: -1})
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "session": sess.ID, "next": next})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -221,7 +251,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		CacheMax:   cache.Budget,
 		Cache:      cache,
 		Uptime:     int64(time.Since(s.start).Seconds()),
-		Version:    "2.9.0",
+		Version:    "2.9.1",
 		BaseURL:    s.cfg.BaseURL,
 		KeyCount:   s.store.ActiveKeyCount(),
 		MediaRows:  s.store.MediaCacheCount(),
