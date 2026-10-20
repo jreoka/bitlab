@@ -17,18 +17,21 @@ import (
 )
 
 type Config struct {
-	Addr           string
-	DataDir        string
-	BaseURL        string
-	Trackers       []string
-	CacheMaxBytes  int64
-	IdleTimeout    time.Duration
-	InfoTimeout    time.Duration
-	ReadaheadBytes int64
-	PrebufferMB    int64
-	TorrentPort    int
-	Indexers       []Indexer
-	AdminPassword  string
+	Addr              string
+	DataDir           string
+	BaseURL           string
+	Trackers          []string
+	CacheMaxBytes     int64
+	CacheReserveBytes int64
+	CacheRetain       time.Duration
+	CacheGrace        time.Duration
+	IdleTimeout       time.Duration
+	InfoTimeout       time.Duration
+	ReadaheadBytes    int64
+	PrebufferMB       int64
+	TorrentPort       int
+	Indexers          []Indexer
+	AdminPassword     string
 }
 
 type Server struct {
@@ -73,7 +76,7 @@ type StreamResponse struct {
 func (s *Server) manifestFor(k Key) Manifest {
 	return Manifest{
 		ID:          "org.bitlab." + k.ID,
-		Version:     "2.5.0",
+		Version:     "2.6.0",
 		Name:        "Bitlab",
 		Description: "Self-hosted streaming hub. Manifest: " + k.Label,
 		Resources:   []string{"stream"},

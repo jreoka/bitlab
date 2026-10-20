@@ -389,8 +389,19 @@ tr:last-child td{border-bottom:0}
     <!-- ACTIVITY -->
     <section id="tab-activity" class="hidden">
       <div class="card">
+        <h2>Cache</h2>
+        <p class="hint">Least-recently-used goes first, never while something is playing and never inside the grace window. <span id="c-detail"></span></p>
+        <div class="metrics">
+          <div class="metric"><div class="k">On disk</div><div class="v" id="c-used">0</div></div>
+          <div class="metric"><div class="k">Budget</div><div class="v" id="c-budget">0</div></div>
+          <div class="metric"><div class="k">Free on volume</div><div class="v" id="c-free">0</div></div>
+          <div class="metric"><div class="k">Reclaimed</div><div class="v" id="c-freed">0</div></div>
+        </div>
+      </div>
+
+      <div class="card">
         <h2>Live torrents</h2>
-        <p class="hint">Idle torrents are dropped automatically; the disk cache is trimmed to the configured budget.</p>
+        <p class="hint">Idle torrents are dropped automatically; their bytes stay until the cache policy reclaims them.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Release</th><th>Progress</th><th>Peers</th><th>Rate</th><th>Readers</th><th></th></tr></thead>
@@ -523,6 +534,7 @@ async function refresh(){
     $('#s-tor').textContent = (o.torrents || []).length;
     $('#s-cache').textContent = bytes(o.cache_bytes);
     $('#s-media').textContent = o.media_rows;
+    renderCache(o.cache || {});
     loadKeys();
     renderTorrents(o.torrents || []);
   } catch(e){
@@ -535,6 +547,19 @@ function bytes(n){
   const u = ['B','KiB','MiB','GiB','TiB']; let i = 0; let v = n;
   while (v >= 1024 && i < u.length-1){ v /= 1024; i++; }
   return v.toFixed(v < 10 && i > 0 ? 1 : 0) + ' ' + u[i];
+}
+function renderCache(c){
+  $('#c-used').textContent = bytes(c.used_bytes);
+  $('#c-budget').textContent = c.budget_bytes ? bytes(c.budget_bytes) : 'unlimited';
+  $('#c-free').textContent = (c.free_bytes >= 0 && c.free_bytes !== undefined) ? bytes(c.free_bytes) : '—';
+  $('#c-freed').textContent = bytes(c.evicted_bytes);
+  const parts = [];
+  if (c.entries) parts.push(c.entries + (c.entries === 1 ? ' entry (' : ' entries (') + bytes(c.partial_bytes) + ' partial)');
+  if (c.orphan_entries) parts.push(c.orphan_entries + ' orphaned (' + bytes(c.orphan_bytes) + ')');
+  if (c.retain_minutes) parts.push('keeps ' + Math.round(c.retain_minutes/60) + 'h after last play');
+  if (c.reserve_bytes) parts.push('reserves ' + bytes(c.reserve_bytes) + ' free');
+  $('#c-detail').textContent = parts.join(' · ');
+  $('#chipcache').innerHTML = '<b>' + bytes(c.used_bytes) + '</b>';
 }
 function uptime(s){
   const d = Math.floor(s/86400), h = Math.floor(s%86400/3600), m = Math.floor(s%3600/60);

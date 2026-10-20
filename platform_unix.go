@@ -25,6 +25,17 @@ func allocatedSize(_ string, info os.FileInfo) int64 {
 // layout matches what every previous release produced.
 func sanitizePathComponent(s string) string { return s }
 
+// freeDiskSpace reports the bytes available to unprivileged writers on the
+// volume holding path. Bavail (not Bfree) is the number that matters: the
+// cache must not eat the reserved blocks, or writes start failing.
+func freeDiskSpace(path string) (int64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, err
+	}
+	return int64(st.Bavail) * int64(st.Bsize), nil
+}
+
 // removeAll deletes a tree. Unix unlinks read-only files as long as the parent
 // directory is writable, so there is nothing to prepare first.
 func removeAll(path string) error { return os.RemoveAll(path) }

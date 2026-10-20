@@ -153,6 +153,7 @@ type overview struct {
 	Torrents   []TorrentView `json:"torrents"`
 	CacheBytes int64         `json:"cache_bytes"`
 	CacheMax   int64         `json:"cache_max_bytes"`
+	Cache      CacheStats    `json:"cache"`
 	Uptime     int64         `json:"uptime_seconds"`
 	Version    string        `json:"version"`
 	BaseURL    string        `json:"base_url"`
@@ -181,14 +182,16 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		ix = []Indexer{}
 	}
 	idle := int(s.engine.idleTimeout.Minutes())
+	cache := s.engine.CacheStats()
 	writeJSON(w, 200, overview{
 		Keys:       keys,
 		Indexers:   ix,
 		Torrents:   s.engine.Views(),
-		CacheBytes: s.engine.CacheBytes(),
-		CacheMax:   s.engine.maxCacheBytes,
+		CacheBytes: cache.Used,
+		CacheMax:   cache.Budget,
+		Cache:      cache,
 		Uptime:     int64(time.Since(s.start).Seconds()),
-		Version:    "2.5.0",
+		Version:    "2.6.0",
 		BaseURL:    s.cfg.BaseURL,
 		KeyCount:   s.store.ActiveKeyCount(),
 		MediaRows:  s.store.MediaCacheCount(),
@@ -407,13 +410,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDropTorrent(w http.ResponseWriter, r *http.Request) {
 	ih := strings.ToLower(r.PathValue("infohash"))
-	for _, t := range s.engine.cl.Torrents() {
-		if t.InfoHash().HexString() == ih {
-			t.Drop()
-			writeJSON(w, 200, map[string]any{"ok": true})
-			return
-		}
+	if s.engine.Purge(ih) {
+		writeJSON(w, 200, map[string]any{"ok": true})
+		return
 	}
 	httpError(w, 404, "torrent not loaded")
 }
-

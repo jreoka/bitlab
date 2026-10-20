@@ -38,15 +38,21 @@ type Engine struct {
 	trackers      []string
 	store         *Store
 	maxCacheBytes int64
+	reserveBytes  int64
 	prebufferMB   int64
 	idleTimeout   time.Duration
+	graceFor      time.Duration
+	retainFor     time.Duration
 
-	mu       sync.Mutex
-	addLocks map[string]*sync.Mutex
-	act      map[string]*activity
-	warmSem  chan struct{}
-	log      *log.Logger
-	closed   bool
+	mu           sync.Mutex
+	addLocks     map[string]*sync.Mutex
+	act          map[string]*activity
+	warmSem      chan struct{}
+	log          *log.Logger
+	closed       bool
+	stats        CacheStats
+	evictedBytes int64
+	evictedCount int64
 
 	// storageCloser is nil unless the platform supplies its own storage; the
 	// torrent client closes the default one itself.
@@ -87,8 +93,11 @@ func NewEngine(cfg Config, store *Store, lg *log.Logger) (*Engine, error) {
 		trackers:      cfg.Trackers,
 		store:         store,
 		maxCacheBytes: cfg.CacheMaxBytes,
+		reserveBytes:  cfg.CacheReserveBytes,
 		prebufferMB:   cfg.PrebufferMB,
 		idleTimeout:   cfg.IdleTimeout,
+		graceFor:      cfg.CacheGrace,
+		retainFor:     cfg.CacheRetain,
 		addLocks:      map[string]*sync.Mutex{},
 		act:           map[string]*activity{},
 		warmSem:       make(chan struct{}, 4),
@@ -129,8 +138,21 @@ func (e *Engine) activity(ih string) *activity {
 	return a
 }
 
+// touch records an access to a torrent's bytes. The cache sweeper treats the
+// timestamp as the last-use time, so every path that may read must touch.
+func (e *Engine) touch(ih, label string) {
+	a := e.activity(ih)
+	e.mu.Lock()
+	if label != "" {
+		a.label = label
+	}
+	a.lastAccess = time.Now()
+	e.mu.Unlock()
+}
+
 // ensure returns a torrent handle, adding the magnet if it is not loaded yet.
 func (e *Engine) ensure(ih, name string, extra []string) (*torrent.Torrent, error) {
+	e.touch(ih, name)
 	h := metainfo.NewHashFromHex(ih)
 	if t, ok := e.cl.Torrent(h); ok {
 		return t, nil
@@ -151,8 +173,6 @@ func (e *Engine) ensure(ih, name string, extra []string) (*torrent.Torrent, erro
 	if err != nil {
 		return nil, err
 	}
-	a := e.activity(ih)
-	a.label = name
 	return t, nil
 }
 
@@ -481,11 +501,12 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// janitor drops idle torrents and keeps the disk cache under budget.
+// janitor keeps the torrent client and the disk tidy: it drops torrents that
+// nobody is reading and periodically applies the cache policy.
 func (e *Engine) janitor() {
 	tick := time.NewTicker(30 * time.Second)
 	defer tick.Stop()
-	evictTick := 0
+	sweeps := 0
 	for range tick.C {
 		e.mu.Lock()
 		closed := e.closed
@@ -494,119 +515,51 @@ func (e *Engine) janitor() {
 			return
 		}
 		now := time.Now()
-		for _, t := range e.cl.Torrents() {
-			ih := t.InfoHash().HexString()
-			a := e.activity(ih)
-			e.mu.Lock()
-			if t.Info() != nil {
-				a.size = t.Length()
-			}
-			if a.prevAt.Before(now) {
-				dt := now.Sub(a.prevAt).Seconds()
-				if dt > 0 {
-					cur := t.BytesCompleted()
-					a.rate = float64(cur-a.prevBytes) / dt
-					a.prevBytes = cur
-				}
-			}
-			a.prevAt = now
-			idle := now.Sub(a.lastAccess)
-			readers := a.readers
-			e.mu.Unlock()
-
-			if readers > 0 && a.size > 0 && t.Stats().ActivePeers == 0 && now.Sub(a.lastAccess) > 15*time.Second && !a.warnedNoPeers {
-				a.warnedNoPeers = true
-				e.log.Printf("no peers for %s after %s (trackers=%d)", ih[:8], time.Since(a.lastAccess).Round(time.Second), len(e.trackers))
-			}
-			if readers == 0 && idle > e.idleTimeout {
-				e.log.Printf("drop idle torrent %s (%s idle)", ih[:8], idle.Round(time.Second))
-				t.Drop()
-				e.mu.Lock()
-				delete(e.act, ih)
-				e.mu.Unlock()
-			}
+		e.reapIdle(now)
+		if sweeps == 0 || sweeps%4 == 0 {
+			e.sweepCache(now)
 		}
-		evictTick++
-		if evictTick%4 == 0 {
-			e.evict()
-		}
+		sweeps++
 	}
 }
 
-func (e *Engine) evict() {
-	if e.maxCacheBytes <= 0 {
-		return
-	}
-	size, err := dirSize(e.dataDir)
-	if err != nil || size <= e.maxCacheBytes {
-		return
-	}
-	type cand struct {
-		ih   string
-		when time.Time
-		dir  string
-		size int64
-	}
-	var cands []cand
+// reapIdle drops torrents with no readers after the idle timeout, and tracks
+// their throughput for the console. Dropping a handle stops the swarm traffic
+// but keeps the bytes on disk; whether they survive is the cache policy's
+// call, not the janitor's.
+func (e *Engine) reapIdle(now time.Time) {
 	for _, t := range e.cl.Torrents() {
-		info := t.Info()
-		if info == nil || t.BytesCompleted() < t.Length() {
-			continue
-		}
 		ih := t.InfoHash().HexString()
 		a := e.activity(ih)
 		e.mu.Lock()
-		readers := a.readers
-		when := a.lastAccess
-		e.mu.Unlock()
-		if readers > 0 {
-			continue
+		if t.Info() != nil {
+			a.size = t.Length()
 		}
-		cands = append(cands, cand{ih: ih, when: when, dir: torrentDirPath(e.dataDir, info), size: t.Length()})
-	}
-	sort.Slice(cands, func(i, j int) bool { return cands[i].when.Before(cands[j].when) })
-	for _, c := range cands {
-		if size <= e.maxCacheBytes {
-			break
-		}
-		if t, ok := e.cl.Torrent(metainfo.NewHashFromHex(c.ih)); ok {
-			t.Drop()
-		}
-		base := filepath.Clean(e.dataDir)
-		if filepath.Dir(filepath.Clean(c.dir)) == base {
-			if err := removeAll(c.dir); err != nil {
-				e.log.Printf("evict %s: %v", c.ih[:8], err)
-				continue
+		if a.prevAt.Before(now) {
+			dt := now.Sub(a.prevAt).Seconds()
+			if dt > 0 {
+				cur := t.BytesCompleted()
+				a.rate = float64(cur-a.prevBytes) / dt
+				a.prevBytes = cur
 			}
 		}
-		e.mu.Lock()
-		delete(e.act, c.ih)
+		a.prevAt = now
+		idle := now.Sub(a.lastAccess)
+		readers := a.readers
 		e.mu.Unlock()
-		e.store.db.Exec(`DELETE FROM media_cache WHERE infohash=?`, c.ih)
-		size -= c.size
-		e.log.Printf("evicted %s (%s) to stay under cache budget", c.ih[:8], humanBytes(c.size))
-	}
-}
 
-// dirSize reports allocated bytes, not apparent size: torrent files are
-// sparse while streaming, so the block count is the honest number. How that
-// number is obtained is platform-specific (see platform_*.go).
-func dirSize(root string) (int64, error) {
-	var total int64
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return nil
+		if readers > 0 && a.size > 0 && t.Stats().ActivePeers == 0 && now.Sub(a.lastAccess) > 15*time.Second && !a.warnedNoPeers {
+			a.warnedNoPeers = true
+			e.log.Printf("no peers for %s after %s (trackers=%d)", ih[:8], time.Since(a.lastAccess).Round(time.Second), len(e.trackers))
 		}
-		total += allocatedSize(path, info)
-		return nil
-	})
-	return total, err
-}
-
-// torrentDirPath is the directory the storage layer keeps a torrent's files
-// in. Eviction has to agree with it, or RemoveAll quietly targets nothing.
-func torrentDirPath(dataDir string, info *metainfo.Info) string {
-	return filepath.Join(dataDir, sanitizePathComponent(info.Name))
+		if readers == 0 && idle > e.idleTimeout {
+			e.log.Printf("drop idle torrent %s (%s idle)", ih[:8], idle.Round(time.Second))
+			t.Drop()
+			e.mu.Lock()
+			delete(e.act, ih)
+			e.mu.Unlock()
+		}
+	}
 }
 
 type TorrentView struct {
@@ -653,9 +606,53 @@ func (e *Engine) Views() []TorrentView {
 	return out
 }
 
+// CacheBytes is the media footprint of the data directory, in allocated
+// blocks. The database files are not media and are not counted.
 func (e *Engine) CacheBytes() int64 {
-	n, _ := dirSize(e.dataDir)
+	entries, err := scanCache(e.dataDir)
+	if err != nil {
+		return 0
+	}
+	var n int64
+	for _, en := range entries {
+		n += en.Bytes
+	}
 	return n
+}
+
+// CacheStats is what the console shows: the last sweep's picture of the cache,
+// with the live disk numbers refreshed on request.
+func (e *Engine) CacheStats() CacheStats {
+	var used, partial int64
+	entries, err := scanCache(e.dataDir)
+	if err == nil {
+		for _, en := range entries {
+			used += en.Bytes
+			if en.Partial {
+				partial += en.Bytes
+			}
+		}
+	}
+	e.mu.Lock()
+	st := e.stats
+	e.mu.Unlock()
+	st.Used = used
+	if st.LastSweep == 0 && err == nil {
+		// Until the first sweep lands, show the scan's own picture rather than
+		// an empty panel.
+		st.Entries = len(entries)
+		st.PartialBytes = partial
+	}
+	st.Budget = e.maxCacheBytes
+	st.Reserve = e.reserveBytes
+	if free, ferr := freeDiskSpace(e.dataDir); ferr == nil {
+		st.Free = free
+	} else {
+		st.Free = -1
+	}
+	st.RetainMin = int(e.retainFor.Minutes())
+	st.GraceMin = int(e.graceFor.Minutes())
+	return st
 }
 
 // sizedReader answers size queries locally so the first read goes to byte 0.

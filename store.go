@@ -527,6 +527,31 @@ func (s *Store) MediaCacheCount() int {
 	return n
 }
 
+// MediaName is a quiet lookup: it returns the name media_cache remembers for
+// an infohash without touching last_used, so the cache sweeper can tell a
+// torrent whose metadata is still in flight from an abandoned directory.
+func (s *Store) MediaName(ih string) (string, bool) {
+	var name string
+	if err := s.db.QueryRow(`SELECT name FROM media_cache WHERE infohash=?`, ih).Scan(&name); err != nil {
+		return "", false
+	}
+	return name, true
+}
+
+// ForgetMedia drops a media_cache row, by infohash when it is known and
+// otherwise by the name the file was stored under (with or without .part).
+func (s *Store) ForgetMedia(ih, name string) {
+	if ih != "" {
+		s.db.Exec(`DELETE FROM media_cache WHERE infohash=?`, ih)
+		return
+	}
+	name = strings.TrimSuffix(name, ".part")
+	if name == "" {
+		return
+	}
+	s.db.Exec(`DELETE FROM media_cache WHERE name=?`, name)
+}
+
 func boolInt(b bool) int {
 	if b {
 		return 1

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"os"
 
@@ -12,6 +13,9 @@ import (
 // allocatedSize falls back to the apparent size where the platform has no
 // block count to report.
 func allocatedSize(_ string, info os.FileInfo) int64 { return info.Size() }
+
+// freeDiskSpace is unsupported here; the cache reserve check is skipped.
+func freeDiskSpace(string) (int64, error) { return 0, errors.New("free disk space not supported") }
 
 // sanitizePathComponent is a no-op on platforms that are not Windows.
 func sanitizePathComponent(s string) string { return s }

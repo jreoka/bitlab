@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const version = "2.5.0"
+const version = "2.6.0"
 
 var defaultTrackers = []string{
 	// HTTP(S) first: some hosts block outbound UDP, which kills both DHT and
@@ -53,16 +53,19 @@ func envInt(k string, def int) int {
 func loadConfig() Config {
 	dataDir := env("BITLAB_DATA", "./data")
 	cfg := Config{
-		Addr:           env("BITLAB_ADDR", ":8090"),
-		DataDir:        dataDir,
-		BaseURL:        env("BITLAB_BASE_URL", ""),
-		CacheMaxBytes:  int64(envInt("BITLAB_CACHE_GB", 40)) << 30,
-		IdleTimeout:    time.Duration(envInt("BITLAB_IDLE_MINUTES", 20)) * time.Minute,
-		InfoTimeout:    time.Duration(envInt("BITLAB_INFO_TIMEOUT", 45)) * time.Second,
-		ReadaheadBytes: int64(envInt("BITLAB_READAHEAD_MB", 64)) << 20,
-		PrebufferMB:    int64(envInt("BITLAB_PREBUFFER_MB", 8)),
-		TorrentPort:    envInt("BITLAB_TORRENT_PORT", 0),
-		AdminPassword:  env("BITLAB_ADMIN_PASSWORD", ""),
+		Addr:              env("BITLAB_ADDR", ":8090"),
+		DataDir:           dataDir,
+		BaseURL:           env("BITLAB_BASE_URL", ""),
+		CacheMaxBytes:     int64(envInt("BITLAB_CACHE_GB", 40)) << 30,
+		CacheReserveBytes: int64(envInt("BITLAB_CACHE_RESERVE_GB", 2)) << 30,
+		CacheRetain:       time.Duration(envInt("BITLAB_CACHE_RETAIN_HOURS", 24)) * time.Hour,
+		CacheGrace:        time.Duration(envInt("BITLAB_CACHE_GRACE_MINUTES", 10)) * time.Minute,
+		IdleTimeout:       time.Duration(envInt("BITLAB_IDLE_MINUTES", 20)) * time.Minute,
+		InfoTimeout:       time.Duration(envInt("BITLAB_INFO_TIMEOUT", 45)) * time.Second,
+		ReadaheadBytes:    int64(envInt("BITLAB_READAHEAD_MB", 64)) << 20,
+		PrebufferMB:       int64(envInt("BITLAB_PREBUFFER_MB", 8)),
+		TorrentPort:       envInt("BITLAB_TORRENT_PORT", 0),
+		AdminPassword:     env("BITLAB_ADMIN_PASSWORD", ""),
 	}
 	if t := os.Getenv("BITLAB_TRACKERS"); t != "" {
 		for _, s := range strings.Split(t, ",") {

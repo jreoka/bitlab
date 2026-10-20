@@ -114,6 +114,20 @@ func windowsFilePathMaker(opts storage.FilePathMakerOpts) string {
 	return filepath.Join(parts...)
 }
 
+// freeDiskSpace reports the bytes available to the caller on the volume
+// holding path.
+func freeDiskSpace(path string) (int64, error) {
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return 0, err
+	}
+	var free, total, totalFree uint64
+	if err := windows.GetDiskFreeSpaceEx(p, &free, &total, &totalFree); err != nil {
+		return 0, err
+	}
+	return int64(free), nil
+}
+
 // defaultStorage keeps the torrent client's file storage but routes paths
 // through the Windows-safe maker. The piece completion database stays in the
 // data dir, matching the client's own choice on other platforms.
