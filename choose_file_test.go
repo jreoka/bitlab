@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 // A pack whose files are numbered, none of which is the episode asked for, is
 // a release that does not contain that episode. Falling through to "largest
@@ -41,5 +44,64 @@ func TestChooseFileForEpisodeFindsTheEpisode(t *testing.T) {
 	}
 	if idx != 1 {
 		t.Fatalf("expected S03E02 (1), got %d", idx)
+	}
+}
+
+// File names inside packs do not follow the release-title conventions: some
+// groups write a bare number, three-digit seasons, or run the number into the
+// next word. None of those should fall through to "largest file".
+func TestFileSignalReadsPackFileNames(t *testing.T) {
+	cases := []struct {
+		path   string
+		season int
+		ep     int
+		want   int
+	}{
+		{"Show/04.mkv", 1, 4, 1},
+		{"Show/04.mkv", 1, 5, -1},
+		{"Show/01 - Title.mkv", 1, 1, 1},
+		{"Show/[Group] 04v2 [1080p].mkv", 1, 4, 1},
+		{"Show/1080p.mkv", 1, 1, 0}, // a resolution, not an episode
+		{"Show/2001.mkv", 1, 1, 0},  // four digits are a year, never an episode
+		{"Show.S01E04.mkv", 1, 4, 1},
+		{"Zoey 101 S01E11Disc Golf.avi", 1, 11, 1},    // no word boundary after 11
+		{"Zoey 101 S003E26 Clip Show.avi", 3, 26, 1},  // three-digit season
+		{"Zoey 101 S003E26 Clip Show.avi", 1, 26, -1}, // and it is not season one
+		{"Show Ep. 04 [720p].mkv", 1, 4, 1},
+		{"Show Episode 12.mkv", 1, 12, 1},
+		{"NC/ED 01.mkv", 1, 1, 0}, // an extra that must not win
+	}
+	for _, c := range cases {
+		if got := fileSignal(c.path, c.season, c.ep); got != c.want {
+			t.Errorf("fileSignal(%q, %d, %d) = %d, want %d", c.path, c.season, c.ep, got, c.want)
+		}
+	}
+}
+
+// A season pack whose files are named "01.mkv" … "12.mkv" must serve the
+// numbered episode, not the largest file.
+func TestChooseFileForEpisodeReadsBareNumbers(t *testing.T) {
+	var paths []string
+	var sizes []int64
+	for i := 1; i <= 12; i++ {
+		paths = append(paths, fmt.Sprintf("Show/%02d.mkv", i))
+		sizes = append(sizes, int64(1<<30)+int64(i)) // later files are bigger: least wins if it guesses
+	}
+	idx, err := chooseFileForEpisode(paths, sizes, -1, 1, 4)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if idx != 3 {
+		t.Fatalf("expected 04.mkv (3), got %d", idx)
+	}
+}
+
+// A batch with many opaque file names gives no way to identify the episode;
+// the largest file is a coin flip between the show's episodes, so refuse.
+func TestChooseFileForEpisodeRefusesAnOpaqueBatch(t *testing.T) {
+	paths := []string{"The Pilot.mkv", "The Second One.mkv", "The Third.mkv", "The Fourth.mkv"}
+	sizes := []int64{1 << 30, 2 << 30, 3 << 30, 4 << 30}
+	if idx, err := chooseFileForEpisode(paths, sizes, -1, 1, 2); err != errNoEpisode {
+		t.Fatalf("expected errNoEpisode for an unnumbered batch, got %d, %v", idx, err)
 	}
 }

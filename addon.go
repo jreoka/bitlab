@@ -76,7 +76,7 @@ type StreamResponse struct {
 func (s *Server) manifestFor(k Key) Manifest {
 	return Manifest{
 		ID:          "org.bitlab." + k.ID,
-		Version:     "2.9.3",
+		Version:     "2.9.4",
 		Name:        "Bitlab",
 		Description: "Self-hosted streaming hub. Manifest: " + k.Label,
 		Resources:   []string{"stream"},
@@ -148,6 +148,15 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	baseID, season, ep := parseMediaID(rawID)
 
 	if typ != "movie" && typ != "series" {
+		writeJSON(w, 200, StreamResponse{Streams: []Stream{}})
+		return
+	}
+	if typ == "series" && season <= 0 {
+		// Specials (season 0) and season-less ids carry no episode numbering, so
+		// there is nothing to match a release file against: the rows used to be
+		// whatever the indexers returned and the play handler served the largest
+		// file, which is how S00E01 answered with the latest airing episode.
+		s.log.Printf("stream %s: no season/episode to match, refusing to guess", rawID)
 		writeJSON(w, 200, StreamResponse{Streams: []Stream{}})
 		return
 	}
@@ -286,6 +295,11 @@ func bestCachedFile(files []CachedFile) (int, bool) {
 	best := -1
 	for i, f := range files {
 		if !isVideo(f.Path) || f.Size < 20<<20 {
+			continue
+		}
+		// A feature-length "sample" exists in remuxes; it must never be the
+		// file hint a movie plays.
+		if strings.Contains(strings.ToLower(f.Path), "sample") && len(files) > 1 {
 			continue
 		}
 		if best < 0 || f.Size > files[best].Size {

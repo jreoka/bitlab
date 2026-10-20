@@ -707,9 +707,13 @@ func parseSize(s string) int64 {
 }
 
 var (
-	reSxxExx = regexp.MustCompile(`(?i)\bs(\d{1,2})[\s._-]?e(\d{1,3})\b`)
+	// The trailing "no digit" test replaces \b: release groups run the number
+	// straight into the next word ("S01E11Disc Golf.avi") and older packs write
+	// three-digit seasons ("S003E26 Clip Show.avi"), and a word boundary matches
+	// neither — which used to 404 a pack that did contain the episode.
+	reSxxExx = regexp.MustCompile(`(?i)\bs(\d{1,3})[\s._-]?e(\d{1,4})(?:[^0-9]|$)`)
 	reDashEp = regexp.MustCompile(`(?i)(?:^|[\s\[])[-–]\s*0*(\d{1,4})(?:v\d)?\b`)
-	reEpOnly = regexp.MustCompile(`(?i)\bep?(\d{1,3})\b`)
+	reEpOnly = regexp.MustCompile(`(?i)\bep(?:isode)?[\s._-]*0*(\d{1,3})(?:[^0-9]|$)`)
 	reSeason = regexp.MustCompile(`(?i)\bs(\d{1,2})\b`)
 	// "Director's Cut" / 新編集版 re-edits renumber a run; see episodeSignal.
 	reRecut = regexp.MustCompile(`(?i)director'?s[\s._-]*cut|\bshin[\s._-]*henshuu-?ban\b|新編集版`)

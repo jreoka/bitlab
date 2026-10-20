@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -280,13 +281,13 @@ func chooseFileForEpisode(paths []string, sizes []int64, want, season, ep int) (
 		return want, nil
 	}
 	if ep > 0 {
-		numbered := 0
+		numbered, videos := 0, 0
 		for i, p := range paths {
 			if !isVideo(p) {
 				continue
 			}
-			base := filepath.Base(p)
-			switch sig := episodeSignal(base, season, ep); {
+			videos++
+			switch sig := fileSignal(p, season, ep); {
 			case sig > 0:
 				return i, nil
 			case sig < 0:
@@ -300,10 +301,40 @@ func chooseFileForEpisode(paths []string, sizes []int64, want, season, ep int) (
 		if numbered > 0 {
 			return -1, errNoEpisode
 		}
-		// Nothing in the release is numbered (a single episode plus an extra, or
-		// a film): there is nothing to match, so largest is the best guess.
+		// A batch whose files say nothing about their episodes (named by title,
+		// or numbered in a convention we cannot read): picking the largest is a
+		// coin flip between the show's episodes, so refuse instead.
+		if videos > 3 {
+			return -1, errNoEpisode
+		}
+		// One episode plus an extra, or a film: nothing to match, largest wins.
 	}
 	return chooseFile(paths, sizes, want)
+}
+
+// reFileEpNum is a bare episode number at the head of a file name — "04.mkv",
+// "01 - Title.mkv", "04v2 [1080p].mkv". Years (four digits) and resolutions
+// (a letter after the digits) cannot match, and four-digit numbers never do.
+var reFileEpNum = regexp.MustCompile(`^(?:\[[^\]]*\]\s*)*0*(\d{1,3})(?:v\d)?\s*(?:[.\-_ ]|$)`)
+
+// fileSignal judges one file inside a torrent. A file name is not a release
+// title — it may be a bare number, which episodeSignal deliberately does not
+// accept on a title because "86" and "24" are show names.
+func fileSignal(path string, season, ep int) int {
+	if ep <= 0 {
+		return 0
+	}
+	base := filepath.Base(path)
+	if sig := episodeSignal(base, season, ep); sig != 0 {
+		return sig
+	}
+	if m := reFileEpNum.FindStringSubmatch(base); m != nil {
+		if n, _ := strconv.Atoi(m[1]); n == ep {
+			return 1
+		}
+		return -1
+	}
+	return 0
 }
 
 // errNoEpisode means the release does not contain the requested episode.
