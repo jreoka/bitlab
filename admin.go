@@ -73,6 +73,15 @@ func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request) {
+	// Every tab owns a path so a refresh stays where it was. The shell is the
+	// same document; the script reads location.pathname. Unknown paths under
+	// /admin/ are a 404 rather than a silent jump to the first tab.
+	switch strings.TrimSuffix(r.URL.Path, "/") {
+	case "/admin", "/admin/keys", "/admin/activity", "/admin/security":
+	default:
+		http.NotFound(w, r)
+		return
+	}
 	b, err := webFS.ReadFile("web/admin.html")
 	if err != nil {
 		http.Error(w, "ui missing", 500)
@@ -191,7 +200,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		CacheMax:   cache.Budget,
 		Cache:      cache,
 		Uptime:     int64(time.Since(s.start).Seconds()),
-		Version:    "2.7.1",
+		Version:    "2.8.0",
 		BaseURL:    s.cfg.BaseURL,
 		KeyCount:   s.store.ActiveKeyCount(),
 		MediaRows:  s.store.MediaCacheCount(),

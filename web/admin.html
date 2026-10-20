@@ -509,18 +509,34 @@ async function doLogin(){
       $('#loginerr').textContent = j.error || 'Sign-in failed';
       return;
     }
-    showApp(); refresh();
+    showApp(); refresh(); showTabFromPath();
   } catch(e){ $('#loginerr').textContent = 'Network error'; }
 }
 async function logout(){ await fetch('/admin/api/logout',{method:'POST'}); location.reload(); }
 
-function tab(name){
+const TABS = ['keys','activity','security'];
+function tabFromPath(){
+  const p = location.pathname.replace(/^\/admin\/?/, '').replace(/\/+$/, '');
+  return TABS.includes(p) ? p : 'keys';
+}
+function tabPath(name){ return '/admin/' + (TABS.includes(name) ? name : 'keys'); }
+function showTabFromPath(){
+  const name = tabFromPath();
+  tab(name, true);
+  // Canonicalise /admin and /admin/ to the tab's own path, so a refresh, a
+  // bookmark and a copied URL all land on the same panel.
+  if (location.pathname !== tabPath(name)) history.replaceState({tab:name}, '', tabPath(name));
+}
+function tab(name, silent){
+  if (!TABS.includes(name)) name = 'keys';
   document.querySelectorAll('.nav').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
   ['keys','activity','security'].forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== name));
   const t = titles[name] || ['Bitlab',''];
   $('#page-title').textContent = t[0]; $('#page-sub').textContent = t[1];
+  if (!silent) history.pushState({tab:name}, '', tabPath(name));
   if (name === 'security') loadSecurity();
 }
+window.addEventListener('popstate', () => tab(tabFromPath(), true));
 
 async function refresh(){
   try {
@@ -763,7 +779,7 @@ document.addEventListener('keydown', e => {
 (async function init(){
   try {
     const r = await fetch('/admin/api/overview');
-    if (r.ok) { showApp(); await refresh(); setInterval(refresh, 5000); }
+    if (r.ok) { showApp(); await refresh(); showTabFromPath(); setInterval(refresh, 5000); }
     else {
       const j = await r.json().catch(()=>({}));
       if (j && j.twofa) $('#code-row').classList.remove('hidden');
