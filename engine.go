@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/anacrolix/torrent"
@@ -50,6 +49,10 @@ type Engine struct {
 	warmSem  chan struct{}
 	log      *log.Logger
 	closed   bool
+
+	// storageCloser is nil unless the platform supplies its own storage; the
+	// torrent client closes the default one itself.
+	storageCloser io.Closer
 }
 
 func NewEngine(cfg Config, store *Store, lg *log.Logger) (*Engine, error) {
@@ -66,12 +69,22 @@ func NewEngine(cfg Config, store *Store, lg *log.Logger) (*Engine, error) {
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return nil, err
 	}
+	// Platforms that need their own on-disk layout supply storage here; the
+	// rest leave it nil and get the client's default file storage.
+	storageImpl, storageCloser := defaultStorage(cfg.DataDir)
+	if storageImpl != nil {
+		cc.DefaultStorage = storageImpl
+	}
 	cl, err := torrent.NewClient(cc)
 	if err != nil {
+		if storageCloser != nil {
+			storageCloser.Close()
+		}
 		return nil, fmt.Errorf("torrent client: %w", err)
 	}
 	e := &Engine{
 		cl:            cl,
+		storageCloser: storageCloser,
 		dataDir:       cfg.DataDir,
 		trackers:      cfg.Trackers,
 		store:         store,
@@ -87,7 +100,14 @@ func NewEngine(cfg Config, store *Store, lg *log.Logger) (*Engine, error) {
 	return e, nil
 }
 
-func (e *Engine) Close() { e.cl.Close() }
+func (e *Engine) Close() {
+	e.cl.Close()
+	if e.storageCloser != nil {
+		if err := e.storageCloser.Close(); err != nil {
+			e.log.Printf("close storage: %v", err)
+		}
+	}
+}
 
 func (e *Engine) lockFor(ih string) *sync.Mutex {
 	e.mu.Lock()
@@ -544,7 +564,7 @@ func (e *Engine) evict() {
 		if readers > 0 {
 			continue
 		}
-		cands = append(cands, cand{ih: ih, when: when, dir: filepath.Join(e.dataDir, info.Name), size: t.Length()})
+		cands = append(cands, cand{ih: ih, when: when, dir: torrentDirPath(e.dataDir, info), size: t.Length()})
 	}
 	sort.Slice(cands, func(i, j int) bool { return cands[i].when.Before(cands[j].when) })
 	for _, c := range cands {
@@ -556,7 +576,7 @@ func (e *Engine) evict() {
 		}
 		base := filepath.Clean(e.dataDir)
 		if filepath.Dir(filepath.Clean(c.dir)) == base {
-			if err := os.RemoveAll(c.dir); err != nil {
+			if err := removeAll(c.dir); err != nil {
 				e.log.Printf("evict %s: %v", c.ih[:8], err)
 				continue
 			}
@@ -571,21 +591,24 @@ func (e *Engine) evict() {
 }
 
 // dirSize reports allocated bytes, not apparent size: torrent files are
-// sparse while streaming, so St_blocks is the honest number.
+// sparse while streaming, so the block count is the honest number. How that
+// number is obtained is platform-specific (see platform_*.go).
 func dirSize(root string) (int64, error) {
 	var total int64
-	err := filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return nil
 		}
-		if st, ok := info.Sys().(*syscall.Stat_t); ok {
-			total += st.Blocks * 512
-			return nil
-		}
-		total += info.Size()
+		total += allocatedSize(path, info)
 		return nil
 	})
 	return total, err
+}
+
+// torrentDirPath is the directory the storage layer keeps a torrent's files
+// in. Eviction has to agree with it, or RemoveAll quietly targets nothing.
+func torrentDirPath(dataDir string, info *metainfo.Info) string {
+	return filepath.Join(dataDir, sanitizePathComponent(info.Name))
 }
 
 type TorrentView struct {

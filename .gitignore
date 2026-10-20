@@ -1,5 +1,6 @@
 /bitlab
 /data/
+/dist/
 /testdata/
 *.db
 *.db-shm

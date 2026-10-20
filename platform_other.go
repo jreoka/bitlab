@@ -1,0 +1,23 @@
+//go:build !unix && !windows
+
+package main
+
+import (
+	"io"
+	"os"
+
+	"github.com/anacrolix/torrent/storage"
+)
+
+// allocatedSize falls back to the apparent size where the platform has no
+// block count to report.
+func allocatedSize(_ string, info os.FileInfo) int64 { return info.Size() }
+
+// sanitizePathComponent is a no-op on platforms that are not Windows.
+func sanitizePathComponent(s string) string { return s }
+
+// removeAll deletes a tree.
+func removeAll(path string) error { return os.RemoveAll(path) }
+
+// defaultStorage leaves the storage choice to the torrent client.
+func defaultStorage(_ string) (storage.ClientImpl, io.Closer) { return nil, nil }

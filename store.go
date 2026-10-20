@@ -68,7 +68,12 @@ type Store struct {
 }
 
 func OpenStore(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)")
+	// A plain file name plus query parameters: the driver strips the query and
+	// applies the PRAGMAs itself, so SQLite never parses the path as a URI.
+	// That matters on Windows, where a URI would mangle "C:\..." and a name
+	// containing '%' or '#' would be misread.
+	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
