@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const version = "2.8.0"
+const version = "2.9.0"
 
 // healthFreeFloor is the free space below which /readyz reports not-ready. The
 // cache sweep already holds BITLAB_CACHE_RESERVE_GB, so crossing this means the
@@ -339,6 +339,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /favicon.ico", s.handleFavicon)
 
 	// admin
+	mux.HandleFunc("GET /login", s.handleLoginPage)
 	mux.HandleFunc("GET /admin", s.handleAdminPage)
 	mux.HandleFunc("GET /admin/", s.handleAdminPage)
 	mux.HandleFunc("POST /admin/api/login", s.handleLogin)

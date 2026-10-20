@@ -493,8 +493,19 @@ async function api(path, opts){
   if (!r.ok) throw new Error((j && j.error) || ('HTTP ' + r.status));
   return j;
 }
-function showLogin(){ $('#login').classList.remove('hidden'); $('#app').classList.add('hidden'); }
+function revealLogin(){
+  document.title = 'Sign in · Bitlab';
+  $('#login').classList.remove('hidden'); $('#app').classList.add('hidden');
+}
+// The console has no anonymous state: an expired session goes back to the
+// login URL and returns to the tab it was on.
+function showLogin(){ location.replace('/login?next=' + encodeURIComponent(location.pathname)); }
 function showApp(){ $('#login').classList.add('hidden'); $('#app').classList.remove('hidden'); }
+// Only ever bounce back into the console, never to another origin.
+function nextPath(){
+  const n = new URLSearchParams(location.search).get('next') || '';
+  return /^\/admin(\/(keys|activity|security))?$/.test(n) ? n : '/admin/keys';
+}
 
 async function doLogin(){
   $('#loginerr').textContent = '';
@@ -509,10 +520,10 @@ async function doLogin(){
       $('#loginerr').textContent = j.error || 'Sign-in failed';
       return;
     }
-    showApp(); refresh(); showTabFromPath();
+    location.assign(nextPath());
   } catch(e){ $('#loginerr').textContent = 'Network error'; }
 }
-async function logout(){ await fetch('/admin/api/logout',{method:'POST'}); location.reload(); }
+async function logout(){ await fetch('/admin/api/logout',{method:'POST'}); location.assign('/login'); }
 
 const TABS = ['keys','activity','security'];
 function tabFromPath(){
@@ -533,6 +544,7 @@ function tab(name, silent){
   ['keys','activity','security'].forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== name));
   const t = titles[name] || ['Bitlab',''];
   $('#page-title').textContent = t[0]; $('#page-sub').textContent = t[1];
+  document.title = t[0] + ' · Bitlab';
   if (!silent) history.pushState({tab:name}, '', tabPath(name));
   if (name === 'security') loadSecurity();
 }
@@ -777,14 +789,11 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !$('#login').classList.contains('hidden')) doLogin();
 });
 (async function init(){
+  if (location.pathname === '/login') { revealLogin(); return; }
   try {
     const r = await fetch('/admin/api/overview');
     if (r.ok) { showApp(); await refresh(); showTabFromPath(); setInterval(refresh, 5000); }
-    else {
-      const j = await r.json().catch(()=>({}));
-      if (j && j.twofa) $('#code-row').classList.remove('hidden');
-      showLogin();
-    }
+    else showLogin();
   } catch(e){ showLogin(); }
 })();
 </script>

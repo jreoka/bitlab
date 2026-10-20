@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -82,6 +83,26 @@ func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// The console has no anonymous state: an unauthenticated visitor belongs on
+	// the login URL, and comes back here once signed in.
+	if _, ok := s.currentSession(r); !ok {
+		http.Redirect(w, r, "/login?next="+url.QueryEscape(r.URL.Path), http.StatusFound)
+		return
+	}
+	s.serveAdminShell(w, r)
+}
+
+// handleLoginPage serves the sign-in form at its own URL. The document is the
+// console's shell; the script shows only the auth card when the path is /login.
+func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.currentSession(r); ok {
+		http.Redirect(w, r, "/admin/keys", http.StatusFound)
+		return
+	}
+	s.serveAdminShell(w, r)
+}
+
+func (s *Server) serveAdminShell(w http.ResponseWriter, r *http.Request) {
 	b, err := webFS.ReadFile("web/admin.html")
 	if err != nil {
 		http.Error(w, "ui missing", 500)
@@ -200,7 +221,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		CacheMax:   cache.Budget,
 		Cache:      cache,
 		Uptime:     int64(time.Since(s.start).Seconds()),
-		Version:    "2.8.0",
+		Version:    "2.9.0",
 		BaseURL:    s.cfg.BaseURL,
 		KeyCount:   s.store.ActiveKeyCount(),
 		MediaRows:  s.store.MediaCacheCount(),
