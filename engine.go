@@ -77,6 +77,7 @@ func NewEngine(cfg Config, store *Store, lg *log.Logger) (*Engine, error) {
 	// Trackers and metainfo sources are attacker-influenced URLs; they must not
 	// become a path to the pod network or cloud metadata.
 	cc.TrackerDialContext = guardedDialContext(allowPrivate)
+
 	cc.MetainfoSourcesClient = &http.Client{
 		Timeout:   30 * time.Second,
 		Transport: guardedTransport(allowPrivate),

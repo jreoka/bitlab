@@ -204,6 +204,10 @@ func TestOutboundURLRejectsPrivate(t *testing.T) {
 		"http://127.0.0.1:8090/admin",
 		"http://169.254.169.254/latest/meta-data",
 		"http://10.0.0.1/",
+		"http://100.64.0.1:8080/",
+		"http://198.18.0.1/",
+		"http://192.0.0.1/",
+		"http://240.0.0.1/",
 		"file:///etc/passwd",
 		"gopher://example.com/",
 	} {

@@ -55,6 +55,11 @@ spec:
         # cluster free of a registry dependency and the digest pinned.
         - name: fetch
           image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           command: ["/bin/sh", "-c"]
           args:
             - |
@@ -65,9 +70,9 @@ spec:
               /work/bitlab --version 2>/dev/null || true
           env:
             - name: BINARY_URL
-              value: https://github.com/jreoka/bitlab/releases/download/v2.9.9/bitlab-linux-amd64
+              value: https://github.com/jreoka/bitlab/releases/download/v2.9.10/bitlab-linux-amd64
             - name: BINARY_SHA
-              value: 184a375d57ab394f8eee9e260ad862f926d8da7d7b265cdb923dd5164333202c
+              value: c2b771ac70565976f9e00826336d1b2dded497cc59bef9e2ba06aa37314b76a5
           volumeMounts:
             - name: bin
               mountPath: /work
@@ -118,14 +123,17 @@ spec:
           ports:
             - name: http
               containerPort: 8090
-            # Inbound TCP only. Inbound UDP is intentionally not published:
-            # client-side apply merges ports by containerPort (a second protocol
-            # entry is dropped) and NodePort cannot allocate 51413 (range
-            # 30000-32767). Outbound DHT/uTP still work; TCP carries peers in.
+            # Both protocols share 51413. Client-side apply merges this list
+            # by containerPort and silently drops the second entry, so deploy
+            # this manifest with `kubectl replace`, not `kubectl apply`.
             - name: torrent-tcp
               containerPort: 51413
               hostPort: 51413
               protocol: TCP
+            - name: torrent-udp
+              containerPort: 51413
+              hostPort: 51413
+              protocol: UDP
           readinessProbe:
             httpGet: {path: /readyz, port: http}
             initialDelaySeconds: 3

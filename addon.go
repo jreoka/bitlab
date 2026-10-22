@@ -82,7 +82,7 @@ type StreamResponse struct {
 func (s *Server) manifestFor(k Key) Manifest {
 	return Manifest{
 		ID:          "org.bitlab." + k.ID,
-		Version:     "2.9.9",
+		Version:     "2.9.10",
 		Name:        "Bitlab",
 		Description: "Self-hosted streaming hub. Manifest: " + k.Label,
 		Resources:   []string{"stream"},
@@ -281,7 +281,10 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 				if len(clean) >= 20 {
 					break
 				}
-				if validTracker(tr) {
+				// Indexer hints may only carry HTTP(S) trackers: UDP tracker
+				// resolution is done inside anacrolix and cannot be forced through
+				// the guarded dialer.
+				if validTracker(tr) && (strings.HasPrefix(strings.ToLower(tr), "http://") || strings.HasPrefix(strings.ToLower(tr), "https://")) {
 					clean = append(clean, strings.TrimSpace(tr))
 				}
 			}

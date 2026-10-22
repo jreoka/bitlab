@@ -13,9 +13,37 @@ import (
 // privateAddress reports whether an address must not be reached by outbound
 // indexer/metadata requests. Loopback and link-local are the ones that matter
 // most (kubelet, the pod network, and cloud metadata endpoints).
+// These are not covered by net.IP.IsPrivate: carrier-grade NAT (Tailscale and
+// several cloud internals), benchmark/documentation ranges and the reserved
+// 240/4 block. Refusing them keeps an indexer URL from reaching something the
+// public internet cannot.
+var reservedNets = func() []*net.IPNet {
+	cidrs := []string{
+		"0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "192.0.2.0/24",
+		"198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "240.0.0.0/4",
+		"2001:db8::/32", "100::/64",
+	}
+	out := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		_, n, err := net.ParseCIDR(c)
+		if err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}()
+
 func privateAddress(ip net.IP) bool {
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast()
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
+		return true
+	}
+	for _, n := range reservedNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // guardedTransport resolves names itself and dials only public addresses, so a
