@@ -36,13 +36,6 @@ type Config struct {
 	Indexers          []Indexer
 	AdminPassword     string
 	TrustProxy        bool
-
-	// The load-time predictor. ProbeEnabled starts the background measurement
-	// loop; the numbers bound what it may spend.
-	ProbeEnabled  bool
-	ProbeInterval time.Duration
-	ProbePerHour  int
-	ProbeMBHour   int64
 }
 
 type Server struct {
@@ -59,7 +52,6 @@ type Server struct {
 	totpMu     sync.Mutex
 	ixCache    sync.Map // indexer+query -> cached results for a few minutes
 	epCache    sync.Map // imdb id -> ordered [season, episode] pairs
-	pred       *Predictor
 }
 
 // ---- addon protocol types ----
@@ -90,7 +82,7 @@ type StreamResponse struct {
 func (s *Server) manifestFor(k Key) Manifest {
 	return Manifest{
 		ID:          "org.bitlab." + k.ID,
-		Version:     "2.10.5",
+		Version:     "2.9.13",
 		Name:        "Bitlab",
 		Description: "Self-hosted streaming hub. Manifest: " + k.Label,
 		Resources:   []string{"stream"},
@@ -273,9 +265,6 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, StreamResponse{Streams: []Stream{}})
 		return
 	}
-	// Hand the predictor a population to sample. These are the releases nobody
-	// clicked, which is exactly what makes the training set look like the list.
-	s.pred.Observe(results, typ, season)
 
 	base := s.baseURL(r)
 	streams := make([]Stream, 0, len(results))
@@ -345,16 +334,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		if src != "" {
 			bits = append(bits, src)
 		}
-		bits = append(bits, "💾 "+humanBytes(res.Size), fmt.Sprintf("👥 %d", res.Seeders))
-		// The measured estimate, when the model has one. It never reorders the
-		// list: the pick stays the user's. The median is what a row shows —
-		// the p90 is a worst case and reads as a broken promise on a release
-		// that will actually start fine.
-		if p50, _, ok := s.pred.Estimate(res.InfoHash, res.Title, res.Indexer,
-			res.Seeders, res.Size, typ, season); ok {
-			bits = append(bits, etaBadge(p50))
-		}
-		bits = append(bits, res.Indexer)
+		bits = append(bits, "💾 "+humanBytes(res.Size), fmt.Sprintf("👥 %d", res.Seeders), res.Indexer)
 		detail := strings.Join(bits, " · ")
 		streams = append(streams, Stream{
 			Name:  fmt.Sprintf("%s · %s", display, q),

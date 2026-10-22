@@ -73,9 +73,9 @@ spec:
               /work/bitlab --version 2>/dev/null || true
           env:
             - name: BINARY_URL
-              value: https://github.com/jreoka/bitlab/releases/download/v2.10.5/bitlab-linux-amd64
+              value: https://github.com/jreoka/bitlab/releases/download/v2.9.13/bitlab-linux-amd64
             - name: BINARY_SHA
-              value: 56421045094f96b0d6da0d1cb486776be022d3ed9146f5beef0d42d588c445bc
+              value: 1a38850efcbea8729e31a6630863891f6b59360a8e657435daffce901d3e537c
           volumeMounts:
             - name: bin
               mountPath: /work
@@ -113,17 +113,6 @@ spec:
               value: "1"
             - name: BITLAB_MAX_TORRENTS
               value: "40"
-            # The load-time predictor. Probes are random releases from the pool
-            # that searches populate, capped at 30 an hour and 120 MB an hour:
-            # the loop stops for the rest of the hour at either cap.
-            - name: BITLAB_PROBE_ENABLED
-              value: "on"
-            - name: BITLAB_PROBE_INTERVAL
-              value: "60"
-            - name: BITLAB_PROBE_PER_HOUR
-              value: "60"
-            - name: BITLAB_PROBE_MB_HOUR
-              value: "120"
             - name: BITLAB_ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:

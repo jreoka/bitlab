@@ -252,7 +252,6 @@ type overview struct {
 	KeyCount   int           `json:"active_keys"`
 	MediaRows  int           `json:"media_rows"`
 	IdleMin    int           `json:"idle_minutes"`
-	Predictor  ModelStats    `json:"predictor"`
 }
 
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
@@ -289,12 +288,11 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		CacheMax:   cache.Budget,
 		Cache:      cache,
 		Uptime:     int64(time.Since(s.start).Seconds()),
-		Version:    "2.10.5",
+		Version:    "2.9.13",
 		BaseURL:    s.cfg.BaseURL,
 		KeyCount:   s.store.ActiveKeyCount(),
 		MediaRows:  s.store.MediaCacheCount(),
 		IdleMin:    idle,
-		Predictor:  s.pred.Stats(),
 	})
 }
 
