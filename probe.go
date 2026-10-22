@@ -408,10 +408,33 @@ func (p *Predictor) run(ctx context.Context) {
 // locally and halves the time a 45-second metadata timeout takes to clear.
 const probeWorkers = 2
 
+// bootstrapSamples is the point at which the model has enough measurements to
+// be useful; until then the loop is allowed to spend far more than the
+// steady-state budget, because a predictor that takes a week to learn is a
+// predictor nobody waits for. After it, the configured cap takes over so the
+// steady state costs a few megabytes an hour.
+const (
+	bootstrapSamples = 200
+	bootstrapPerHour = 150
+)
+
+// hourlyCap is the probe budget in force right now.
+func (p *Predictor) hourlyCap() int {
+	p.mu.RLock()
+	net := p.net
+	p.mu.RUnlock()
+	if net == nil || net.Samples < bootstrapSamples {
+		if p.s.cfg.ProbePerHour < bootstrapPerHour {
+			return bootstrapPerHour
+		}
+	}
+	return p.s.cfg.ProbePerHour
+}
+
 func (p *Predictor) tick(ctx context.Context) {
 	now := time.Now()
 	n, bytes := p.s.store.ProbeWindow(now.Unix() - 3600)
-	if n >= p.s.cfg.ProbePerHour || bytes >= p.s.cfg.ProbeMBHour<<20 {
+	if n >= p.hourlyCap() || bytes >= p.s.cfg.ProbeMBHour<<20 {
 		return
 	}
 	picks := p.pick(probeWorkers)
@@ -681,7 +704,7 @@ func (p *Predictor) Stats() ModelStats {
 	if p == nil || p.s == nil || p.s.store == nil {
 		return ModelStats{}
 	}
-	st := ModelStats{Budget: p.s.cfg.ProbePerHour}
+	st := ModelStats{Budget: p.hourlyCap()}
 	n, hashes, okN := p.s.store.ProbeTotals()
 	st.Probes, st.Hashes, st.Failed = n, hashes, n-okN
 	st.Pool = p.s.store.CandidateCount()
