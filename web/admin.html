@@ -613,6 +613,7 @@ function renderPredictor(p){
   if (p.mb_last_hour) parts.push(p.mb_last_hour.toFixed(1) + ' MB this hour');
   if (p.ready) {
     parts.push(p.samples + ' training samples');
+    if (p.baseline_mae) parts.push('no-model error ' + p.baseline_mae.toFixed(1) + 's');
     if (p.trained_at) parts.push('trained ' + ago(p.trained_at));
   } else {
     parts.push('no model yet — needs 20 usable probes');

@@ -249,18 +249,19 @@ func decodeFeat(s string) (featBlob, bool) {
 
 // ModelStats is what the console and the log line report.
 type ModelStats struct {
-	Ready      bool    `json:"ready"`
-	Samples    int     `json:"samples"`
-	MAE        float64 `json:"mae"`
-	Within2x   float64 `json:"within2x"`
-	TrainedAt  int64   `json:"trained_at"`
-	Probes     int     `json:"probes"`
-	Hashes     int     `json:"hashes"`
-	Pool       int     `json:"pool"`
-	LastHour   int     `json:"last_hour"`
-	MBLastHour float64 `json:"mb_last_hour"`
-	Failed     int     `json:"failed"`
-	Budget     int     `json:"budget"`
+	Ready       bool    `json:"ready"`
+	Samples     int     `json:"samples"`
+	MAE         float64 `json:"mae"`
+	Within2x    float64 `json:"within2x"`
+	BaselineMAE float64 `json:"baseline_mae"`
+	TrainedAt   int64   `json:"trained_at"`
+	Probes      int     `json:"probes"`
+	Hashes      int     `json:"hashes"`
+	Pool        int     `json:"pool"`
+	LastHour    int     `json:"last_hour"`
+	MBLastHour  float64 `json:"mb_last_hour"`
+	Failed      int     `json:"failed"`
+	Budget      int     `json:"budget"`
 }
 
 // Predictor owns the background probe loop and the model.
@@ -623,8 +624,8 @@ func (p *Predictor) maybeTrain(force bool) {
 		p.loaded = net.Samples
 		p.trained = net.TrainedAt
 		p.mu.Unlock()
-		p.s.log.Printf("predictor: trained on %d probes — held-out MAE %.1fs, %.0f%% within 2x",
-			net.Samples, net.MAE, net.Within2x*100)
+		p.s.log.Printf("predictor: trained on %d probes — held-out MAE %.1fs (constant baseline %.1fs), %.0f%% within 2x (baseline %.0f%%)",
+			net.Samples, net.MAE, net.ConstantMAE, net.Within2x*100, net.ConstantWithin*100)
 	}()
 }
 
@@ -717,6 +718,7 @@ func (p *Predictor) Stats() ModelStats {
 		st.Samples = p.net.Samples
 		st.MAE = p.net.MAE
 		st.Within2x = p.net.Within2x
+		st.BaselineMAE = p.net.ConstantMAE
 		st.TrainedAt = p.net.TrainedAt
 	}
 	return st

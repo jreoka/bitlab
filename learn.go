@@ -68,11 +68,17 @@ type MLP struct {
 	OffEIx  int `json:"off_eix"`
 	OffEGrp int `json:"off_egrp"`
 
-	Samples   int     `json:"samples"`
-	MAE       float64 `json:"mae"`
-	Within2x  float64 `json:"within2x"`
-	TrainedAt int64   `json:"trained_at"`
-	Loss      float64 `json:"loss"`
+	Samples  int     `json:"samples"`
+	MAE      float64 `json:"mae"`
+	Within2x float64 `json:"within2x"`
+	// ConstantMAE is what the same holdout costs with no model at all: every
+	// release predicted at the training mean. It is the number that says
+	// whether the network is earning its keep yet, and on a few dozen samples
+	// it often is not.
+	ConstantMAE    float64 `json:"constant_mae"`
+	ConstantWithin float64 `json:"constant_within2x"`
+	TrainedAt      int64   `json:"trained_at"`
+	Loss           float64 `json:"loss"`
 }
 
 func layout(n *MLP) {
@@ -411,21 +417,30 @@ func evalLoss(n *MLP, set []Sample, w *ws) float64 {
 	return total / float64(len(set))
 }
 
-// measure fills the human-scale error stats from held-out samples.
+// measure fills the human-scale error stats from held-out samples, and the
+// same stats for a predictor that ignores every feature.
 func (n *MLP) measure(set []Sample) {
 	var absErr, within float64
+	var baseAbs, baseWithin float64
+	// The constant predictor is exp(mean of the training targets), which is
+	// where the output bias started before any learning.
+	constant := math.Exp(n.P[n.OffBo])
 	for _, s := range set {
 		p50, _ := n.Predict(s.X, s.CatIx, s.CatGrp)
 		want := math.Exp(s.Y)
-		d := math.Abs(p50 - want)
-		absErr += d
-		ratio := p50 / math.Max(want, 0.1)
-		if ratio >= 0.5 && ratio <= 2 {
+		absErr += math.Abs(p50 - want)
+		if ratio := p50 / math.Max(want, 0.1); ratio >= 0.5 && ratio <= 2 {
 			within++
+		}
+		baseAbs += math.Abs(constant - want)
+		if ratio := constant / math.Max(want, 0.1); ratio >= 0.5 && ratio <= 2 {
+			baseWithin++
 		}
 	}
 	n.MAE = absErr / float64(len(set))
 	n.Within2x = within / float64(len(set))
+	n.ConstantMAE = baseAbs / float64(len(set))
+	n.ConstantWithin = baseWithin / float64(len(set))
 }
 
 // predictRaw returns the network's mean and spread in log-seconds.

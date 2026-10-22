@@ -47,6 +47,14 @@ func TestMLPLearnsSyntheticRelation(t *testing.T) {
 	if n.Within2x < 0.65 {
 		t.Errorf("within 2x = %.2f, want >= 0.65", n.Within2x)
 	}
+	// The metric that matters: the network has to beat predicting one number
+	// for every release, or it is only adding a colour and a lie.
+	if n.ConstantMAE <= 0 {
+		t.Fatal("constant baseline was never measured")
+	}
+	if n.MAE >= n.ConstantMAE {
+		t.Errorf("held-out MAE %.1fs does not beat the constant baseline %.1fs", n.MAE, n.ConstantMAE)
+	}
 }
 
 // A fast swarm must not be predicted slower than a slow one: that ordering is
