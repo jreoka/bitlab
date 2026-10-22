@@ -73,9 +73,9 @@ spec:
               /work/bitlab --version 2>/dev/null || true
           env:
             - name: BINARY_URL
-              value: https://github.com/jreoka/bitlab/releases/download/v2.10.0/bitlab-linux-amd64
+              value: https://github.com/jreoka/bitlab/releases/download/v2.10.1/bitlab-linux-amd64
             - name: BINARY_SHA
-              value: 69e7bb85ff04c88fc55af2485c5a662681dca5a0e57435229c7a03d7752f66dd
+              value: 9e43d54b02a2d6004f36133be4abce733b4e71610c29b00dc77387b8b633e84e
           volumeMounts:
             - name: bin
               mountPath: /work
@@ -120,8 +120,10 @@ spec:
               value: "on"
             - name: BITLAB_PROBE_INTERVAL
               value: "60"
+            # Raised while the first model is being trained; drop it back to
+            # 30 once the predictor has a few hundred samples.
             - name: BITLAB_PROBE_PER_HOUR
-              value: "30"
+              value: "150"
             - name: BITLAB_PROBE_MB_HOUR
               value: "120"
             - name: BITLAB_ADMIN_PASSWORD

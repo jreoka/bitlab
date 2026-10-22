@@ -296,8 +296,10 @@ func (p *Predictor) Close() {
 
 // minSamplesForBadge is the point at which a number on a row is worth showing.
 // Below it the model has not seen enough swarms to be better than a guess, and
-// a confident-looking green dot would be worse than no dot.
-const minSamplesForBadge = 60
+// a confident-looking green dot would be worse than no dot. It is a floor, not
+// a promise: the console reports the held-out error, which is the number that
+// says how much to trust the row.
+const minSamplesForBadge = 40
 
 // Estimate answers the row's question: how long until this plays, in seconds.
 // ok is false while the model has too little data to say anything honest.
@@ -389,13 +391,18 @@ func (p *Predictor) run(ctx context.Context) {
 	}
 }
 
+// probeWorkers is how many probes are in flight at once. A probe spends almost
+// all of its time waiting on strangers' peers, so two in flight costs nothing
+// locally and halves the time a 45-second metadata timeout takes to clear.
+const probeWorkers = 2
+
 func (p *Predictor) tick(ctx context.Context) {
 	now := time.Now()
 	n, bytes := p.s.store.ProbeWindow(now.Unix() - 3600)
 	if n >= p.s.cfg.ProbePerHour || bytes >= p.s.cfg.ProbeMBHour<<20 {
 		return
 	}
-	picks := p.pick(2)
+	picks := p.pick(probeWorkers)
 	if len(picks) == 0 {
 		// An empty pool is normal before the first search; say so once in a
 		// while rather than every tick.
@@ -404,52 +411,60 @@ func (p *Predictor) tick(ctx context.Context) {
 		}
 		return
 	}
+	type outcome struct {
+		row       ProbeRow
+		attempted bool
+	}
+	// The probes run concurrently, but rows are written here on one goroutine:
+	// the store has a single connection and serialising the writes is both
+	// cheaper and easier to reason about than relying on the driver's queue.
+	results := make(chan outcome, len(picks))
 	for _, c := range picks {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		p.mu.RLock()
-		net := p.net
-		p.mu.RUnlock()
-		var feat string
-		if net != nil {
-			e := entryFacts{
-				Title: c.Title, Size: c.Size, Seeders: c.Seeders, Indexer: c.Indexer,
-				FirstSeen: c.FirstSeen, LastProbe: c.LastProbe, LastMs: c.LastMs,
-				Cold: !p.s.engine.HasInfo(c.InfoHash), Typ: c.Typ, Season: c.Season,
-			}
-			x, ix, grp := net.Features(e, now.Unix())
-			feat = encodeFeat(x, ix, grp)
-		} else {
-			// No model yet: the sample still needs a feature vector, built
-			// with the identity standardisation a fresh model would use.
-			fresh := newMLP(1, 0)
-			for i := range fresh.Std {
-				fresh.Std[i] = 1
-			}
-			e := entryFacts{
-				Title: c.Title, Size: c.Size, Seeders: c.Seeders, Indexer: c.Indexer,
-				FirstSeen: c.FirstSeen, LastProbe: c.LastProbe, LastMs: c.LastMs,
-				Cold: !p.s.engine.HasInfo(c.InfoHash), Typ: c.Typ, Season: c.Season,
-			}
-			x, ix, grp := fresh.Features(e, now.Unix())
-			feat = encodeFeat(x, ix, grp)
-		}
-		row, attempted := p.s.engine.Probe(ctx, c, feat)
-		if !attempted {
+		go func(c Candidate) {
+			row, attempted := p.s.engine.Probe(ctx, c, p.featFor(c, now.Unix()))
+			results <- outcome{row, attempted}
+		}(c)
+	}
+	for range picks {
+		o := <-results
+		if !o.attempted {
 			continue
 		}
-		if err := p.s.store.RecordProbe(row); err != nil {
+		if err := p.s.store.RecordProbe(o.row); err != nil {
 			p.s.log.Printf("predictor: record probe: %v", err)
 			continue
 		}
 		p.s.log.Printf("predictor: probed %s %q: cold=%v meta=%dms first=%dms %.1fMbps %s cached=%v ok=%v err=%q",
-			shortHash(c.InfoHash), truncate(c.Title, 60), row.Cold, row.MetaMs, row.FirstMs,
-			row.Mbps, humanBytes(row.Bytes), row.Cached, row.OK, row.Err)
+			shortHash(o.row.InfoHash), truncate(o.row.Title, 60), o.row.Cold, o.row.MetaMs,
+			o.row.FirstMs, o.row.Mbps, humanBytes(o.row.Bytes), o.row.Cached, o.row.OK, o.row.Err)
 	}
 	p.maybeTrain(false)
+}
+
+// featFor freezes the feature vector the model would have seen *before* the
+// measurement. Storing it now is what keeps training free of leakage: rebuilt
+// later, "hours since the last probe" would be zero for every sample.
+func (p *Predictor) featFor(c Candidate, now int64) string {
+	p.mu.RLock()
+	net := p.net
+	p.mu.RUnlock()
+	e := entryFacts{
+		Title: c.Title, Size: c.Size, Seeders: c.Seeders, Indexer: c.Indexer,
+		FirstSeen: c.FirstSeen, LastProbe: c.LastProbe, LastMs: c.LastMs,
+		Cold: !p.s.engine.HasInfo(c.InfoHash), Typ: c.Typ, Season: c.Season,
+	}
+	if net == nil {
+		// No model yet: standardise with identity so the stored vector is the
+		// raw features, and the first trainer can fit its own constants.
+		fresh := newMLP(1, 0)
+		for i := range fresh.Std {
+			fresh.Std[i] = 1
+		}
+		x, ix, grp := fresh.Features(e, now)
+		return encodeFeat(x, ix, grp)
+	}
+	x, ix, grp := net.Features(e, now)
+	return encodeFeat(x, ix, grp)
 }
 
 // pick chooses what to measure. Uniform random is the base rate — that is what
