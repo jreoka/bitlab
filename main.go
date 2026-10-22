@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const version = "2.9.13"
+const version = "2.9.14"
 
 // healthFreeFloor is the free space below which /readyz reports not-ready. The
 // cache sweep already holds BITLAB_CACHE_RESERVE_GB, so crossing this means the
