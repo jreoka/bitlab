@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/metainfo"
 )
 
@@ -83,6 +84,13 @@ func (e *Engine) HasInfo(ih string) bool {
 	default:
 		return false
 	}
+}
+
+// peerBytes is the payload this torrent has actually pulled from other peers.
+// Read on the probe's own goroutine, so the two samples bracket the read.
+func peerBytes(t *torrent.Torrent) int64 {
+	st := t.Stats()
+	return st.BytesReadUsefulData.Int64()
 }
 
 // Probe measures one release without serving it. A torrent with an active
@@ -154,7 +162,11 @@ func (e *Engine) Probe(ctx context.Context, c Candidate, feat string) (ProbeRow,
 		return row, true
 	}
 	f := files[idx]
-	before := f.BytesCompleted()
+	// Peer payload bytes, not BytesCompleted: a piece is only "complete" after
+	// it hashes, so a fast network read still finishes this probe with the
+	// counter behind by the pieces that have not verified yet — which made a
+	// genuine swarm read look like a cache hit and threw the sample away.
+	before := peerBytes(t)
 
 	rctx, rcancel := context.WithTimeout(ctx, probeReadWait)
 	defer rcancel()
@@ -189,8 +201,8 @@ func (e *Engine) Probe(ctx context.Context, c Candidate, feat string) (ProbeRow,
 	if total > 0 && elapsed > 0 {
 		row.Mbps = float64(total) * 8 / elapsed / 1e6
 	}
-	// Bytes that were already on disk are not a swarm measurement.
-	row.Cached = (f.BytesCompleted() - before) < total/2
+	// Bytes that did not come off the network are not a swarm measurement.
+	row.Cached = peerBytes(t)-before < total/2
 	if row.FirstMs >= 0 {
 		row.TotalMs = row.FirstMs
 		if row.Cold && row.MetaMs > 0 {
