@@ -233,6 +233,55 @@ func TestFilterRelevantDropsFranchiseFilmsForSeries(t *testing.T) {
 	}
 }
 
+// The sequel bug, 2026-10-22 after the film gate above shipped: Demon
+// Slayer S01E01's top row was not a film but the Yuukaku-hen (Entertainment
+// District) arc pack, and the click played that arc's episode 1. Anime arcs
+// are released as their own series with their own numbering, so the arc's
+// "S01" / "S01E01" markers state exactly what was asked for and pass every
+// number check — the film gate's "identified for this season" exemption
+// then skipped the second-title check that would have caught them. What
+// identifies them is the arc's name ahead of the number. The rows below are
+// the exact kept titles from the production replay of tt9335498:1:1.
+func TestFilterRelevantDropsArcPacksForSeries(t *testing.T) {
+	in := []Result{
+		// The row that was clicked and played: file 0 is
+		// "[EMBER] Kimetsu no Yaiba - Yuukaku-hen - 01.mkv".
+		{Title: "Kimetsu no Yaiba Yuukaku-hen S01 1080p WEBRip AAC x265-EMBER"},
+		{Title: "Kimetsu no Yaiba Yuukaku-hen S01 1080p Dual Audio WEBRip AAC x265-EMBER"},
+		{Title: "Demon.Slayer.Kimetsu.No.Yaiba.Entertainment.District.Arc.S01E01-05.1080p.HULU.WEB-DL.AAC2.0.HEVC-WKS"},
+		{Title: "[ToonsHub] Demon Slayer- Kimetsu no Yaiba Hashira Training Arc S01E01 1080p B-Global WEB-DL AAC2.0 x264 (Multi-Subs)"},
+		// The Mugen Train arc files itself the same way when it appears.
+		{Title: "[Group] Demon Slayer Kimetsu no Yaiba Mugen Train Arc S01E01 1080p WEB-DL"},
+		// What S01E01 is actually allowed to be, including the rows whose
+		// extra words are the episode's own title, after the marker.
+		{Title: "Demon Slayer Kimetsu no Yaiba S01E01 VOSTFR 1080p WEB H.264 AAC -Tsundere-Raws"},
+		{Title: "[LostYears] Demon Slayer: Kimetsu no Yaiba - S01E01 (BD 1080p Hi10P AAC) [Dual Audio]"},
+		{Title: "Kimetsu.no.Yaiba.S01.1080p.NF.WEB-DL.AAC2.0.x264.MULTI-Emmid"},
+		{Title: "[Trix] Kimetsu no Yaiba S01-05 [Dual Audio] [Multi Subs] (BD 1080p AV1)"},
+	}
+	alias := []string{"Kimetsu no Yaiba"}
+	got, dropped := filterRelevant(in, "series", "Demon Slayer: Kimetsu no Yaiba", alias, 2019, 1)
+	if dropped != 5 || len(got) != 4 {
+		t.Fatalf("dropped = %d, kept = %d, want 5 and 4: %+v", dropped, len(got), got)
+	}
+	for _, r := range got {
+		lower := strings.ToLower(r.Title)
+		for _, arc := range []string{"yuukaku", "entertainment", "hashira", "mugen"} {
+			if strings.Contains(lower, arc) {
+				t.Fatalf("kept another arc: %q", r.Title)
+			}
+		}
+	}
+	// An episode title after the marker is not a second work: MobLand
+	// S02E05 is called "Birdland", and the row must survive for season 2.
+	got2, _ := filterRelevant([]Result{
+		{Title: "MobLand S02E05 Birdland 1080p AMZN WEB-DL DDP5.1 H.264-RAWR"},
+	}, "series", "MobLand", nil, 2025, 2)
+	if len(got2) != 1 {
+		t.Fatalf("season 2 kept %+v, want its own episode", got2)
+	}
+}
+
 // A franchise name is a search dead end: releases are filed under the part.
 func TestTitleForms(t *testing.T) {
 	cases := []struct {

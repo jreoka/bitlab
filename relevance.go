@@ -205,6 +205,23 @@ func filterRelevant(results []Result, typ, title string, aliases []string, year,
 				dropped++
 				continue
 			}
+			// A second work in the same franchise files itself under the
+			// show's name plus its own subtitle, then reuses the numbering
+			// from one: anime arcs are released as their own series, so
+			// "Kimetsu no Yaiba Yuukaku-hen S01" and "… Hashira Training
+			// Arc S01E01" both claim exactly the season and episode asked
+			// for, and every number check passes them. What gives them
+			// away is the subtitle sitting *before* the number: an
+			// episode's own title comes after its marker ("S01E01
+			// Cruelty", "S02E05 Birdland"), a different work's title
+			// comes before it. Demon Slayer S01E01's top row was the
+			// Yuukaku-hen pack, and the click played that arc's first
+			// episode — the follow-on from the Mugen Train film, not
+			// S01E01.
+			if extraTitleWordsBeforeMarker(r.Title, titles) >= 2 {
+				dropped++
+				continue
+			}
 			// A release nothing ties to the season asked for — no episode
 			// number, no season marker, no range holding the season —
 			// gets no benefit of the doubt on the two things that do
@@ -337,6 +354,37 @@ func extraTitleWords(name string, titles []string) int {
 		extra[w] = true
 	}
 	return len(extra)
+}
+
+// The points at which a release stops naming the work and starts numbering
+// it: an episode or season marker, the anime dash number, or a year. A
+// second title lives before the first of these; an episode title lives
+// after its own marker and is never counted here.
+var (
+	reDashNumMarker = regexp.MustCompile(`\s-\s\d{2,4}(?:\s|$)`)
+	reXEpMarker     = regexp.MustCompile(`(?i)\b\d{1,2}x\d{2}\b`)
+	reNumMarkers    = []*regexp.Regexp{
+		reSxxExx, reDashEp, reEpOnly, reXEpMarker,
+		reSeasonRange, reSeasonOrdinal, reSeasonLong, reSeasonShort,
+		reDashNumMarker, reYearInName,
+	}
+)
+
+// extraTitleWordsBeforeMarker counts the second-title words a release name
+// carries ahead of its first numbering marker, with the same accounting as
+// extraTitleWords. A name with no marker at all reports 0: the gates for
+// unidentified releases already judge the whole of those.
+func extraTitleWordsBeforeMarker(name string, titles []string) int {
+	cut := len(name)
+	for _, re := range reNumMarkers {
+		if loc := re.FindStringIndex(name); loc != nil && loc[0] < cut {
+			cut = loc[0]
+		}
+	}
+	if cut == len(name) {
+		return 0
+	}
+	return extraTitleWords(name[:cut], titles)
 }
 
 func atoiSafe(s string) int {
