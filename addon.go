@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -47,6 +48,7 @@ type Server struct {
 	sessionKey []byte
 	bytesOut   int64
 	hints      sync.Map // infohash -> []string trackers, learned from search results
+	hintN      atomic.Int64
 	ixCache    sync.Map // indexer+query -> cached results for a few minutes
 	epCache    sync.Map // imdb id -> ordered [season, episode] pairs
 }
@@ -79,7 +81,7 @@ type StreamResponse struct {
 func (s *Server) manifestFor(k Key) Manifest {
 	return Manifest{
 		ID:          "org.bitlab." + k.ID,
-		Version:     "2.9.7",
+		Version:     "2.9.8",
 		Name:        "Bitlab",
 		Description: "Self-hosted streaming hub. Manifest: " + k.Label,
 		Resources:   []string{"stream"},
@@ -283,6 +285,13 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if len(clean) > 0 {
+				if s.hintN.Add(1) > 8192 {
+					s.hints.Range(func(k, _ any) bool {
+						s.hints.Delete(k)
+						s.hintN.Add(-1)
+						return true
+					})
+				}
 				s.hints.Store(res.InfoHash, clean)
 			}
 		}

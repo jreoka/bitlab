@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -144,6 +145,29 @@ func TestTrackerFilter(t *testing.T) {
 		if validTracker(bad) {
 			t.Errorf("accepted %q", bad)
 		}
+	}
+}
+
+func TestGuardedTransportRefusesLoopback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+	c := &http.Client{Transport: guardedTransport(false), Timeout: 5 * time.Second}
+	if _, err := c.Get(srv.URL); err == nil {
+		t.Fatal("guarded transport reached loopback")
+	}
+}
+
+func TestIndexerErrorRedactsAPIKey(t *testing.T) {
+	s := &Server{http: &http.Client{Timeout: 2 * time.Second}}
+	ix := Indexer{Kind: "torznab", Name: "x", URL: "http://127.0.0.1:1/api", APIKey: "SUPERSECRET123"}
+	_, err := s.searchIndexer(context.Background(), ix, "q", "movie", 0, 0, "")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if strings.Contains(err.Error(), "SUPERSECRET123") {
+		t.Fatalf("API key leaked: %v", err)
 	}
 }
 

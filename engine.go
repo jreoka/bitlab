@@ -200,6 +200,9 @@ func (e *Engine) touch(ih, label string) {
 
 // ensure returns a torrent handle, adding the magnet if it is not loaded yet.
 func (e *Engine) ensure(ih, name string, extra []string) (*torrent.Torrent, error) {
+	if !validInfohash(ih) {
+		return nil, errors.New("invalid infohash")
+	}
 	e.touch(ih, name)
 	h := metainfo.NewHashFromHex(ih)
 	if t, ok := e.cl.Torrent(h); ok {
@@ -276,6 +279,9 @@ func waitInfo(ctx context.Context, t *torrent.Torrent) error {
 
 // Warm pulls metadata in the background so the click that follows is instant.
 func (e *Engine) Warm(ih, name string, extra []string, mb int64) {
+	if !validInfohash(ih) {
+		return
+	}
 	select {
 	case e.warmSem <- struct{}{}:
 	default:
@@ -283,6 +289,11 @@ func (e *Engine) Warm(ih, name string, extra []string, mb int64) {
 	}
 	go func() {
 		defer func() { <-e.warmSem }()
+		defer func() {
+			if r := recover(); r != nil {
+				e.log.Printf("warm %s panicked: %v", ih, r)
+			}
+		}()
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		t, err := e.ensure(ih, name, extra)
@@ -689,6 +700,7 @@ func (e *Engine) reapIdle(now time.Time) {
 			t.Drop()
 			e.mu.Lock()
 			delete(e.act, ih)
+			delete(e.addLocks, ih)
 			e.mu.Unlock()
 		}
 	}
