@@ -753,6 +753,15 @@ func episodeSignal(title string, season, ep int) int {
 	if reRecut.MatchString(title) {
 		return -1
 	}
+	// A franchise film is not an episode either, and it usually carries no
+	// episode marker at all — "Kimetsu no Yaiba The Movie - Infinity
+	// Castle" — so without this it reads as "unknown" below and is kept as
+	// a possible season pack, which is how it was served as S01E01. Only
+	// the unambiguous phrases count here: this layer does not know the
+	// show's name, and bare "movie" is a file name as often as a label.
+	if announcesFilm(title) {
+		return -1
+	}
 	if m := reSxxExx.FindStringSubmatch(title); m != nil {
 		s, _ := strconv.Atoi(m[1])
 		e, _ := strconv.Atoi(m[2])

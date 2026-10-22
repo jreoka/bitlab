@@ -28,6 +28,15 @@ var (
 	// A promo clip is not the film, and anime trackers file these beside it:
 	// "[Hanasaku-Emblem] … Memory Snow PV (720p Hi444PP).mkv".
 	rePromo = regexp.MustCompile(`(?i)(?:^|[\s._\-\[\(])(pv|ncop|nced|creditless)(?:[\s._\-\]\)]|$)`)
+	// A release that announces itself as a film: "… The Movie - …",
+	// "… Movie: …", the romaji "gekijouban". An episode or a season pack
+	// never calls itself that, whatever franchise it belongs to.
+	reMovie = regexp.MustCompile(`(?i)\bmovie\b|\bgekijo+ban\b|\bfeature[\s._-]+film\b`)
+	// The narrower announcement, for contexts that do not know the show's
+	// name: bare "movie" is also a file name ("movie.mkv") and a word in
+	// unrelated titles, but "the movie" and "gekijouban" only ever label
+	// a film.
+	reAnnouncedFilm = regexp.MustCompile(`(?i)\bthe[\s._-]+movie\b|\bgekijo+ban\b`)
 	// An archive or a subtitle track holds no video at all.
 	reNonVideo = regexp.MustCompile(`(?i)\.(rar|zip|7z|ass|srt|ssa|sub|idx|iso|mka|mp3|flac|jpg|jpeg|png)$`)
 )
@@ -38,6 +47,18 @@ var (
 // ("[Dual Audio] … FLAC") stays.
 func looksLikeNonFeature(name string) bool {
 	return rePromo.MatchString(name) || reNonVideo.MatchString(name)
+}
+
+// looksLikeMovie reports a release that announces itself as a film rather
+// than an episode or a pack of episodes.
+func looksLikeMovie(name string) bool {
+	return reMovie.MatchString(name)
+}
+
+// announcesFilm is looksLikeMovie's narrower form: only the phrases that
+// unambiguously label a film, safe to apply to a name whose show is unknown.
+func announcesFilm(name string) bool {
+	return reAnnouncedFilm.MatchString(name)
 }
 
 // normName flattens a release name to lowercase letters and digits, so
@@ -166,12 +187,45 @@ func filterRelevant(results []Result, typ, title string, aliases []string, year,
 				continue
 			}
 		} else if season > 0 {
+			// A film from the same franchise is not an episode of it. This
+			// is the movie gate above, mirrored: asking for Demon Slayer
+			// S01E01 put three Infinity Castle releases in the top rows
+			// and the click played the film, because a movie title states
+			// no episode number for the episode checks to reject — and
+			// "states nothing" is also what a season pack looks like, so
+			// the film was kept as a possible pack.
+			if looksLikeMovie(r.Title) {
+				dropped++
+				continue
+			}
 			// A release that names its season must be for the season asked
 			// for. Season one needs the check as much as later seasons do:
 			// "… 4th Season - 04" was served as S01E04 for a year.
 			if s := releaseSeason(r.Title, season); s > 0 && s != season {
 				dropped++
 				continue
+			}
+			// A release nothing ties to the season asked for — no episode
+			// number, no season marker, no range holding the season —
+			// gets no benefit of the doubt on the two things that do
+			// identify it: the year it carries and any second title.
+			if !identifiedForSeason(r.Title, season) {
+				// Season one of a 2019 show is not a 2025 release. Later
+				// seasons air later, so the window widens with the season;
+				// a release that names its episode or season is exempt,
+				// because that marker outweighs a year.
+				if !yearAgrees(r.Title, year, slack+(season-1)*3) {
+					dropped++
+					continue
+				}
+				// Words past the show's own name are another work's
+				// title: "… Infinity Castle", "… Mugen Train". An
+				// unmarked batch of the show itself has nothing left
+				// over once its name and the release tags are removed.
+				if extraTitleWords(r.Title, titles) >= 2 {
+					dropped++
+					continue
+				}
 			}
 		}
 		keep = append(keep, r)
@@ -214,6 +268,75 @@ func releaseSeason(name string, want int) int {
 		}
 	}
 	return 0
+}
+
+// identifiedForSeason reports whether a release name states anything tying
+// it to the season asked for: an episode marker of any convention, a season
+// marker for that season, or a season range that contains it. A batch titled
+// with nothing but the show's name is unidentified, however good it may be.
+func identifiedForSeason(name string, season int) bool {
+	if looksLikeEpisode(name) {
+		return true
+	}
+	if releaseSeason(name, season) != 0 {
+		return true
+	}
+	if m := reSeasonRange.FindStringSubmatch(name); m != nil {
+		lo, hi := atoiSafe(m[1]), atoiSafe(m[2])
+		if lo > hi {
+			lo, hi = hi, lo
+		}
+		return season >= lo && season <= hi
+	}
+	return false
+}
+
+// Release furniture: tags that say how a release was made or packed, never
+// what it is called. Anything left after these, the show's own names and the
+// bracketed tags are removed is part of a title.
+var releaseFurniture = map[string]bool{
+	"bluray": true, "bdrip": true, "brrip": true, "webrip": true, "hdtv": true,
+	"web": true, "dl": true, "rip": true, "xvid": true, "divx": true, "hevc": true,
+	"avc": true, "remux": true, "proper": true, "repack": true, "internal": true,
+	"limited": true, "extended": true, "uncut": true, "remastered": true,
+	"dual": true, "audio": true, "multi": true, "subs": true, "subbed": true,
+	"dubbed": true, "hardcoded": true, "complete": true, "series": true,
+	"batch": true, "pack": true, "collection": true, "tv": true,
+	"www": true, "com": true, "org": true, "net": true,
+	"nf": true, "amzn": true, "dsnp": true, "hmax": true, "atvp": true, "cr": true,
+}
+
+var (
+	// Bracketed and parenthesised segments are tags ([1080p], (2019),
+	// [Group]), not title text.
+	reBracketed = regexp.MustCompile(`\[[^\]]*\]|\([^)]*\)`)
+	reVideoExt  = regexp.MustCompile(`(?i)\.(mkv|mp4|avi|mov|m4v|webm|ts|wmv|mpg|mpeg|flv)$`)
+	// Scene and p2p names end in "-Group" once the extension is off.
+	reTrailingGroup = regexp.MustCompile(`-[A-Za-z0-9]+$`)
+)
+
+// extraTitleWords counts the distinct title-like words in a release name
+// once the show's own names (title and aliases), its bracketed tags, its
+// extension, its trailing release group and the release furniture are
+// removed. Two or more left over means the name carries a second title.
+func extraTitleWords(name string, titles []string) int {
+	s := reBracketed.ReplaceAllString(name, " ")
+	s = reVideoExt.ReplaceAllString(s, "")
+	s = reTrailingGroup.ReplaceAllString(s, "")
+	own := map[string]bool{}
+	for _, t := range titles {
+		for _, w := range hintWords(t) {
+			own[w] = true
+		}
+	}
+	extra := map[string]bool{}
+	for _, w := range hintWords(s) {
+		if own[w] || releaseFurniture[w] || strings.ContainsAny(w, "0123456789") {
+			continue
+		}
+		extra[w] = true
+	}
+	return len(extra)
 }
 
 func atoiSafe(s string) int {

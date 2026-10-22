@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The bug this exists for: "The Uprising" (2026) played a 23-minute anime
 // episode, because a clean episode outscored everything else in the ranking.
@@ -183,6 +186,50 @@ func TestFilterRelevantDropsAnotherSeasonsEpisode(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("season 4 lost its own episode: %+v", got4)
+	}
+}
+
+// The bug this exists for: Demon Slayer S01E01 (tt9335498:1:1, 2026-10-22)
+// listed three Infinity Castle film releases in its top rows — one of them
+// prebuffered first — and the click played the film. A movie title states no
+// episode number, so every episode check read it as "unknown", and "unknown"
+// is kept in case it is a season pack. The three rows below are the exact
+// titles from the production log.
+func TestFilterRelevantDropsFranchiseFilmsForSeries(t *testing.T) {
+	in := []Result{
+		// The row that was clicked and played.
+		{Title: "Demon.Slayer.Kimetsu.No.Yaiba.Infinity.Castle.2025.1080p.WEB-DL.HCSubbed.AAC.H.264-Cassu.mkv"},
+		{Title: "[Antrophiss] Kimetsu no Yaiba The Movie - Infinity Castle Part 1 1080p HEVC 10bit (WEB-DL)"},
+		{Title: "[Raze] (Demon Slayer) Kimetsu no Yaiba - Infinity Castle (2025) (Web) x265 10bit 1080p 144fps.mkv"},
+		// No "movie" in the name and a year inside the film window: only
+		// the second title identifies this one as a different work.
+		{Title: "[Group] Kimetsu no Yaiba - Mugen Train (2020) [1080p]"},
+		{Title: "Kimetsu.no.Yaiba.Movie.Mugen.Train.2020.1080p.BluRay"},
+		// What S01E01 is actually allowed to be.
+		{Title: "Demon.Slayer.Kimetsu.no.Yaiba.S01E01.Cruelty.1080p.WEB-DL"},
+		{Title: "[SubsPlease] Kimetsu no Yaiba - 01 (1080p) [ABCD1234].mkv"},
+		{Title: "Kimetsu.no.Yaiba.S01.1080p.BluRay.x264"},
+		{Title: "[Judas] Kimetsu no Yaiba (2019) [1080p][HEVC x265]"},
+	}
+	alias := []string{"Kimetsu no Yaiba"}
+	got, dropped := filterRelevant(in, "series", "Demon Slayer: Kimetsu no Yaiba", alias, 2019, 1)
+	if dropped != 5 || len(got) != 4 {
+		t.Fatalf("dropped = %d, kept = %d, want 5 and 4: %+v", dropped, len(got), got)
+	}
+	for _, r := range got {
+		if strings.Contains(strings.ToLower(r.Title), "infinity") || strings.Contains(strings.ToLower(r.Title), "mugen") {
+			t.Fatalf("kept a film: %q", r.Title)
+		}
+	}
+	// A markerless batch carrying a later season's own year is not the
+	// film: season three aired in 2023, and the widening window must let
+	// its year through (the film above still falls to its second title).
+	got3, _ := filterRelevant([]Result{
+		{Title: "[Judas] Kimetsu no Yaiba (2023) [1080p][HEVC x265]"},
+		{Title: "[Raze] (Demon Slayer) Kimetsu no Yaiba - Infinity Castle (2025) (Web) x265 10bit 1080p.mkv"},
+	}, "series", "Demon Slayer: Kimetsu no Yaiba", alias, 2019, 3)
+	if len(got3) != 1 || !strings.Contains(got3[0].Title, "2023") {
+		t.Fatalf("season 3 kept %+v, want only its own batch", got3)
 	}
 }
 

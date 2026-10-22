@@ -558,6 +558,7 @@ func TestEpisodeSignalRejectsAnotherSeasonAndRecuts(t *testing.T) {
 		{"Re.Zero.Starting.Life.in.Another.World.S01.1080p.BluRay.x264", 0},
 		{"[SubsPlease] Re Zero kara Hajimeru Isekai Seikatsu - 04 (1080p)", 1},
 		{"Re ZERO -Starting Life in Another World- Director's Cut S01E04 MULTi 1080p", -1},
+		{"[Antrophiss] Kimetsu no Yaiba The Movie - Infinity Castle Part 1 1080p HEVC 10bit (WEB-DL)", -1},
 		{"[224] Re.Zero kara Hajimeru Isekai Seikatsu - Shin Henshuu-ban [BDRip 1080p]", -1},
 	}
 	for _, c := range cases {
