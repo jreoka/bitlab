@@ -54,7 +54,7 @@ spec:
         # Bitlab is a static binary; fetching it from the release keeps the
         # cluster free of a registry dependency and the digest pinned.
         - name: fetch
-          image: alpine:3.20
+          image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
           command: ["/bin/sh", "-c"]
           args:
             - |
@@ -65,9 +65,9 @@ spec:
               /work/bitlab --version 2>/dev/null || true
           env:
             - name: BINARY_URL
-              value: https://github.com/jreoka/bitlab/releases/download/v2.9.8/bitlab-linux-amd64
+              value: https://github.com/jreoka/bitlab/releases/download/v2.9.9/bitlab-linux-amd64
             - name: BINARY_SHA
-              value: fe6da9ed8bdcbe60ca0dda25c4b756d2c8c739328a8eb9361da555f79968471d
+              value: 184a375d57ab394f8eee9e260ad862f926d8da7d7b265cdb923dd5164333202c
           volumeMounts:
             - name: bin
               mountPath: /work
@@ -76,7 +76,7 @@ spec:
             limits: {cpu: 200m, memory: 128Mi}
       containers:
         - name: bitlab
-          image: alpine:3.20
+          image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
           command: ["/work/bitlab"]
           env:
             - name: BITLAB_ADDR
@@ -118,14 +118,14 @@ spec:
           ports:
             - name: http
               containerPort: 8090
+            # Inbound TCP only. Inbound UDP is intentionally not published:
+            # client-side apply merges ports by containerPort (a second protocol
+            # entry is dropped) and NodePort cannot allocate 51413 (range
+            # 30000-32767). Outbound DHT/uTP still work; TCP carries peers in.
             - name: torrent-tcp
               containerPort: 51413
               hostPort: 51413
               protocol: TCP
-            - name: torrent-udp
-              containerPort: 51413
-              hostPort: 51413
-              protocol: UDP
           readinessProbe:
             httpGet: {path: /readyz, port: http}
             initialDelaySeconds: 3

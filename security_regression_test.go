@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -95,6 +97,32 @@ func TestCORSOnlyOnAddon(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "https://stream.example/k/bit_x/manifest.json", nil))
 	if rec.Header().Get("Access-Control-Allow-Origin") != "*" {
 		t.Fatal("addon surface is missing CORS")
+	}
+}
+
+func TestTOTPCodeIsSingleUseUnderConcurrency(t *testing.T) {
+	st := newTestStore(t)
+	s := &Server{store: st}
+	secret := newTOTPSecret()
+	st.SetSetting("totp_secret", secret)
+	code, err := totpCode(secret, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ok int32
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if s.checkSecondFactor(code) {
+				atomic.AddInt32(&ok, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	if ok != 1 {
+		t.Fatalf("code accepted %d times", ok)
 	}
 }
 

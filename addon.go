@@ -49,6 +49,7 @@ type Server struct {
 	bytesOut   int64
 	hints      sync.Map // infohash -> []string trackers, learned from search results
 	hintN      atomic.Int64
+	totpMu     sync.Mutex
 	ixCache    sync.Map // indexer+query -> cached results for a few minutes
 	epCache    sync.Map // imdb id -> ordered [season, episode] pairs
 }
@@ -81,7 +82,7 @@ type StreamResponse struct {
 func (s *Server) manifestFor(k Key) Manifest {
 	return Manifest{
 		ID:          "org.bitlab." + k.ID,
-		Version:     "2.9.8",
+		Version:     "2.9.9",
 		Name:        "Bitlab",
 		Description: "Self-hosted streaming hub. Manifest: " + k.Label,
 		Resources:   []string{"stream"},

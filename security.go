@@ -50,6 +50,9 @@ func totpCode(secret string, t time.Time) (string, error) {
 }
 
 func verifyTOTPStep(secret, code string) (int64, bool) {
+	if strings.TrimSpace(secret) == "" {
+		return 0, false
+	}
 	code = strings.TrimSpace(code)
 	if len(code) != totpDigits {
 		return 0, false
@@ -152,6 +155,10 @@ func (s *Server) checkPassword(pw string) bool {
 
 // checkSecondFactor accepts a TOTP code or consumes a recovery code.
 func (s *Server) checkSecondFactor(code string) bool {
+	// Serialise the read-compare-write of the last accepted step: concurrent
+	// requests carrying the same code must not both pass.
+	s.totpMu.Lock()
+	defer s.totpMu.Unlock()
 	code = strings.TrimSpace(code)
 	if code == "" {
 		return false

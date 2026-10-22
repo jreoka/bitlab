@@ -522,7 +522,7 @@ async function doLogin(){
     location.assign(j.next || '/admin/keys');
   } catch(e){ $('#loginerr').textContent = 'Network error'; }
 }
-async function logout(){ await fetch('/admin/api/logout',{method:'POST'}); location.assign('/login'); }
+async function logout(){ await fetch('/admin/api/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}); location.assign('/login'); }
 
 const TABS = ['keys','activity','security'];
 function tabFromPath(){
