@@ -400,6 +400,17 @@ tr:last-child td{border-bottom:0}
       </div>
 
       <div class="card">
+        <h2>Load-time predictor</h2>
+        <p class="hint">Releases are probed in the background — including the ones nobody clicks — and a small network learns how long each takes to start. The estimate annotates a row; it never reorders the list. <span id="p-detail"></span></p>
+        <div class="metrics">
+          <div class="metric"><div class="k">Probes</div><div class="v" id="p-probes">0</div></div>
+          <div class="metric"><div class="k">Held-out error</div><div class="v" id="p-mae">—</div></div>
+          <div class="metric"><div class="k">Within 2×</div><div class="v" id="p-within">—</div></div>
+          <div class="metric"><div class="k">This hour</div><div class="v" id="p-hour">0</div></div>
+        </div>
+      </div>
+
+      <div class="card">
         <h2>Live torrents</h2>
         <p class="hint">Idle torrents are dropped automatically; their bytes stay until the cache policy reclaims them.</p>
         <div class="table-wrap">
@@ -562,6 +573,7 @@ async function refresh(){
     $('#s-cache').textContent = bytes(o.cache_bytes);
     $('#s-media').textContent = o.media_rows;
     renderCache(o.cache || {});
+    renderPredictor(o.predictor || {});
     loadKeys();
     renderTorrents(o.torrents || []);
   } catch(e){
@@ -587,6 +599,25 @@ function renderCache(c){
   if (c.reserve_bytes) parts.push('reserves ' + bytes(c.reserve_bytes) + ' free');
   $('#c-detail').textContent = parts.join(' · ');
   $('#chipcache').innerHTML = '<b>' + bytes(c.used_bytes) + '</b>';
+}
+function renderPredictor(p){
+  if (!p) return;
+  $('#p-probes').textContent = p.probes || 0;
+  $('#p-mae').textContent = p.ready ? (p.mae || 0).toFixed(1) + 's' : 'learning';
+  $('#p-within').textContent = p.ready ? Math.round((p.within2x || 0) * 100) + '%' : '—';
+  $('#p-hour').textContent = (p.last_hour || 0) + '/' + (p.budget || 0);
+  const parts = [];
+  if (p.pool) parts.push(p.pool + ' releases in the pool');
+  if (p.hashes) parts.push(p.hashes + ' hashes measured');
+  if (p.failed) parts.push(p.failed + ' failed');
+  if (p.mb_last_hour) parts.push(p.mb_last_hour.toFixed(1) + ' MB this hour');
+  if (p.ready) {
+    parts.push(p.samples + ' training samples');
+    if (p.trained_at) parts.push('trained ' + ago(p.trained_at));
+  } else {
+    parts.push('no model yet — needs 20 usable probes');
+  }
+  $('#p-detail').textContent = parts.join(' · ');
 }
 function uptime(s){
   const d = Math.floor(s/86400), h = Math.floor(s%86400/3600), m = Math.floor(s%3600/60);

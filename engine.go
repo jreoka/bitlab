@@ -50,6 +50,7 @@ type Engine struct {
 	mu           sync.Mutex
 	addLocks     map[string]*sync.Mutex
 	act          map[string]*activity
+	probing      sync.Map // infohash -> struct{}, one probe at a time
 	warmSem      chan struct{}
 	log          *log.Logger
 	closed       bool

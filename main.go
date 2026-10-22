@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const version = "2.9.12"
+const version = "2.10.0"
 
 // healthFreeFloor is the free space below which /readyz reports not-ready. The
 // cache sweep already holds BITLAB_CACHE_RESERVE_GB, so crossing this means the
@@ -87,6 +87,14 @@ func loadConfig() Config {
 		MaxTorrents:       envIntClamped("BITLAB_MAX_TORRENTS", 40, 1, 500),
 		AdminPassword:     env("BITLAB_ADMIN_PASSWORD", ""),
 		TrustProxy:        os.Getenv("BITLAB_TRUST_PROXY") == "1",
+
+		// The predictor measures releases nobody clicked, so its cost is
+		// bandwidth the operator must be able to bound. Both caps are hard:
+		// the loop stops for the rest of the hour when either is hit.
+		ProbeEnabled:  env("BITLAB_PROBE_ENABLED", "on") != "off",
+		ProbeInterval: time.Duration(envIntClamped("BITLAB_PROBE_INTERVAL", 60, 15, 86400)) * time.Second,
+		ProbePerHour:  envIntClamped("BITLAB_PROBE_PER_HOUR", 30, 0, 600),
+		ProbeMBHour:   int64(envIntClamped("BITLAB_PROBE_MB_HOUR", 120, 0, 100000)),
 	}
 	if t := os.Getenv("BITLAB_TRACKERS"); t != "" {
 		for _, s := range strings.Split(t, ",") {
@@ -237,6 +245,8 @@ func main() {
 		start:      time.Now(),
 		sessionKey: []byte(secret),
 	}
+	s.pred = NewPredictor(s)
+	s.pred.Start(context.Background())
 
 	mux := http.NewServeMux()
 	s.routes(mux)
@@ -278,6 +288,11 @@ func main() {
 			lg.Printf("stats: torrents=%d cache=%s/%s free=%s entries=%d partial=%s reclaimed=%s",
 				eng.TorrentCount(), humanBytes(st.Used), humanBytes(st.Budget), free,
 				st.Entries, humanBytes(st.PartialBytes), humanBytes(st.EvictedBytes))
+			if pm := s.pred.Stats(); pm.Probes > 0 {
+				lg.Printf("predictor: probes=%d hashes=%d pool=%d last_hour=%d/%d mb=%.1f/%d samples=%d mae=%.1fs within2x=%.0f%%",
+					pm.Probes, pm.Hashes, pm.Pool, pm.LastHour, pm.Budget, pm.MBLastHour,
+					pm.Budget*4, pm.Samples, pm.MAE, pm.Within2x*100)
+			}
 		}
 		time.Sleep(15 * time.Second)
 		logStats()
@@ -299,6 +314,7 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
 	lg.Printf("shutting down")
+	s.pred.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	srv.Shutdown(ctx)
