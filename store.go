@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"time"
 
@@ -82,6 +83,12 @@ func OpenStore(path string) (*Store, error) {
 	if err := s.migrate(); err != nil {
 		db.Close()
 		return nil, err
+	}
+	// The database holds manifest tokens, the session HMAC key and the TOTP
+	// seed. mkdir 0700 already limits the directory, but a copied file or a
+	// volume snapshot should not be world-readable either.
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		_ = os.Chmod(p, 0o600)
 	}
 	return s, nil
 }

@@ -62,7 +62,7 @@ type CacheStats struct {
 // media, so neither the budget nor the sweeper touches it.
 func cacheSkip(name string) bool {
 	switch name {
-	case "bitlab.db", "bitlab.db-wal", "bitlab.db-shm", "bitlab.db-journal", "lost+found":
+	case "bitlab.db", "bitlab.db-wal", "bitlab.db-shm", "bitlab.db-journal", "ADMIN_PASSWORD", "lost+found":
 		return true
 	}
 	return name == "" || strings.HasPrefix(name, ".")
@@ -205,25 +205,20 @@ func planCache(units []cacheUnit, used, budget, reserve, free int64, now time.Ti
 	return plan
 }
 
-// cacheOwners maps on-disk names to the torrent that owns them. A torrent
-// whose metadata has not arrived yet still owns its files: media_cache
-// remembers the name its infohash was stored under, which closes the window
-// where a starting play looked exactly like an abandoned directory.
-func (e *Engine) cacheOwners() (owned map[string]string, pending map[string]bool) {
-	owned = map[string]string{}
+// cacheOwners returns the infohashes the client is handling. Storage is one
+// directory per infohash, so the entry name is the infohash itself. A torrent
+// whose metadata has not arrived yet still owns its directory: media_cache
+// remembers the infohash, which closes the window where a starting play looked
+// exactly like an abandoned directory.
+func (e *Engine) cacheOwners() (owned map[string]bool, pending map[string]bool) {
+	owned = map[string]bool{}
 	pending = map[string]bool{}
 	for _, t := range e.cl.Torrents() {
 		ih := t.InfoHash().HexString()
-		if info := t.Info(); info != nil {
-			name := sanitizePathComponent(info.BestName())
-			owned[name] = ih
-			owned[name+".part"] = ih
-			continue
-		}
-		if name, ok := e.store.MediaName(ih); ok && name != "" {
-			name = sanitizePathComponent(name)
-			pending[name] = true
-			pending[name+".part"] = true
+		if t.Info() != nil {
+			owned[ih] = true
+		} else if _, ok := e.store.MediaName(ih); ok {
+			pending[ih] = true
 		}
 	}
 	return owned, pending
@@ -258,10 +253,10 @@ func (e *Engine) sweepCache(now time.Time) {
 			partialBytes += en.Bytes
 		}
 		u := cacheUnit{cacheEntry: en, LastUse: en.Mod}
-		if ih, ok := owned[en.Name]; ok {
-			u.Loaded, u.Infohash = true, ih
+		if owned[en.Name] {
+			u.Loaded, u.Infohash = true, en.Name
 			loaded++
-			readers, last := e.peekActivity(ih)
+			readers, last := e.peekActivity(en.Name)
 			u.Readers = readers
 			if last.After(u.LastUse) {
 				u.LastUse = last
@@ -307,7 +302,7 @@ func (e *Engine) sweepCache(now time.Time) {
 		if d.Unit.Partial {
 			removedPartialBytes += d.Unit.Bytes
 		}
-		e.store.ForgetMedia(d.Unit.Infohash, d.Unit.Name)
+		e.store.ForgetMedia(d.Unit.Infohash, "")
 		freed += d.Unit.Bytes
 		freedCount++
 		if d.Reason != "retention" {

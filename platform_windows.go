@@ -137,7 +137,12 @@ func defaultStorage(dir string) (storage.ClientImpl, io.Closer) {
 		completion = storage.NewMapPieceCompletion()
 	}
 	impl := storage.NewFileOpts(storage.NewFileClientOpts{
-		ClientBaseDir:   dir,
+		ClientBaseDir: dir,
+		// Partition by infohash so two releases with the same name cannot
+		// share (and overwrite) each other's files.
+		TorrentDirMaker: func(base string, _ *metainfo.Info, ih metainfo.Hash) string {
+			return filepath.Join(base, ih.HexString())
+		},
 		FilePathMaker:   windowsFilePathMaker,
 		PieceCompletion: completion,
 	})

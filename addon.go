@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -30,8 +31,10 @@ type Config struct {
 	ReadaheadBytes    int64
 	PrebufferMB       int64
 	TorrentPort       int
+	MaxTorrents       int
 	Indexers          []Indexer
 	AdminPassword     string
+	TrustProxy        bool
 }
 
 type Server struct {
@@ -76,7 +79,7 @@ type StreamResponse struct {
 func (s *Server) manifestFor(k Key) Manifest {
 	return Manifest{
 		ID:          "org.bitlab." + k.ID,
-		Version:     "2.9.6",
+		Version:     "2.9.7",
 		Name:        "Bitlab",
 		Description: "Self-hosted streaming hub. Manifest: " + k.Label,
 		Resources:   []string{"stream"},
@@ -156,7 +159,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		// there is nothing to match a release file against: the rows used to be
 		// whatever the indexers returned and the play handler served the largest
 		// file, which is how S00E01 answered with the latest airing episode.
-		s.log.Printf("stream %s: no season/episode to match, refusing to guess", rawID)
+		s.log.Printf("stream %q: no season/episode to match, refusing to guess", rawID)
 		writeJSON(w, 200, StreamResponse{Streams: []Stream{}})
 		return
 	}
@@ -166,7 +169,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 
 	title, year, err := s.resolveMeta(ctx, typ, baseID)
 	if err != nil {
-		s.log.Printf("stream %s: meta: %v", rawID, err)
+		s.log.Printf("stream %q: meta: %v", rawID, err)
 		writeJSON(w, 200, StreamResponse{Streams: []Stream{}})
 		return
 	}
@@ -245,7 +248,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	queries = dedupeStrings(queries)
 	results, errs := s.searchAll(ctx, queries, typ, season, ep, baseID)
 	for _, e := range errs {
-		s.log.Printf("stream %s: %s", rawID, e)
+		s.log.Printf("stream %q: %s", rawID, e)
 	}
 	// Indexers answer with whatever their fuzzy matcher liked; keep only what
 	// could plausibly be this title, this year.
@@ -255,7 +258,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		results = filtered
 	}
 	if len(results) == 0 {
-		s.log.Printf("stream %s: no results for %q", rawID, query)
+		s.log.Printf("stream %q: no results for %q", rawID, query)
 		writeJSON(w, 200, StreamResponse{Streams: []Stream{}})
 		return
 	}
@@ -263,8 +266,25 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	base := s.baseURL(r)
 	streams := make([]Stream, 0, len(results))
 	for i, res := range results {
+		// The infohash becomes part of a magnet URI and a play URL; refuse
+		// anything that is not 40 hex characters before it reaches either.
+		res.InfoHash = strings.ToLower(strings.TrimSpace(res.InfoHash))
+		if !validInfohash(res.InfoHash) {
+			continue
+		}
 		if len(res.Trackers) > 0 {
-			s.hints.Store(res.InfoHash, res.Trackers)
+			clean := make([]string, 0, len(res.Trackers))
+			for _, tr := range res.Trackers {
+				if len(clean) >= 20 {
+					break
+				}
+				if validTracker(tr) {
+					clean = append(clean, strings.TrimSpace(tr))
+				}
+			}
+			if len(clean) > 0 {
+				s.hints.Store(res.InfoHash, clean)
+			}
 		}
 		label, q := releaseLabel(res.Title)
 		src := strings.TrimSpace(strings.TrimPrefix(label, q))
@@ -276,7 +296,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		} else if year > 0 {
 			display = fmt.Sprintf("%s (%d)", title, year)
 		}
-		link := fmt.Sprintf("%s/k/%s/play/%s?n=%s", base, k.Token, res.InfoHash, url.QueryEscape(truncate(res.Title, 120)))
+		tk, exp := s.signedPlayToken(k.ID, res.InfoHash, season, ep)
+		link := fmt.Sprintf("%s/k/%s/play/%s?n=%s&tk=%s&exp=%d", base, k.Token, res.InfoHash, url.QueryEscape(truncate(res.Title, 120)), tk, exp)
 		if typ == "series" && season > 0 {
 			// Tells the play handler which file to pick inside a season pack.
 			link += fmt.Sprintf("&s=%d&e=%d", season, ep)
@@ -404,7 +425,7 @@ func (s *Server) resolveMeta(ctx context.Context, typ, imdbID string) (string, i
 			} `json:"videos"`
 		} `json:"meta"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&payload); err != nil {
 		return "", 0, err
 	}
 	name := strings.TrimSpace(payload.Meta.Name)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -73,7 +74,7 @@ func (s *Server) animeAliases(ctx context.Context, title string) []string {
 		return nil
 	}
 	var ar anilistResponse
-	if err := json.NewDecoder(resp.Body).Decode(&ar); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&ar); err != nil {
 		return nil
 	}
 	if len(ar.Data.Page.Media) == 0 {

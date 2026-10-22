@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -193,6 +194,13 @@ func (s *Server) searchIndexer(ctx context.Context, ix Indexer, q string, typ st
 		s.ixCache.Delete(ck)
 	}
 	res, err := s.searchIndexerUncached(ctx, ix, q, typ, season, ep, imdbID)
+	if err != nil && ix.APIKey != "" {
+		// net/http errors quote the full URL, which for torznab carries the API
+		// key in its query string.
+		msg := strings.ReplaceAll(err.Error(), ix.APIKey, "[redacted]")
+		msg = strings.ReplaceAll(msg, url.QueryEscape(ix.APIKey), "[redacted]")
+		err = errors.New(msg)
+	}
 	if err == nil && len(res) > 0 {
 		s.ixCache.Store(ck, ixCacheEntry{res: res, exp: time.Now().Add(3 * time.Minute)})
 	}
@@ -687,6 +695,9 @@ func parseSize(s string) int64 {
 	if err != nil {
 		return 0
 	}
+	if math.IsNaN(num) || math.IsInf(num, 0) || num < 0 {
+		return 0
+	}
 	mult := float64(1)
 	switch strings.ToLower(fields[1]) {
 	case "b":
@@ -702,7 +713,11 @@ func parseSize(s string) int64 {
 	default:
 		return 0
 	}
-	return int64(num * mult)
+	bytes := num * mult
+	if math.IsNaN(bytes) || math.IsInf(bytes, 0) || bytes < 0 || bytes > float64(math.MaxInt64) {
+		return 0
+	}
+	return int64(bytes)
 }
 
 var (
@@ -780,8 +795,15 @@ func (f *flexInt64) UnmarshalJSON(b []byte) error {
 		return nil
 	}
 	n, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return err
+	if err != nil || math.IsNaN(n) || math.IsInf(n, 0) {
+		*f = 0
+		return nil
+	}
+	if n < 0 {
+		n = 0
+	}
+	if n > float64(math.MaxInt64) {
+		n = float64(math.MaxInt64)
 	}
 	*f = flexInt64(n)
 	return nil

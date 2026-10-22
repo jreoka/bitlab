@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/big"
 	"net/http"
 	"strconv"
@@ -48,22 +49,27 @@ func totpCode(secret string, t time.Time) (string, error) {
 	return fmt.Sprintf("%06d", code), nil
 }
 
-func verifyTOTP(secret, code string) bool {
+func verifyTOTPStep(secret, code string) (int64, bool) {
 	code = strings.TrimSpace(code)
 	if len(code) != totpDigits {
-		return false
+		return 0, false
 	}
 	now := time.Now()
 	for i := -totpWindow; i <= totpWindow; i++ {
 		want, err := totpCode(secret, now.Add(time.Duration(i)*totpPeriod*time.Second))
 		if err != nil {
-			return false
+			return 0, false
 		}
 		if subtle.ConstantTimeCompare([]byte(want), []byte(code)) == 1 {
-			return true
+			return now.Unix()/totpPeriod + int64(i), true
 		}
 	}
-	return false
+	return 0, false
+}
+
+func verifyTOTP(secret, code string) bool {
+	_, ok := verifyTOTPStep(secret, code)
+	return ok
 }
 
 func newTOTPSecret() string {
@@ -150,7 +156,14 @@ func (s *Server) checkSecondFactor(code string) bool {
 	if code == "" {
 		return false
 	}
-	if verifyTOTP(s.store.GetSetting("totp_secret", ""), code) {
+	if step, ok := verifyTOTPStep(s.store.GetSetting("totp_secret", ""), code); ok {
+		// A code is one-use: reject a step that was already accepted (RFC 6238
+		// §5.2), otherwise a phished code works for the whole 90-second window.
+		last, _ := strconv.ParseInt(s.store.GetSetting("totp_last_step", "0"), 10, 64)
+		if step <= last {
+			return false
+		}
+		s.store.SetSetting("totp_last_step", strconv.FormatInt(step, 10))
 		return true
 	}
 	norm := strings.ToUpper(strings.TrimSpace(code))
@@ -212,7 +225,7 @@ func (s *Server) issueCookie(w http.ResponseWriter, r *http.Request, sess Sessio
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   r.TLS != nil || strings.Contains(r.Header.Get("X-Forwarded-Proto"), "https"),
+		Secure:   r.TLS != nil || strings.HasPrefix(s.cfg.BaseURL, "https://"),
 		Expires:  exp,
 	})
 }
@@ -255,6 +268,23 @@ func (s *Server) handleSecurity(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handle2FABegin(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Password string `json:"password"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	ip := s.clientIP(r)
+	if loginWindow.blocked(ip) {
+		httpError(w, 429, "too many attempts, try again later")
+		return
+	}
+	if !s.checkPassword(body.Password) {
+		loginWindow.fail(ip)
+		httpError(w, 401, "wrong password")
+		return
+	}
+	loginWindow.reset(ip)
 	if s.twoFactorEnabled() {
 		httpError(w, 409, "two-factor is already enabled")
 		return
@@ -272,23 +302,42 @@ func (s *Server) handle2FABegin(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handle2FAEnable(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Code string `json:"code"`
+		Code     string `json:"code"`
+		Password string `json:"password"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	ip := s.clientIP(r)
+	if loginWindow.blocked(ip) {
+		httpError(w, 429, "too many attempts, try again later")
+		return
+	}
+	if !s.checkPassword(body.Password) {
+		loginWindow.fail(ip)
+		httpError(w, 401, "wrong password")
+		return
+	}
+	loginWindow.reset(ip)
 	pending := s.store.GetSetting("totp_pending", "")
 	if pending == "" {
 		httpError(w, 400, "start setup first")
 		return
 	}
-	if !verifyTOTP(pending, body.Code) {
+	step, ok := verifyTOTPStep(pending, body.Code)
+	if !ok {
 		httpError(w, 400, "that code did not verify")
 		return
 	}
 	plain, hashes := generateRecoveryCodes(10)
 	s.store.SetSetting("totp_secret", pending)
+	s.store.SetSetting("totp_last_step", strconv.FormatInt(step, 10))
 	s.store.SetSetting("totp_enabled", "1")
 	s.store.DeleteSetting("totp_pending")
 	s.saveRecoveryHashes(hashes)
+	if cur, ok := s.currentSession(r); ok {
+		s.store.DeleteOtherSessions(cur.ID)
+	}
 	s.log.Printf("two-factor enabled")
 	writeJSON(w, 200, map[string]any{"ok": true, "recovery_codes": plain})
 }
@@ -296,22 +345,45 @@ func (s *Server) handle2FAEnable(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handle2FADisable(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Password string `json:"password"`
+		Code     string `json:"code"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	ip := s.clientIP(r)
+	if loginWindow.blocked(ip) {
+		httpError(w, 429, "too many attempts, try again later")
+		return
+	}
 	if !s.checkPassword(body.Password) {
+		loginWindow.fail(ip)
 		httpError(w, 401, "wrong password")
 		return
 	}
+	if !s.checkSecondFactor(body.Code) {
+		loginWindow.fail(ip)
+		httpError(w, 401, "a current two-factor code or recovery code is required")
+		return
+	}
+	loginWindow.reset(ip)
 	s.store.DeleteSetting("totp_secret")
 	s.store.DeleteSetting("totp_enabled")
 	s.store.DeleteSetting("totp_pending")
 	s.saveRecoveryHashes(nil)
+	s.store.SetSetting("totp_last_step", "0")
+	if cur, ok := s.currentSession(r); ok {
+		s.store.DeleteOtherSessions(cur.ID)
+	}
 	s.log.Printf("two-factor disabled")
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if len(id) < 8 {
+		httpError(w, 404, "session not found")
+		return
+	}
 	if err := s.store.DeleteSession(id); err != nil {
 		httpError(w, 500, err.Error())
 		return
@@ -377,8 +449,12 @@ func parseTTL(v string) (time.Duration, error) {
 	if !ok {
 		return 0, fmt.Errorf("unknown unit %q — use h, d, w, m (months) or y", unit)
 	}
-	d := time.Duration(n * float64(mult))
-	if d > 50*365*24*time.Hour {
+	secs := n * float64(mult)
+	if math.IsNaN(secs) || math.IsInf(secs, 0) || secs <= 0 {
+		return 0, fmt.Errorf("invalid duration")
+	}
+	d := time.Duration(secs)
+	if d <= 0 || d > 50*365*24*time.Hour {
 		return 0, fmt.Errorf("that is longer than 50 years")
 	}
 	return d, nil

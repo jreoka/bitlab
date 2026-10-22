@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"testing"
 	"time"
@@ -56,6 +57,14 @@ func TestManifestLifecycle(t *testing.T) {
 	if rec := get("/k/" + k.Token + "/play/" + "0123456789abcdef0123456789abcdef01234567"); rec.Code != http.StatusForbidden {
 		t.Fatalf("paused play: want 403, got %d", rec.Code)
 	}
+	// An active key without a signed play token must not be able to play an
+	// arbitrary infohash.
+	if err := s.store.SetKeyStatus(k.ID, "active"); err != nil {
+		t.Fatal(err)
+	}
+	if rec := get("/k/" + k.Token + "/play/" + "0123456789abcdef0123456789abcdef01234567"); rec.Code != http.StatusForbidden {
+		t.Fatalf("unsigned play: want 403, got %d", rec.Code)
+	}
 
 	// Resuming puts the same URL back in service — no reinstall on the player.
 	if err := s.store.SetKeyStatus(k.ID, "active"); err != nil {
@@ -96,6 +105,23 @@ func TestUnknownAndExpiredKeys(t *testing.T) {
 	// Using an expired key deletes it, not just refuses it.
 	if keys, _ := s.store.ListKeys(); len(keys) != 0 {
 		t.Fatalf("expired key should be purged on use, %d rows left", len(keys))
+	}
+}
+
+func TestPlayRejectsInfohashInjection(t *testing.T) {
+	s, mux := newTestServer(t)
+	k, _ := s.store.CreateKey("tv", "", 0)
+	// Exactly 40 characters, but not hex: this used to reach magnetURI and add
+	// &ws=/&xs= parameters to the magnet, which made the torrent client fetch
+	// an arbitrary URL (SSRF).
+	bad := "aaaaaaaaaaaaaa&ws=http://169.254.169.254"
+	if len(bad) != 40 {
+		t.Fatalf("fixture length %d", len(bad))
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/k/"+k.Token+"/play/"+url.PathEscape(bad), nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("injected infohash: got %d, want 400", rec.Code)
 	}
 }
 

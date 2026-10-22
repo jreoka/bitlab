@@ -38,15 +38,17 @@ spec:
       labels:
         app: bitlab
     spec:
-      # Inbound peers matter on thin swarms: hostNetwork lets the torrent client
-      # accept connections on 51413 instead of being outbound-only.
-      hostNetwork: true
-      dnsPolicy: ClusterFirstWithHostNet
+      # hostNetwork used to expose the app on the node's public IP:8090 over
+      # plain HTTP, bypassing TLS and the ingress. The torrent port is published
+      # with hostPort instead, so the HTTP listener stays cluster-internal.
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
         fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       terminationGracePeriodSeconds: 30
       initContainers:
         # Bitlab is a static binary; fetching it from the release keeps the
@@ -63,9 +65,9 @@ spec:
               /work/bitlab --version 2>/dev/null || true
           env:
             - name: BINARY_URL
-              value: https://github.com/jreoka/bitlab/releases/download/v2.9.6/bitlab-linux-amd64
+              value: https://github.com/jreoka/bitlab/releases/download/v2.9.7/bitlab-linux-amd64
             - name: BINARY_SHA
-              value: 5445d4601920d780bcad425d7c69a6011bf1fce065a9132031ce853a6de50dba
+              value: dbcbc8cc071d78f4dbc293d06e0fb905376eb724207ea9951292431f2da625c4
           volumeMounts:
             - name: bin
               mountPath: /work
@@ -99,14 +101,31 @@ spec:
               value: "8"
             - name: BITLAB_TORRENT_PORT
               value: "51413"
+            - name: BITLAB_TRUST_PROXY
+              value: "1"
+            - name: BITLAB_MAX_TORRENTS
+              value: "40"
             - name: BITLAB_ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: bitlab-secrets
                   key: admin-password
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - name: http
               containerPort: 8090
+            - name: torrent-tcp
+              containerPort: 51413
+              hostPort: 51413
+              protocol: TCP
+            - name: torrent-udp
+              containerPort: 51413
+              hostPort: 51413
+              protocol: UDP
           readinessProbe:
             httpGet: {path: /readyz, port: http}
             initialDelaySeconds: 3
@@ -125,11 +144,15 @@ spec:
             - name: bin
               mountPath: /work
               readOnly: true
+            - name: tmp
+              mountPath: /tmp
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: bitlab-data
         - name: bin
+          emptyDir: {}
+        - name: tmp
           emptyDir: {}
 ---
 apiVersion: v1
@@ -157,8 +180,11 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    # Request bodies are admin JSON only; streaming is GET.
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
     nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
 spec:
   ingressClassName: nginx
   tls:

@@ -652,14 +652,14 @@ function renderKeys(keys, base){
       <div class="key-head">
         <div class="key-title"><span class="${dot}"></span><b>${esc(k.label)}</b>${pill}<span class="idtag mono">${esc(k.id)}</span></div>
         <div class="key-actions">
-          <button class="icon" title="${paused?'Resume':'Pause'}" onclick="pauseKey('${k.id}',${paused?0:1})">${paused?ICON.play:ICON.pause}</button>
-          <button class="icon danger" title="Revoke and delete" onclick="revokeKey('${k.id}','${esc(k.label)}')">${ICON.trash}</button>
+          <button class="icon" title="${paused?'Resume':'Pause'}" data-id="${esc(k.id)}" data-pause="${paused?0:1}" onclick="pauseKey(this.dataset.id,+this.dataset.pause)">${paused?ICON.play:ICON.pause}</button>
+          <button class="icon danger" title="Revoke and delete" data-id="${esc(k.id)}" data-label="${esc(k.label)}" onclick="revokeKey(this.dataset.id,this.dataset.label)">${ICON.trash}</button>
         </div>
       </div>
       <div class="key-sub">${esc(k.note || 'no note')}<span class="sep">·</span>${expiry(k.expires_at)}</div>
       <div class="urlrow">
         <code class="urlbox" title="${esc(url)}">${esc(url)}</code>
-        <button class="icon" title="Copy manifest URL" onclick="copyUrl(this,'${esc(url)}')">${ICON.copy}</button>
+        <button class="icon" title="Copy manifest URL" data-url="${esc(url)}" onclick="copyUrl(this,this.dataset.url)">${ICON.copy}</button>
       </div>
       <div class="key-stats">
         <div><div class="k">Last used</div><div class="v">${ago(k.last_used_at)}</div></div>
@@ -735,9 +735,14 @@ async function loadSecurity(){
   } catch(e){ toast(e.message, true); }
 }
 async function begin2FA(){
+  const password = prompt('Confirm your admin password to set up two-factor:');
+  if (!password) return;
   try {
-    const r = await api('/admin/api/2fa/begin', {method:'POST'});
-    $('#qr-box').innerHTML = '<img src="' + r.qr + '" alt="TOTP QR code">';
+    const r = await api('/admin/api/2fa/begin', {method:'POST', body: JSON.stringify({password})});
+    const qr = document.createElement('img');
+    qr.src = r.qr;
+    qr.alt = 'TOTP QR code';
+    $('#qr-box').replaceChildren(qr);
     $('#totp-secret').textContent = r.secret;
     $('#tfa-off').classList.add('hidden'); $('#tfa-on').classList.add('hidden');
     $('#tfa-setup').classList.remove('hidden'); $('#recovery-box').classList.add('hidden');
@@ -746,8 +751,10 @@ async function begin2FA(){
 }
 function cancel2FA(){ $('#tfa-setup').classList.add('hidden'); loadSecurity(); }
 async function enable2FA(){
+  const password = prompt('Confirm your admin password to enable two-factor:');
+  if (!password) return;
   try {
-    const r = await api('/admin/api/2fa/enable', {method:'POST', body: JSON.stringify({code: $('#totp-code').value.trim()})});
+    const r = await api('/admin/api/2fa/enable', {method:'POST', body: JSON.stringify({code: $('#totp-code').value.trim(), password})});
     $('#recovery-codes').innerHTML = (r.recovery_codes||[]).map(c => '<code>'+esc(c)+'</code>').join('');
     $('#tfa-setup').classList.add('hidden');
     $('#recovery-box').classList.remove('hidden');
@@ -755,9 +762,11 @@ async function enable2FA(){
   } catch(e){ toast(e.message, true); }
 }
 async function disable2FA(){
-  const pw = prompt('Confirm your admin password to disable two-factor:');
-  if (!pw) return;
-  try { await api('/admin/api/2fa/disable', {method:'POST', body: JSON.stringify({password: pw})});
+  const password = prompt('Confirm your admin password to disable two-factor:');
+  if (!password) return;
+  const code = prompt('Enter a current 6-digit code or a recovery code:');
+  if (!code) return;
+  try { await api('/admin/api/2fa/disable', {method:'POST', body: JSON.stringify({password, code: code.trim()})});
     toast('Two-factor disabled'); $('#recovery-box').classList.add('hidden'); loadSecurity(); } catch(e){ toast(e.message, true); }
 }
 async function revokeSession(id){

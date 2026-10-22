@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -15,7 +16,7 @@ import (
 	"time"
 )
 
-const version = "2.9.6"
+const version = "2.9.7"
 
 // healthFreeFloor is the free space below which /readyz reports not-ready. The
 // cache sweep already holds BITLAB_CACHE_RESERVE_GB, so crossing this means the
@@ -55,22 +56,37 @@ func envInt(k string, def int) int {
 	return def
 }
 
+// envIntClamped keeps a typo or a hostile env value from overflowing a
+// duration/shift or producing a negative size.
+func envIntClamped(k string, def, lo, hi int) int {
+	n := envInt(k, def)
+	if n < lo {
+		return lo
+	}
+	if n > hi {
+		return hi
+	}
+	return n
+}
+
 func loadConfig() Config {
 	dataDir := env("BITLAB_DATA", "./data")
 	cfg := Config{
 		Addr:              env("BITLAB_ADDR", ":8090"),
 		DataDir:           dataDir,
 		BaseURL:           env("BITLAB_BASE_URL", ""),
-		CacheMaxBytes:     int64(envInt("BITLAB_CACHE_GB", 40)) << 30,
-		CacheReserveBytes: int64(envInt("BITLAB_CACHE_RESERVE_GB", 2)) << 30,
-		CacheRetain:       time.Duration(envInt("BITLAB_CACHE_RETAIN_HOURS", 24)) * time.Hour,
-		CacheGrace:        time.Duration(envInt("BITLAB_CACHE_GRACE_MINUTES", 10)) * time.Minute,
-		IdleTimeout:       time.Duration(envInt("BITLAB_IDLE_MINUTES", 20)) * time.Minute,
-		InfoTimeout:       time.Duration(envInt("BITLAB_INFO_TIMEOUT", 45)) * time.Second,
-		ReadaheadBytes:    int64(envInt("BITLAB_READAHEAD_MB", 64)) << 20,
-		PrebufferMB:       int64(envInt("BITLAB_PREBUFFER_MB", 8)),
-		TorrentPort:       envInt("BITLAB_TORRENT_PORT", 0),
+		CacheMaxBytes:     int64(envIntClamped("BITLAB_CACHE_GB", 40, 0, 1_000_000)) << 30,
+		CacheReserveBytes: int64(envIntClamped("BITLAB_CACHE_RESERVE_GB", 2, 0, 1_000_000)) << 30,
+		CacheRetain:       time.Duration(envIntClamped("BITLAB_CACHE_RETAIN_HOURS", 24, 0, 24*365)) * time.Hour,
+		CacheGrace:        time.Duration(envIntClamped("BITLAB_CACHE_GRACE_MINUTES", 10, 0, 24*60)) * time.Minute,
+		IdleTimeout:       time.Duration(envIntClamped("BITLAB_IDLE_MINUTES", 20, 1, 7*24*60)) * time.Minute,
+		InfoTimeout:       time.Duration(envIntClamped("BITLAB_INFO_TIMEOUT", 45, 5, 600)) * time.Second,
+		ReadaheadBytes:    int64(envIntClamped("BITLAB_READAHEAD_MB", 64, 1, 1024)) << 20,
+		PrebufferMB:       int64(envIntClamped("BITLAB_PREBUFFER_MB", 8, 0, 256)),
+		TorrentPort:       envIntClamped("BITLAB_TORRENT_PORT", 0, 0, 65535),
+		MaxTorrents:       envIntClamped("BITLAB_MAX_TORRENTS", 40, 1, 500),
 		AdminPassword:     env("BITLAB_ADMIN_PASSWORD", ""),
+		TrustProxy:        os.Getenv("BITLAB_TRUST_PROXY") == "1",
 	}
 	if t := os.Getenv("BITLAB_TRACKERS"); t != "" {
 		for _, s := range strings.Split(t, ",") {
@@ -103,8 +119,14 @@ func main() {
 	lg := log.New(os.Stdout, "", log.LstdFlags|log.LUTC)
 	cfg := loadConfig()
 
-	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
+	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		lg.Fatalf("data dir: %v", err)
+	}
+	_ = os.Chmod(cfg.DataDir, 0o700)
+	if cfg.AdminPassword != "" {
+		// An env password supersedes the bootstrap file; do not leave a second
+		// long-lived credential on the volume.
+		_ = os.Remove(filepath.Join(cfg.DataDir, "ADMIN_PASSWORD"))
 	}
 	if cfg.AdminPassword == "" {
 		cfg.AdminPassword = bootstrapAdminPassword(cfg.DataDir, lg)
@@ -204,10 +226,13 @@ func main() {
 	}
 
 	s := &Server{
-		cfg:        cfg,
-		store:      store,
-		engine:     eng,
-		http:       &http.Client{Timeout: 25 * time.Second},
+		cfg:    cfg,
+		store:  store,
+		engine: eng,
+		http: &http.Client{
+			Timeout:   25 * time.Second,
+			Transport: guardedTransport(os.Getenv("BITLAB_ALLOW_PRIVATE_INDEXERS") == "1"),
+		},
 		log:        lg,
 		start:      time.Now(),
 		sessionKey: []byte(secret),
@@ -221,7 +246,10 @@ func main() {
 		Addr:              cfg.Addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 20 * time.Second,
-		IdleTimeout:       0,
+		ReadTimeout:       60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		// WriteTimeout stays 0: a movie stream lasts longer than any useful
+		// deadline. Slow readers are bounded by the handler's request context.
 	}
 
 	// Expired keys are deleted, not merely refused — sweep them even if nobody
@@ -362,17 +390,70 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/api/sessions/revoke-others", s.requireAdmin(s.handleRevokeOtherSessions))
 }
 
+// sameOrigin compares an Origin header with the configured public origin (or
+// the Host the request arrived on when no origin is pinned).
+func (s *Server) sameOrigin(r *http.Request, origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	want := r.Host
+	wantScheme := "http"
+	if r.TLS != nil {
+		wantScheme = "https"
+	}
+	if s.cfg.BaseURL != "" {
+		if b, err := url.Parse(s.cfg.BaseURL); err == nil {
+			want = b.Host
+			wantScheme = b.Scheme
+		}
+	}
+	return strings.EqualFold(u.Host, want) && strings.EqualFold(u.Scheme, wantScheme)
+}
+
 func (s *Server) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Range")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
+		// CORS is for the addon surface only. The admin API is cookie-authenticated
+		// and must not advertise cross-origin access.
+		if strings.HasPrefix(r.URL.Path, "/k/") {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Range")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+			w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
+		}
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		if s.cfg.BaseURL != "" && strings.HasPrefix(s.cfg.BaseURL, "https://") {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(204)
 			return
+		}
+		// SameSite=Lax does not stop a same-site sibling subdomain, so mutating
+		// requests must come from this origin. Requests without either header
+		// (curl, scripts) are still allowed; browsers always send Origin on POST.
+		switch r.Method {
+		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+			if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
+				httpError(w, 403, "cross-site request refused")
+				return
+			}
+			if origin := r.Header.Get("Origin"); origin != "" && !s.sameOrigin(r, origin) {
+				httpError(w, 403, "origin does not match this site")
+				return
+			}
+			if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/admin/api/") {
+				// A cross-site HTML form cannot set this content type without a
+				// CORS preflight, which this server never grants to other origins.
+				if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+					httpError(w, 415, "application/json required")
+					return
+				}
+			}
 		}
 		next.ServeHTTP(w, r)
 	})

@@ -19,6 +19,7 @@ import (
 
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/metainfo"
+	"github.com/anacrolix/torrent/storage"
 )
 
 type activity struct {
@@ -44,6 +45,7 @@ type Engine struct {
 	idleTimeout   time.Duration
 	graceFor      time.Duration
 	retainFor     time.Duration
+	maxTorrents   int
 
 	mu           sync.Mutex
 	addLocks     map[string]*sync.Mutex
@@ -71,12 +73,32 @@ func NewEngine(cfg Config, store *Store, lg *log.Logger) (*Engine, error) {
 	cc.HalfOpenConnsPerTorrent = 40
 	cc.DisableWebtorrent = false
 	cc.DisablePEX = false
-	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
+	allowPrivate := os.Getenv("BITLAB_ALLOW_PRIVATE_INDEXERS") == "1"
+	// Trackers and metainfo sources are attacker-influenced URLs; they must not
+	// become a path to the pod network or cloud metadata.
+	cc.TrackerDialContext = guardedDialContext(allowPrivate)
+	cc.MetainfoSourcesClient = &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: guardedTransport(allowPrivate),
+	}
+	// Media lives in its own subdirectory. The engine state (bitlab.db and,
+	// without an env password, ADMIN_PASSWORD) stays in DataDir, so a torrent
+	// file named "bitlab.db" can never resolve to it.
+	mediaDir := filepath.Join(cfg.DataDir, "media")
+	if err := os.MkdirAll(mediaDir, 0o700); err != nil {
 		return nil, err
 	}
-	// Platforms that need their own on-disk layout supply storage here; the
-	// rest leave it nil and get the client's default file storage.
-	storageImpl, storageCloser := defaultStorage(cfg.DataDir)
+	_ = os.Chmod(mediaDir, 0o700)
+	if err := migrateCacheRoot(cfg.DataDir, mediaDir); err != nil {
+		return nil, err
+	}
+	cc.DataDir = mediaDir
+	// One directory per infohash: two releases with the same name cannot
+	// overwrite each other's files.
+	storageImpl, storageCloser := defaultStorage(mediaDir)
+	if storageImpl == nil {
+		storageImpl = storage.NewFileByInfoHash(mediaDir)
+	}
 	if storageImpl != nil {
 		cc.DefaultStorage = storageImpl
 	}
@@ -90,7 +112,7 @@ func NewEngine(cfg Config, store *Store, lg *log.Logger) (*Engine, error) {
 	e := &Engine{
 		cl:            cl,
 		storageCloser: storageCloser,
-		dataDir:       cfg.DataDir,
+		dataDir:       mediaDir,
 		trackers:      cfg.Trackers,
 		store:         store,
 		maxCacheBytes: cfg.CacheMaxBytes,
@@ -99,6 +121,7 @@ func NewEngine(cfg Config, store *Store, lg *log.Logger) (*Engine, error) {
 		idleTimeout:   cfg.IdleTimeout,
 		graceFor:      cfg.CacheGrace,
 		retainFor:     cfg.CacheRetain,
+		maxTorrents:   cfg.MaxTorrents,
 		addLocks:      map[string]*sync.Mutex{},
 		act:           map[string]*activity{},
 		warmSem:       make(chan struct{}, 4),
@@ -115,6 +138,30 @@ func (e *Engine) Close() {
 			e.log.Printf("close storage: %v", err)
 		}
 	}
+}
+
+// migrateCacheRoot moves pre-existing cache entries from the data root into
+// the media root. Engine state and the new media directory are left alone.
+func migrateCacheRoot(root, media string) error {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	for _, ent := range entries {
+		name := ent.Name()
+		if name == "media" || name == "ADMIN_PASSWORD" || cacheSkip(name) {
+			continue
+		}
+		src := filepath.Join(root, name)
+		dst := filepath.Join(media, name)
+		if _, err := os.Stat(dst); err == nil {
+			dst += "-migrated"
+		}
+		if err := os.Rename(src, dst); err != nil {
+			return fmt.Errorf("migrate %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func (e *Engine) lockFor(ih string) *sync.Mutex {
@@ -170,11 +217,43 @@ func (e *Engine) ensure(ih, name string, extra []string) (*torrent.Torrent, erro
 			trs = append(trs, t)
 		}
 	}
+	if e.maxTorrents > 0 && len(e.cl.Torrents()) >= e.maxTorrents {
+		// A valid key should not be able to pin thousands of torrents in memory.
+		// Drop the least recently used torrent that nobody is reading.
+		if !e.evictOldest() {
+			return nil, errors.New("too many active torrents; try again shortly")
+		}
+	}
 	t, err := e.cl.AddMagnet(magnetURI(ih, name, trs))
 	if err != nil {
 		return nil, err
 	}
 	return t, nil
+}
+
+// evictOldest drops the least recently used torrent with no active readers.
+func (e *Engine) evictOldest() bool {
+	e.mu.Lock()
+	oldest := ""
+	var when time.Time
+	for ih, a := range e.act {
+		if a.readers > 0 {
+			continue
+		}
+		if oldest == "" || a.lastAccess.Before(when) {
+			oldest, when = ih, a.lastAccess
+		}
+	}
+	delete(e.act, oldest)
+	delete(e.addLocks, oldest)
+	e.mu.Unlock()
+	if oldest == "" {
+		return false
+	}
+	if t, ok := e.cl.Torrent(metainfo.NewHashFromHex(oldest)); ok {
+		t.Drop()
+	}
+	return true
 }
 
 func contains(list []string, s string) bool {
@@ -248,7 +327,7 @@ func (e *Engine) prebuffer(t *torrent.Torrent, mb int64) {
 	r.SetContext(ctx)
 	n, _ := io.CopyN(io.Discard, r, mb<<20)
 	if n > 0 {
-		e.log.Printf("prebuffered %s of %s (%s)", humanBytes(n), f.DisplayPath(), t.InfoHash().HexString()[:8])
+		e.log.Printf("prebuffered %s of %q (%s)", humanBytes(n), f.DisplayPath(), t.InfoHash().HexString()[:8])
 	}
 }
 
@@ -380,7 +459,7 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ih := strings.ToLower(r.PathValue("infohash"))
-	if len(ih) != 40 {
+	if !validInfohash(ih) {
 		httpError(w, 400, "bad infohash")
 		return
 	}
@@ -398,12 +477,20 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 	if v := r.URL.Query().Get("e"); v != "" {
 		epWanted, _ = strconv.Atoi(v)
 	}
+	if !s.validPlayToken(r, key.ID, ih, seasonWanted, epWanted) {
+		httpError(w, 403, "play link expired or not issued for this key — reopen the stream list")
+		return
+	}
 
 	var extra []string
 	if v, ok := s.hints.Load(ih); ok {
 		extra = v.([]string)
 	}
-	t, err := s.engine.ensure(ih, hint, append(extra, r.URL.Query()["tr"]...))
+	// Client-supplied ?tr= is deliberately ignored: it let any key holder make
+	// the torrent client announce to arbitrary internal addresses. Trackers
+	// come from the configured list and the indexer result that produced the
+	// row, both filtered when stored.
+	t, err := s.engine.ensure(ih, hint, extra)
 	if err != nil {
 		httpError(w, 500, "torrent: "+err.Error())
 		return
@@ -491,6 +578,12 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 	}
 	if ct == "" {
 		ct = "application/octet-stream"
+	}
+	// Anything that is not a video is refused rather than served inline: a
+	// torrent can contain HTML or SVG, and this origin holds the admin session.
+	if !strings.HasPrefix(ct, "video/") {
+		httpError(w, 415, "this file is not a playable video")
+		return
 	}
 	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", name))

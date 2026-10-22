@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"embed"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -41,6 +40,18 @@ func (f *failWindow) blocked(ip string) bool {
 func (f *failWindow) fail(ip string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// Bound the map: a spoofed address per request must not grow it forever.
+	if len(f.hits) > 10_000 {
+		cut := time.Now().Add(-10 * time.Minute)
+		for k, v := range f.hits {
+			if len(v) == 0 || v[len(v)-1].Before(cut) {
+				delete(f.hits, k)
+			}
+		}
+		if len(f.hits) > 10_000 {
+			f.hits = map[string][]time.Time{}
+		}
+	}
 	f.hits[ip] = append(f.hits[ip], time.Now())
 }
 
@@ -50,15 +61,32 @@ func (f *failWindow) reset(ip string) {
 	delete(f.hits, ip)
 }
 
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		return strings.TrimSpace(strings.Split(xff, ",")[0])
+// clientIP returns the address used for login throttling. Forwarding headers
+// are only honoured when the deployment says a proxy sets them; otherwise a
+// direct caller could rotate the bucket with a header per request. When they
+// are honoured, X-Real-IP and the rightmost XFF hop are the proxy's additions.
+func (s *Server) clientIP(r *http.Request) string {
+	ip := ""
+	if s.cfg.TrustProxy {
+		ip = strings.TrimSpace(r.Header.Get("X-Real-IP"))
+		if ip == "" {
+			if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+				parts := strings.Split(xff, ",")
+				ip = strings.TrimSpace(parts[len(parts)-1])
+			}
+		}
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
+	if ip == "" {
+		if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+			ip = host
+		} else {
+			ip = r.RemoteAddr
+		}
 	}
-	return host
+	if net.ParseIP(ip) == nil {
+		return "unknown"
+	}
+	return ip
 }
 
 func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
@@ -95,7 +123,7 @@ func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request) {
 				MaxAge:   600,
 				HttpOnly: true,
 				SameSite: http.SameSiteLaxMode,
-				Secure:   r.TLS != nil || strings.Contains(r.Header.Get("X-Forwarded-Proto"), "https"),
+				Secure:   r.TLS != nil || strings.HasPrefix(s.cfg.BaseURL, "https://"),
 			})
 		}
 		http.Redirect(w, r, "/login", http.StatusFound)
@@ -134,11 +162,16 @@ func (s *Server) serveAdminShell(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
+	// The console is one inline-script page and uses inline handlers, so
+	// unsafe-inline cannot be removed without a rewrite; everything else is
+	// locked to this origin and framing is refused.
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 	w.Write(b)
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r)
+	ip := s.clientIP(r)
 	if loginWindow.blocked(ip) {
 		httpError(w, 429, "too many attempts, try again later")
 		return
@@ -147,8 +180,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 		Code     string `json:"code"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		httpError(w, 400, "bad json")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 	if !s.checkPassword(body.Password) {
@@ -251,7 +283,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		CacheMax:   cache.Budget,
 		Cache:      cache,
 		Uptime:     int64(time.Since(s.start).Seconds()),
-		Version:    "2.9.6",
+		Version:    "2.9.7",
 		BaseURL:    s.cfg.BaseURL,
 		KeyCount:   s.store.ActiveKeyCount(),
 		MediaRows:  s.store.MediaCacheCount(),
@@ -296,7 +328,9 @@ func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 		Expires string `json:"expires"`
 		Days    int    `json:"days"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	if !decodeJSON(w, r, &body) {
+		return
+	}
 	ttl, err := parseTTL(body.Expires)
 	if err != nil {
 		httpError(w, 400, err.Error())
@@ -319,8 +353,7 @@ func (s *Server) handlePauseKey(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Paused bool `json:"paused"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		httpError(w, 400, "bad json")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 	status := "active"
@@ -358,8 +391,7 @@ func (s *Server) handleSaveIndexer(w http.ResponseWriter, r *http.Request) {
 		Enabled  *bool  `json:"enabled"`
 		Priority int    `json:"priority"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		httpError(w, 400, "bad json")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 	ix := Indexer{ID: body.ID, Kind: body.Kind, Name: body.Name, URL: body.URL,
@@ -369,6 +401,12 @@ func (s *Server) handleSaveIndexer(w http.ResponseWriter, r *http.Request) {
 	}
 	if ix.Name == "" {
 		ix.Name = "indexer"
+	}
+	if ix.URL != "" {
+		if err := checkOutboundURL(ix.URL); err != nil {
+			httpError(w, 400, err.Error())
+			return
+		}
 	}
 	out, err := s.store.SaveIndexer(ix)
 	if err != nil {
@@ -388,9 +426,14 @@ func (s *Server) handleDeleteIndexer(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleTestIndexer(w http.ResponseWriter, r *http.Request) {
 	var ix Indexer
-	if err := json.NewDecoder(r.Body).Decode(&ix); err != nil {
-		httpError(w, 400, "bad json")
+	if !decodeJSON(w, r, &ix) {
 		return
+	}
+	if ix.URL != "" {
+		if err := checkOutboundURL(ix.URL); err != nil {
+			httpError(w, 400, err.Error())
+			return
+		}
 	}
 	q := r.URL.Query().Get("q")
 	if q == "" {
@@ -449,19 +492,18 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		IdleMinutes *int `json:"idle_minutes"`
 		ReadaheadMB *int `json:"readahead_mb"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		httpError(w, 400, "bad json")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
-	if body.CacheGB != nil && *body.CacheGB >= 0 {
+	if body.CacheGB != nil && *body.CacheGB >= 0 && *body.CacheGB <= 1_000_000 {
 		s.engine.maxCacheBytes = int64(*body.CacheGB) << 30
 		s.store.SetSetting("cache_gb", strconv.Itoa(*body.CacheGB))
 	}
-	if body.IdleMinutes != nil && *body.IdleMinutes > 0 {
+	if body.IdleMinutes != nil && *body.IdleMinutes > 0 && *body.IdleMinutes <= 7*24*60 {
 		s.engine.idleTimeout = time.Duration(*body.IdleMinutes) * time.Minute
 		s.store.SetSetting("idle_minutes", strconv.Itoa(*body.IdleMinutes))
 	}
-	if body.ReadaheadMB != nil && *body.ReadaheadMB > 0 {
+	if body.ReadaheadMB != nil && *body.ReadaheadMB > 0 && *body.ReadaheadMB <= 1024 {
 		s.cfg.ReadaheadBytes = int64(*body.ReadaheadMB) << 20
 		s.store.SetSetting("readahead_mb", strconv.Itoa(*body.ReadaheadMB))
 	}
