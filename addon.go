@@ -90,7 +90,7 @@ type StreamResponse struct {
 func (s *Server) manifestFor(k Key) Manifest {
 	return Manifest{
 		ID:          "org.bitlab." + k.ID,
-		Version:     "2.10.3",
+		Version:     "2.10.4",
 		Name:        "Bitlab",
 		Description: "Self-hosted streaming hub. Manifest: " + k.Label,
 		Resources:   []string{"stream"},
@@ -347,10 +347,12 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		}
 		bits = append(bits, "💾 "+humanBytes(res.Size), fmt.Sprintf("👥 %d", res.Seeders))
 		// The measured estimate, when the model has one. It never reorders the
-		// list: the pick stays the user's.
-		if _, p90, ok := s.pred.Estimate(res.InfoHash, res.Title, res.Indexer,
+		// list: the pick stays the user's. The median is what a row shows —
+		// the p90 is a worst case and reads as a broken promise on a release
+		// that will actually start fine.
+		if p50, _, ok := s.pred.Estimate(res.InfoHash, res.Title, res.Indexer,
 			res.Seeders, res.Size, typ, season); ok {
-			bits = append(bits, etaBadge(p90))
+			bits = append(bits, etaBadge(p50))
 		}
 		bits = append(bits, res.Indexer)
 		detail := strings.Join(bits, " · ")

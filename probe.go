@@ -666,10 +666,9 @@ func shortHash(ih string) string {
 
 // etaBadge is the row's colour-coded load estimate. A Stremio/Nuvio stream
 // title is plain text — there is no CSS to colour — so the colour has to be an
-// emoji. The threshold is on the p90: the number a person should plan for, not
-// the best case.
-func etaBadge(p90 float64) string {
-	secs := int(math.Ceil(p90))
+// emoji. The thresholds sit on the number that is actually printed.
+func etaBadge(secsF float64) string {
+	secs := int(math.Ceil(secsF))
 	dot := "🟢"
 	switch {
 	case secs > 30:
