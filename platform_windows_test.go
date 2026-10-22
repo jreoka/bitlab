@@ -55,8 +55,8 @@ func TestFileStandardInfoLayout(t *testing.T) {
 	}
 }
 
-// TestWindowsFilePathMakerSanitizes keeps the storage layout and the eviction
-// path (torrentDirPath) in agreement.
+// TestWindowsFilePathMakerSanitizes covers the per-file sanitizer; the torrent
+// directory itself is the infohash (TorrentDirMaker), so it is not name-based.
 func TestWindowsFilePathMakerSanitizes(t *testing.T) {
 	got := windowsFilePathMaker(storage.FilePathMakerOpts{
 		Info: &metainfo.Info{Name: "Movie: Part Two"},
@@ -65,9 +65,5 @@ func TestWindowsFilePathMakerSanitizes(t *testing.T) {
 	want := filepath.Join("Movie_ Part Two", "Movies_ extras", "film.mkv")
 	if got != want {
 		t.Fatalf("windowsFilePathMaker = %q, want %q", got, want)
-	}
-	dir := torrentDirPath(`C:\data`, &metainfo.Info{Name: "Movie: Part Two"})
-	if wantDir := filepath.Join(`C:\data`, "Movie_ Part Two"); dir != wantDir {
-		t.Fatalf("torrentDirPath = %q, want %q", dir, wantDir)
 	}
 }

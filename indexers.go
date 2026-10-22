@@ -1162,7 +1162,12 @@ var (
 	reHash40    = regexp.MustCompile(`^[0-9a-f]{40}$`)
 )
 
+var reIMDB = regexp.MustCompile(`^tt[0-9]{6,10}$`)
+
 func torrentioSearch(ctx context.Context, hc *http.Client, ix Indexer, typ string, season, ep int, imdbID string) ([]Result, error) {
+	if !reIMDB.MatchString(imdbID) {
+		return nil, fmt.Errorf("bad imdb id")
+	}
 	if imdbID == "" || (typ == "series" && season <= 0) {
 		return nil, nil // Torrentio is keyed on imdb ids only
 	}

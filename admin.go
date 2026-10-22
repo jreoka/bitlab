@@ -273,6 +273,11 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	if ix == nil {
 		ix = []Indexer{}
 	}
+	// The console never renders indexers; do not ship their credentials to
+	// every admin page load (and every XSS that reaches this endpoint).
+	for i := range ix {
+		ix[i].APIKey = ""
+	}
 	idle := int(s.engine.idleTimeout.Minutes())
 	cache := s.engine.CacheStats()
 	writeJSON(w, 200, overview{
@@ -283,7 +288,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		CacheMax:   cache.Budget,
 		Cache:      cache,
 		Uptime:     int64(time.Since(s.start).Seconds()),
-		Version:    "2.9.11",
+		Version:    "2.9.12",
 		BaseURL:    s.cfg.BaseURL,
 		KeyCount:   s.store.ActiveKeyCount(),
 		MediaRows:  s.store.MediaCacheCount(),

@@ -52,7 +52,7 @@ type Indexer struct {
 	Kind     string `json:"kind"` // torznab | knaben | nyaa | apibay | eztv | yts | animetosho
 	Name     string `json:"name"`
 	URL      string `json:"url"`
-	APIKey   string `json:"api_key"`
+	APIKey   string `json:"api_key,omitempty"`
 	Enabled  bool   `json:"enabled"`
 	Priority int    `json:"priority"`
 }

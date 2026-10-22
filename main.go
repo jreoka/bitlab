@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const version = "2.9.11"
+const version = "2.9.12"
 
 // healthFreeFloor is the free space below which /readyz reports not-ready. The
 // cache sweep already holds BITLAB_CACHE_RESERVE_GB, so crossing this means the
@@ -331,12 +331,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 		// never fixes a full disk. The numbers are the diagnosis.
 		free := s.engine.DiskFree()
 		writeJSON(w, 200, map[string]any{
-			"ok":         true,
-			"version":    version,
-			"uptime":     int64(time.Since(s.start).Seconds()),
-			"free_bytes": free,
-			"degraded":   free >= 0 && free < healthFreeFloor,
-			"torrents":   s.engine.TorrentCount(),
+			"ok":       true,
+			"degraded": free >= 0 && free < healthFreeFloor,
 		})
 	})
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -348,7 +344,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 		if degraded {
 			status = 503
 		}
-		writeJSON(w, status, map[string]any{"ready": !degraded, "free_bytes": free})
+		writeJSON(w, status, map[string]any{"ready": !degraded})
 	})
 	mux.HandleFunc("GET /manifest.json", func(w http.ResponseWriter, r *http.Request) {
 		httpError(w, 401, "use your personal manifest URL: /k/<key>/manifest.json")

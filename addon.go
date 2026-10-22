@@ -82,7 +82,7 @@ type StreamResponse struct {
 func (s *Server) manifestFor(k Key) Manifest {
 	return Manifest{
 		ID:          "org.bitlab." + k.ID,
-		Version:     "2.9.11",
+		Version:     "2.9.12",
 		Name:        "Bitlab",
 		Description: "Self-hosted streaming hub. Manifest: " + k.Label,
 		Resources:   []string{"stream"},

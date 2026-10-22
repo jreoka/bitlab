@@ -16,3 +16,10 @@ services:
       BITLAB_IDLE_MINUTES: ${BITLAB_IDLE_MINUTES:-20}
     volumes:
       - ./data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
