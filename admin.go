@@ -298,6 +298,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListKeys(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
+	status := r.URL.Query().Get("status")
 	page := atoiDefault(r.URL.Query().Get("page"), 1)
 	if page < 1 {
 		page = 1
@@ -309,13 +310,13 @@ func (s *Server) handleListKeys(w http.ResponseWriter, r *http.Request) {
 	if per > 100 {
 		per = 100
 	}
-	keys, total, err := s.store.ListKeysPage(q, per, (page-1)*per)
+	keys, total, err := s.store.ListKeysPage(q, status, per, (page-1)*per)
 	if err != nil {
 		s.log.Printf("list keys: %v", err)
 		httpError(w, 500, "store unavailable")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"keys": keys, "total": total, "page": page, "per": per, "query": q})
+	writeJSON(w, 200, map[string]any{"keys": keys, "total": total, "page": page, "per": per, "query": q, "status": status})
 }
 
 func atoiDefault(s string, def int) int {

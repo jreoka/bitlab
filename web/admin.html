@@ -377,6 +377,11 @@ tr:last-child td{border-bottom:0}
         <p class="hint">Pause keeps the key and its stats but stops it working. Revoke deletes it — the URL dies immediately and the entry is gone.</p>
         <div class="keys-toolbar">
           <input id="k-search" placeholder="Search keys by label, note or id" autocomplete="off" spellcheck="false">
+          <select id="k-status" title="Filter by status">
+            <option value="all" selected>All</option>
+            <option value="active">Active</option>
+            <option value="paused">Paused</option>
+          </select>
           <select id="k-per" title="Per page">
             <option value="10">10 / page</option>
             <option value="25" selected>25 / page</option>
@@ -485,7 +490,7 @@ tr:last-child td{border-bottom:0}
 </div>
 
 <script>
-let state = {overview:null, security:null, keysQ:'', keysPage:1, keysPer:25, keysTotal:0};
+let state = {overview:null, security:null, keysQ:'', keysStatus:'all', keysPage:1, keysPer:25, keysTotal:0};
 const $ = s => document.querySelector(s);
 const esc = s => String(s??'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
@@ -672,7 +677,7 @@ function expiry(ts){
 
 async function loadKeys(){
   try {
-    const r = await api('/admin/api/keys?q=' + encodeURIComponent(state.keysQ) + '&page=' + state.keysPage + '&per=' + state.keysPer);
+    const r = await api('/admin/api/keys?q=' + encodeURIComponent(state.keysQ) + '&status=' + encodeURIComponent(state.keysStatus) + '&page=' + state.keysPage + '&per=' + state.keysPer);
     if (!r || r.twofa) return;
     state.keysTotal = r.total;
     const pages = Math.max(1, Math.ceil(r.total / r.per));
@@ -697,7 +702,10 @@ function keysPage(delta){
 function renderKeys(keys, base){
   const box = $('#keys');
   if (!keys.length){
-    box.innerHTML = '<div class="empty">'+(state.keysQ ? 'No keys match “'+esc(state.keysQ)+'”.' : 'No keys yet — create one above and paste its manifest URL into Stremio.')+'</div>';
+    const emptyMsg = state.keysQ ? 'No keys match “'+esc(state.keysQ)+'”.'
+      : state.keysStatus !== 'all' ? 'No ' + state.keysStatus + ' keys.'
+      : 'No keys yet — create one above and paste its manifest URL into Stremio.';
+    box.innerHTML = '<div class="empty">'+emptyMsg+'</div>';
     return;
   }
   const origin = base || location.origin;
@@ -858,6 +866,11 @@ document.addEventListener('input', e => {
 document.addEventListener('change', e => {
   if (e.target && e.target.id === 'k-per') {
     state.keysPer = parseInt(e.target.value, 10) || 25;
+    state.keysPage = 1;
+    loadKeys();
+  }
+  if (e.target && e.target.id === 'k-status') {
+    state.keysStatus = e.target.value;
     state.keysPage = 1;
     loadKeys();
   }

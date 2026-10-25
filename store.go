@@ -247,14 +247,23 @@ func (s *Store) ListKeys() ([]Key, error) {
 }
 
 // ListKeysPage returns one page of keys, optionally filtered by a substring of
-// label/note/id, plus the total matching count.
-func (s *Store) ListKeysPage(q string, limit, offset int) ([]Key, int, error) {
-	where := ""
+// label/note/id and/or by status ("active" or "paused"; any other value means
+// no status filter), plus the total matching count.
+func (s *Store) ListKeysPage(q, status string, limit, offset int) ([]Key, int, error) {
+	var conds []string
 	var args []any
 	if q = strings.TrimSpace(q); q != "" {
-		where = " WHERE (label LIKE ? OR note LIKE ? OR id LIKE ?)"
+		conds = append(conds, "(label LIKE ? OR note LIKE ? OR id LIKE ?)")
 		like := "%" + q + "%"
 		args = append(args, like, like, like)
+	}
+	if status == "active" || status == "paused" {
+		conds = append(conds, "status = ?")
+		args = append(args, status)
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
 	}
 	var total int
 	if err := s.db.QueryRow("SELECT count(*) FROM keys"+where, args...).Scan(&total); err != nil {
