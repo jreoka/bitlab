@@ -794,11 +794,18 @@ async function loadSecurity(){
     </tr>`).join('') || '<tr><td colspan="5" class="empty">No sessions.</td></tr>';
   } catch(e){ toast(e.message, true); }
 }
+// The admin password is asked once, when setup begins (the server checks
+// it before issuing the QR code). It is held in page memory only for the
+// duration of the setup flow so enabling does not ask a second time — the
+// enable call still sends it and the server still verifies it.
+let pending2FAPassword = null;
+
 async function begin2FA(){
   const password = await uiPrompt('Set up two-factor', 'Confirm your admin password to continue.', {type:'password', autocomplete:'current-password', placeholder:'Admin password'});
   if (!password) return;
   try {
     const r = await api('/admin/api/2fa/begin', {method:'POST', body: JSON.stringify({password})});
+    pending2FAPassword = password;
     const qr = document.createElement('img');
     qr.src = r.qr;
     qr.alt = 'TOTP QR code';
@@ -809,12 +816,15 @@ async function begin2FA(){
     $('#totp-code').focus();
   } catch(e){ toast(e.message, true); }
 }
-function cancel2FA(){ $('#tfa-setup').classList.add('hidden'); loadSecurity(); }
+function cancel2FA(){ pending2FAPassword = null; $('#tfa-setup').classList.add('hidden'); loadSecurity(); }
 async function enable2FA(){
-  const password = await uiPrompt('Enable two-factor', 'Confirm your admin password to continue.', {type:'password', autocomplete:'current-password', placeholder:'Admin password'});
+  // Reuse the password confirmed when setup began; ask again only if this
+  // page somehow reached enable without going through begin.
+  const password = pending2FAPassword || await uiPrompt('Enable two-factor', 'Confirm your admin password to continue.', {type:'password', autocomplete:'current-password', placeholder:'Admin password'});
   if (!password) return;
   try {
     const r = await api('/admin/api/2fa/enable', {method:'POST', body: JSON.stringify({code: $('#totp-code').value.trim(), password})});
+    pending2FAPassword = null;
     $('#recovery-codes').innerHTML = (r.recovery_codes||[]).map(c => '<code>'+esc(c)+'</code>').join('');
     $('#tfa-setup').classList.add('hidden');
     $('#recovery-box').classList.remove('hidden');
