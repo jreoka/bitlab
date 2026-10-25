@@ -269,6 +269,15 @@ tr:last-child td{border-bottom:0}
   .toast{left:14px;right:14px;bottom:calc(14px + env(safe-area-inset-bottom));max-width:none;text-align:center}
   .auth-card{padding:22px 18px}
 }
+
+/* ---------- modal (native dialogs) ---------- */
+.modal-veil{position:fixed;inset:0;background:rgba(4,6,8,.62);display:grid;place-items:center;padding:18px;z-index:80}
+.modal{width:100%;max-width:400px;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:20px;box-shadow:0 18px 50px rgba(0,0,0,.5)}
+.modal h3{margin:0 0 6px;font-size:15px;font-weight:600}
+.modal p{margin:0;color:var(--dim);font-size:13.5px;white-space:pre-line}
+.modal p:empty{display:none}
+.modal .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
+.modal input{margin-top:14px}
 </style>
 </head>
 <body>
@@ -463,6 +472,18 @@ tr:last-child td{border-bottom:0}
 
 <div class="toast" id="toast"></div>
 
+<div class="modal-veil hidden" id="modal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <h3 id="modal-title"></h3>
+    <p id="modal-msg"></p>
+    <input id="modal-input" class="hidden" autocomplete="off">
+    <div class="actions">
+      <button id="modal-cancel">Cancel</button>
+      <button id="modal-ok" class="primary">OK</button>
+    </div>
+  </div>
+</div>
+
 <script>
 let state = {overview:null, security:null, keysQ:'', keysPage:1, keysPer:25, keysTotal:0};
 const $ = s => document.querySelector(s);
@@ -485,6 +506,45 @@ function toast(msg, isErr){
   const t = $('#toast'); t.textContent = msg; t.className = 'toast on' + (isErr?' err':'');
   clearTimeout(t._h); t._h = setTimeout(()=>t.className='toast', isErr?4200:2600);
 }
+/* Native in-app dialogs. Everything interactive in this console goes through
+   these instead of window.confirm / window.prompt, so no part of the UI
+   falls back to the browser's own popup chrome. */
+function uiDialog(o){
+  return new Promise(resolve => {
+    const veil = $('#modal'), inp = $('#modal-input'), ok = $('#modal-ok'), cancelBtn = $('#modal-cancel');
+    $('#modal-title').textContent = o.title || '';
+    $('#modal-msg').textContent = o.message || '';
+    ok.textContent = o.okLabel || 'OK';
+    ok.className = o.danger ? 'danger' : 'primary';
+    inp.classList.toggle('hidden', !o.input);
+    if (o.input){
+      inp.type = o.input.type || 'text';
+      inp.placeholder = o.input.placeholder || '';
+      inp.autocomplete = o.input.autocomplete || 'off';
+      inp.value = '';
+    }
+    veil.classList.remove('hidden');
+    const done = val => {
+      veil.classList.add('hidden');
+      ok.onclick = cancelBtn.onclick = veil.onmousedown = null;
+      document.removeEventListener('keydown', keys, true);
+      resolve(val);
+    };
+    const confirmIt = () => done(o.input ? inp.value : true);
+    const cancelIt = () => done(o.input ? null : false);
+    ok.onclick = confirmIt;
+    cancelBtn.onclick = cancelIt;
+    veil.onmousedown = e => { if (e.target === veil) cancelIt(); };
+    const keys = e => {
+      if (e.key === 'Escape'){ e.preventDefault(); cancelIt(); }
+      else if (e.key === 'Enter' && o.input){ e.preventDefault(); confirmIt(); }
+    };
+    document.addEventListener('keydown', keys, true);
+    setTimeout(() => { (o.input ? inp : ok).focus(); }, 30);
+  });
+}
+const uiConfirm = (title, message, okLabel) => uiDialog({title, message, okLabel: okLabel || 'Confirm', danger: true});
+const uiPrompt = (title, message, input, okLabel) => uiDialog({title, message, input, okLabel: okLabel || 'Continue'});
 async function api(path, opts){
   const r = await fetch(path, Object.assign({headers:{'Content-Type':'application/json'}}, opts||{}));
   let j = null; try { j = await r.json(); } catch(e){}
@@ -704,7 +764,7 @@ async function pauseKey(id, paused){
     toast(paused ? 'Key paused' : 'Key resumed'); loadKeys(); } catch(e){ toast(e.message, true); }
 }
 async function revokeKey(id, label){
-  if (!confirm('Revoke "'+label+'"?\n\nThis deletes the key permanently — the manifest URL stops working immediately and its stats are gone.')) return;
+  if (!await uiConfirm('Revoke "'+label+'"?', 'This deletes the key permanently — the manifest URL stops working immediately and its stats are gone.', 'Revoke')) return;
   try { await api('/admin/api/keys/'+id, {method:'DELETE'}); toast('Key revoked and deleted'); loadKeys(); } catch(e){ toast(e.message, true); }
 }
 function copyUrl(btn, text){
@@ -735,7 +795,7 @@ async function loadSecurity(){
   } catch(e){ toast(e.message, true); }
 }
 async function begin2FA(){
-  const password = prompt('Confirm your admin password to set up two-factor:');
+  const password = await uiPrompt('Set up two-factor', 'Confirm your admin password to continue.', {type:'password', autocomplete:'current-password', placeholder:'Admin password'});
   if (!password) return;
   try {
     const r = await api('/admin/api/2fa/begin', {method:'POST', body: JSON.stringify({password})});
@@ -751,7 +811,7 @@ async function begin2FA(){
 }
 function cancel2FA(){ $('#tfa-setup').classList.add('hidden'); loadSecurity(); }
 async function enable2FA(){
-  const password = prompt('Confirm your admin password to enable two-factor:');
+  const password = await uiPrompt('Enable two-factor', 'Confirm your admin password to continue.', {type:'password', autocomplete:'current-password', placeholder:'Admin password'});
   if (!password) return;
   try {
     const r = await api('/admin/api/2fa/enable', {method:'POST', body: JSON.stringify({code: $('#totp-code').value.trim(), password})});
@@ -762,9 +822,9 @@ async function enable2FA(){
   } catch(e){ toast(e.message, true); }
 }
 async function disable2FA(){
-  const password = prompt('Confirm your admin password to disable two-factor:');
+  const password = await uiPrompt('Disable two-factor', 'Confirm your admin password to continue.', {type:'password', autocomplete:'current-password', placeholder:'Admin password'});
   if (!password) return;
-  const code = prompt('Enter a current 6-digit code or a recovery code:');
+  const code = await uiPrompt('Disable two-factor', 'Enter a current 6-digit code or a recovery code.', {type:'text', autocomplete:'one-time-code', placeholder:'6-digit or recovery code'});
   if (!code) return;
   try { await api('/admin/api/2fa/disable', {method:'POST', body: JSON.stringify({password, code: code.trim()})});
     toast('Two-factor disabled'); $('#recovery-box').classList.add('hidden'); loadSecurity(); } catch(e){ toast(e.message, true); }
@@ -773,7 +833,7 @@ async function revokeSession(id){
   try { await api('/admin/api/sessions/'+id, {method:'DELETE'}); toast('Session revoked'); loadSecurity(); } catch(e){ toast(e.message, true); }
 }
 async function revokeOthers(){
-  if (!confirm('Sign out every other session?')) return;
+  if (!await uiConfirm('Sign out every other session?', '', 'Sign out')) return;
   try { await api('/admin/api/sessions/revoke-others', {method:'POST'}); toast('Other sessions signed out'); loadSecurity(); } catch(e){ toast(e.message, true); }
 }
 
