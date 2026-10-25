@@ -69,8 +69,8 @@ func NewEngine(cfg Config, store *Store, lg *log.Logger) (*Engine, error) {
 	cc.NoUpload = false
 	cc.DisableAggressiveUpload = false
 	cc.ListenPort = cfg.TorrentPort
-	cc.EstablishedConnsPerTorrent = 80
-	cc.HalfOpenConnsPerTorrent = 40
+	cc.EstablishedConnsPerTorrent = 160
+	cc.HalfOpenConnsPerTorrent = 100
 	cc.DisableWebtorrent = false
 	cc.DisablePEX = false
 	allowPrivate := os.Getenv("BITLAB_ALLOW_PRIVATE_INDEXERS") == "1"
@@ -279,8 +279,27 @@ func waitInfo(ctx context.Context, t *torrent.Torrent) error {
 }
 
 // Warm pulls metadata in the background so the click that follows is instant.
+// streamBusy reports whether any play reader is open right now. Stream-first
+// policy: background warming (metadata fetch and prebuffering) never competes
+// with an active stream for peers or bandwidth, so anything speculative
+// checks this before pulling bytes.
+func (e *Engine) streamBusy() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, a := range e.act {
+		if a.readers > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (e *Engine) Warm(ih, name string, extra []string, mb int64) {
 	if !validInfohash(ih) {
+		return
+	}
+	if e.streamBusy() {
+		e.log.Printf("warm %s skipped: a stream is active (stream-first)", ih[:8])
 		return
 	}
 	select {
@@ -305,6 +324,11 @@ func (e *Engine) Warm(ih, name string, extra []string, mb int64) {
 			return
 		}
 		e.recordMedia(t)
+		if e.streamBusy() {
+			// A stream started while the metadata was on its way in;
+			// do not follow through with the prebuffer.
+			return
+		}
 		e.prebuffer(t, mb)
 	}()
 }
@@ -337,7 +361,22 @@ func (e *Engine) prebuffer(t *torrent.Torrent, mb int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	r.SetContext(ctx)
-	n, _ := io.CopyN(io.Discard, r, mb<<20)
+	// Pull in chunks and bail the moment a stream starts: a prebuffer that
+	// blindly finishes its full pull would compete with the very playback
+	// it was warming up for (stream-first).
+	var n int64
+	buf := make([]byte, 1<<20)
+	target := mb << 20
+	for n < target && ctx.Err() == nil {
+		if e.streamBusy() {
+			break
+		}
+		nr, rerr := r.Read(buf)
+		n += int64(nr)
+		if rerr != nil {
+			break
+		}
+	}
 	if n > 0 {
 		e.log.Printf("prebuffered %s of %q (%s)", humanBytes(n), f.DisplayPath(), t.InfoHash().HexString()[:8])
 	}
