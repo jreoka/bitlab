@@ -189,9 +189,14 @@ func main() {
 			}
 			if !have {
 				def.Enabled = true
-				if _, err := store.SaveIndexer(def); err == nil {
-					lg.Printf("added %s indexer for wider coverage", def.Name)
+				if _, err := store.SaveIndexer(def); err != nil {
+					// Do not mark it seeded: the flag would suppress the
+					// retry on every later boot and the indexer would
+					// stay silently missing.
+					lg.Printf("seed %s indexer: %v", def.Name, err)
+					continue
 				}
+				lg.Printf("added %s indexer for wider coverage", def.Name)
 			}
 			store.SetSetting(key, "1")
 		}
@@ -241,6 +246,11 @@ func main() {
 
 	mux := http.NewServeMux()
 	s.routes(mux)
+	if s.cfg.BaseURL != "" {
+		if b, err := url.Parse(s.cfg.BaseURL); err == nil && b.Host != "" {
+			lg.Printf("host gate: only %s may access this app; every other host gets a 403", b.Host)
+		}
+	}
 	handler := s.middleware(mux)
 
 	srv := &http.Server{
@@ -422,8 +432,55 @@ func (s *Server) sameOrigin(r *http.Request, origin string) bool {
 	return strings.EqualFold(u.Host, want) && strings.EqualFold(u.Scheme, wantScheme)
 }
 
+// hostAllowed enforces the configured public origin: when BITLAB_BASE_URL
+// is set, the app answers only requests addressed to that host. Reaching
+// an instance any other way — a node address, a platform subdomain, a
+// stray DNS name — gets a 403, so the public domain is the only door.
+// The check uses the Host the connection was addressed to; forwarding
+// headers are caller-controlled and never consulted. The probe endpoints
+// stay open to any host: the container healthcheck and platform probes
+// address the instance directly and carry no app data.
+func (s *Server) hostAllowed(r *http.Request) bool {
+	if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+		return true
+	}
+	if s.cfg.BaseURL == "" {
+		return true
+	}
+	b, err := url.Parse(s.cfg.BaseURL)
+	if err != nil || b.Host == "" {
+		return true
+	}
+	return hostsEqual(r.Host, b.Host, b.Scheme)
+}
+
+// hostsEqual compares a request Host with the configured host, tolerating
+// the scheme's default port appearing on either side ("example.com" from
+// the config, "example.com:443" from a client that spells it out).
+func hostsEqual(got, want, scheme string) bool {
+	if strings.EqualFold(got, want) {
+		return true
+	}
+	def := ""
+	switch scheme {
+	case "https":
+		def = "443"
+	case "http":
+		def = "80"
+	}
+	if def == "" {
+		return false
+	}
+	strip := func(h string) string { return strings.TrimSuffix(h, ":"+def) }
+	return strings.EqualFold(strip(got), strip(want))
+}
+
 func (s *Server) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.hostAllowed(r) {
+			httpError(w, 403, "this host is not served here")
+			return
+		}
 		// CORS is for the addon surface only. The admin API is cookie-authenticated
 		// and must not advertise cross-origin access.
 		if strings.HasPrefix(r.URL.Path, "/k/") {
