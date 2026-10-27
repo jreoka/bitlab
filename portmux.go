@@ -8,15 +8,17 @@ import (
 	"time"
 )
 
-// Port sharing: on a host that can expose only one TCP port, the HTTP server
-// and the torrent client can share it. A BitTorrent handshake starts with the
+// Port sharing: the HTTP server and the torrent client share the service
+// port unconditionally — there is nothing to configure, because the right
+// behavior depends on the connection, not on the deployment. A BitTorrent handshake starts with the
 // byte 0x13 followed by "BitTorrent protocol"; an HTTP request starts with a
 // method token. The mux peeks at those first bytes of every connection and
 // hands the connection — prefix included — to the matching side.
 //
 // This only helps where the port is raw TCP end to end (a VPS, a direct
-// tunnel). Behind an HTTP-only ingress the BitTorrent bytes never arrive, and
-// BITLAB_NO_LISTEN is the right mode there instead. UDP is untouched either
+// tunnel). Behind an HTTP-only ingress the BitTorrent bytes never arrive,
+// and nothing breaks: those connections simply never happen, which is
+// where an unreachable client ends up anyway. UDP is untouched either
 // way: uTP and DHT keep their own socket on the torrent port, reachable or
 // not, exactly as before.
 

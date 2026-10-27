@@ -75,16 +75,6 @@ func baseClientConfig(cfg Config) *torrent.ClientConfig {
 	cc.HalfOpenConnsPerTorrent = 100
 	cc.DisableWebtorrent = false
 	cc.DisablePEX = false
-	if cfg.NoListen {
-		// Single-port hosting where the torrent port cannot be exposed:
-		// refuse inbound peer connections and say so — the client reports
-		// itself firewalled, and no UPnP pinhole is requested for a port
-		// nobody may use. Outbound dialing, tracker announces and DHT
-		// queries are unaffected: peers are still reached, just never
-		// reached from.
-		cc.AcceptPeerConnections = false
-		cc.NoDefaultPortForwarding = true
-	}
 	allowPrivate := os.Getenv("BITLAB_ALLOW_PRIVATE_INDEXERS") == "1"
 	// Trackers and metainfo sources are attacker-influenced URLs; they must not
 	// become a path to the pod network or cloud metadata.

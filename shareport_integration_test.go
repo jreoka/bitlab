@@ -15,7 +15,7 @@ import (
 // End to end over one shared port: a real HTTP server answers on it, and a
 // real torrent client behind the mux answers a raw BitTorrent handshake on
 // the very same port.
-func TestSharePortEndToEnd(t *testing.T) {
+func TestSharedPortEndToEnd(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
