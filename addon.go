@@ -335,7 +335,11 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		if src != "" {
 			bits = append(bits, src)
 		}
-		bits = append(bits, "💾 "+humanBytes(res.Size), fmt.Sprintf("👥 %d", res.Seeders), res.Indexer)
+		// The detail line carries the release's media source, size and
+		// seeders — deliberately not which indexer found it: the fetching
+		// source ("Torrentio/TorrentGalaxy", "Knaben", …) is noise next
+		// to the numbers that decide a pick.
+		bits = append(bits, "💾 "+humanBytes(res.Size), fmt.Sprintf("👥 %d", res.Seeders))
 		detail := strings.Join(bits, " · ")
 		streams = append(streams, Stream{
 			Name:  fmt.Sprintf("%s · %s", display, q),
