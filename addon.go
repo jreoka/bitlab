@@ -36,6 +36,8 @@ type Config struct {
 	Indexers          []Indexer
 	AdminPassword     string
 	TrustProxy        bool
+	NoListen          bool
+	SharePort         bool
 }
 
 type Server struct {

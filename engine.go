@@ -62,7 +62,9 @@ type Engine struct {
 	storageCloser io.Closer
 }
 
-func NewEngine(cfg Config, store *Store, lg *log.Logger) (*Engine, error) {
+// baseClientConfig builds the torrent client configuration from the static
+// config. Storage and the final data dir are layered on by NewEngine.
+func baseClientConfig(cfg Config) *torrent.ClientConfig {
 	cc := torrent.NewDefaultClientConfig()
 	cc.DataDir = cfg.DataDir
 	cc.Seed = false
@@ -73,6 +75,16 @@ func NewEngine(cfg Config, store *Store, lg *log.Logger) (*Engine, error) {
 	cc.HalfOpenConnsPerTorrent = 100
 	cc.DisableWebtorrent = false
 	cc.DisablePEX = false
+	if cfg.NoListen {
+		// Single-port hosting where the torrent port cannot be exposed:
+		// refuse inbound peer connections and say so — the client reports
+		// itself firewalled, and no UPnP pinhole is requested for a port
+		// nobody may use. Outbound dialing, tracker announces and DHT
+		// queries are unaffected: peers are still reached, just never
+		// reached from.
+		cc.AcceptPeerConnections = false
+		cc.NoDefaultPortForwarding = true
+	}
 	allowPrivate := os.Getenv("BITLAB_ALLOW_PRIVATE_INDEXERS") == "1"
 	// Trackers and metainfo sources are attacker-influenced URLs; they must not
 	// become a path to the pod network or cloud metadata.
@@ -82,6 +94,11 @@ func NewEngine(cfg Config, store *Store, lg *log.Logger) (*Engine, error) {
 		Timeout:   30 * time.Second,
 		Transport: guardedTransport(allowPrivate),
 	}
+	return cc
+}
+
+func NewEngine(cfg Config, store *Store, lg *log.Logger) (*Engine, error) {
+	cc := baseClientConfig(cfg)
 	// Media lives in its own subdirectory. The engine state (bitlab.db and,
 	// without an env password, ADMIN_PASSWORD) stays in DataDir, so a torrent
 	// file named "bitlab.db" can never resolve to it.
@@ -139,6 +156,13 @@ func (e *Engine) Close() {
 			e.log.Printf("close storage: %v", err)
 		}
 	}
+}
+
+// AddPeerListener registers an extra inbound peer listener with the torrent
+// client (the shared-port mux). Ownership stays with the caller: the client
+// does not close listeners added this way.
+func (e *Engine) AddPeerListener(l torrent.Listener) {
+	e.cl.AddListener(l)
 }
 
 // migrateCacheRoot moves pre-existing cache entries from the data root into

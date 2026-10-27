@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -87,6 +88,8 @@ func loadConfig() Config {
 		MaxTorrents:       envIntClamped("BITLAB_MAX_TORRENTS", 40, 1, 500),
 		AdminPassword:     env("BITLAB_ADMIN_PASSWORD", ""),
 		TrustProxy:        os.Getenv("BITLAB_TRUST_PROXY") == "1",
+		NoListen:          os.Getenv("BITLAB_NO_LISTEN") == "1",
+		SharePort:         os.Getenv("BITLAB_SHARE_PORT") == "1",
 	}
 	if t := os.Getenv("BITLAB_TRACKERS"); t != "" {
 		for _, s := range strings.Split(t, ",") {
@@ -118,6 +121,9 @@ func main() {
 	}
 	lg := log.New(os.Stdout, "", log.LstdFlags|log.LUTC)
 	cfg := loadConfig()
+	if cfg.NoListen && cfg.SharePort {
+		lg.Fatalf("BITLAB_NO_LISTEN and BITLAB_SHARE_PORT conflict: one refuses inbound peers, the other shares the port with them")
+	}
 
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		lg.Fatalf("data dir: %v", err)
@@ -218,6 +224,9 @@ func main() {
 		lg.Fatalf("engine: %v", err)
 	}
 	defer eng.Close()
+	if cfg.NoListen {
+		lg.Printf("no-listen mode: inbound peer connections refused; only %s needs to be reachable", cfg.Addr)
+	}
 
 	secret := store.GetSetting("session_secret", "")
 	if secret == "" {
@@ -288,10 +297,27 @@ func main() {
 		}
 	}()
 
+	ln, err := net.Listen("tcp", cfg.Addr)
+	if err != nil {
+		lg.Fatalf("listen: %v", err)
+	}
 	go func() {
 		lg.Printf("bitlab %s listening on %s (data=%s, cache=%s)", version, cfg.Addr, cfg.DataDir, humanBytes(cfg.CacheMaxBytes))
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			lg.Fatalf("listen: %v", err)
+		var serveErr error
+		if cfg.SharePort {
+			// One port, two protocols: the mux sniffs each connection's
+			// first bytes and hands BitTorrent handshakes to the torrent
+			// client, everything else to the HTTP server.
+			pm := newPortMux(ln)
+			eng.AddPeerListener(pm.TorrentListener())
+			go pm.Serve()
+			lg.Printf("port sharing on: BitTorrent peers share %s with HTTP", cfg.Addr)
+			serveErr = srv.Serve(pm.HTTPListener())
+		} else {
+			serveErr = srv.Serve(ln)
+		}
+		if serveErr != nil && serveErr != http.ErrServerClosed {
+			lg.Fatalf("listen: %v", serveErr)
 		}
 	}()
 
