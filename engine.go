@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/anacrolix/torrent"
@@ -24,6 +25,7 @@ import (
 
 type activity struct {
 	readers       int
+	adding        bool
 	lastAccess    time.Time
 	label         string
 	size          int64
@@ -39,10 +41,9 @@ type Engine struct {
 	dataDir       string
 	trackers      []string
 	store         *Store
-	maxCacheBytes int64
+	maxCacheBytes atomic.Int64
 	reserveBytes  int64
-	prebufferMB   int64
-	idleTimeout   time.Duration
+	idleTimeout   atomic.Int64 // nanoseconds; the console rewrites it live
 	graceFor      time.Duration
 	retainFor     time.Duration
 	maxTorrents   int
@@ -123,10 +124,7 @@ func NewEngine(cfg Config, store *Store, lg *log.Logger) (*Engine, error) {
 		dataDir:       mediaDir,
 		trackers:      cfg.Trackers,
 		store:         store,
-		maxCacheBytes: cfg.CacheMaxBytes,
 		reserveBytes:  cfg.CacheReserveBytes,
-		prebufferMB:   cfg.PrebufferMB,
-		idleTimeout:   cfg.IdleTimeout,
 		graceFor:      cfg.CacheGrace,
 		retainFor:     cfg.CacheRetain,
 		maxTorrents:   cfg.MaxTorrents,
@@ -135,11 +133,18 @@ func NewEngine(cfg Config, store *Store, lg *log.Logger) (*Engine, error) {
 		warmSem:       make(chan struct{}, 4),
 		log:           lg,
 	}
+	e.maxCacheBytes.Store(cfg.CacheMaxBytes)
+	e.idleTimeout.Store(int64(cfg.IdleTimeout))
 	go e.janitor()
 	return e, nil
 }
 
 func (e *Engine) Close() {
+	// The janitor reads closed under e.mu on every tick; without this it
+	// would keep sweeping against the closed client for the process's life.
+	e.mu.Lock()
+	e.closed = true
+	e.mu.Unlock()
 	e.cl.Close()
 	if e.storageCloser != nil {
 		if err := e.storageCloser.Close(); err != nil {
@@ -229,6 +234,20 @@ func (e *Engine) ensure(ih, name string, extra []string) (*torrent.Torrent, erro
 	if t, ok := e.cl.Torrent(h); ok {
 		return t, nil
 	}
+	// Mark the add in flight: eviction must never pick this torrent or
+	// delete its lock from under the add.
+	e.mu.Lock()
+	if a, ok := e.act[ih]; ok {
+		a.adding = true
+	}
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		if a, ok := e.act[ih]; ok {
+			a.adding = false
+		}
+		e.mu.Unlock()
+	}()
 	trs := append([]string{}, e.trackers...)
 	for _, t := range extra {
 		if t != "" && !contains(trs, t) {
@@ -249,29 +268,37 @@ func (e *Engine) ensure(ih, name string, extra []string) (*torrent.Torrent, erro
 	return t, nil
 }
 
-// evictOldest drops the least recently used torrent with no active readers.
+// evictOldest drops the least recently used torrent that nobody is reading
+// or adding, and reports whether a loaded torrent actually went away.
+// Activity entries also exist for torrents that were touched but never
+// loaded; clearing one of those frees no slot, so the search continues.
 func (e *Engine) evictOldest() bool {
-	e.mu.Lock()
-	oldest := ""
-	var when time.Time
-	for ih, a := range e.act {
-		if a.readers > 0 {
+	for {
+		e.mu.Lock()
+		oldest := ""
+		var when time.Time
+		for ih, a := range e.act {
+			if a.readers > 0 || a.adding {
+				continue
+			}
+			if oldest == "" || a.lastAccess.Before(when) {
+				oldest, when = ih, a.lastAccess
+			}
+		}
+		if oldest == "" {
+			e.mu.Unlock()
+			return false
+		}
+		delete(e.act, oldest)
+		delete(e.addLocks, oldest)
+		e.mu.Unlock()
+		t, ok := e.cl.Torrent(metainfo.NewHashFromHex(oldest))
+		if !ok {
 			continue
 		}
-		if oldest == "" || a.lastAccess.Before(when) {
-			oldest, when = ih, a.lastAccess
-		}
-	}
-	delete(e.act, oldest)
-	delete(e.addLocks, oldest)
-	e.mu.Unlock()
-	if oldest == "" {
-		return false
-	}
-	if t, ok := e.cl.Torrent(metainfo.NewHashFromHex(oldest)); ok {
 		t.Drop()
+		return true
 	}
-	return true
 }
 
 func contains(list []string, s string) bool {
@@ -620,7 +647,7 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	reader := f.NewReader()
-	reader.SetReadahead(s.cfg.ReadaheadBytes)
+	reader.SetReadahead(s.readaheadBytes())
 	reader.SetResponsive()
 	reader.SetContext(ctx)
 	defer reader.Close()
@@ -656,7 +683,7 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Bitlab-File", strconv.Itoa(idx))
 
-	cw := &countingWriter{ResponseWriter: w, n: &s.bytesOut}
+	cw := &countingWriter{ResponseWriter: w}
 	// ServeContent probes the size with Seek(0, End) before writing anything.
 	// Answering that arithmetically avoids telling the torrent client to
 	// prioritise the tail of the file, which delays the first byte.
@@ -688,7 +715,6 @@ func rangeStart(h string) (int64, bool) {
 
 type countingWriter struct {
 	http.ResponseWriter
-	n       *int64
 	written int64
 }
 
@@ -749,7 +775,7 @@ func (e *Engine) reapIdle(now time.Time) {
 			a.warnedNoPeers = true
 			e.log.Printf("no peers for %s after %s (trackers=%d)", ih[:8], time.Since(a.lastAccess).Round(time.Second), len(e.trackers))
 		}
-		if readers == 0 && idle > e.idleTimeout {
+		if readers == 0 && idle > time.Duration(e.idleTimeout.Load()) {
 			e.log.Printf("drop idle torrent %s (%s idle)", ih[:8], idle.Round(time.Second))
 			t.Drop()
 			e.mu.Lock()
@@ -804,20 +830,6 @@ func (e *Engine) Views() []TorrentView {
 	return out
 }
 
-// CacheBytes is the media footprint of the data directory, in allocated
-// blocks. The database files are not media and are not counted.
-func (e *Engine) CacheBytes() int64 {
-	entries, err := scanCache(e.dataDir)
-	if err != nil {
-		return 0
-	}
-	var n int64
-	for _, en := range entries {
-		n += en.Bytes
-	}
-	return n
-}
-
 // CacheStats is what the console shows: the last sweep's picture of the cache,
 // with the live disk numbers refreshed on request.
 func (e *Engine) CacheStats() CacheStats {
@@ -841,7 +853,7 @@ func (e *Engine) CacheStats() CacheStats {
 		st.Entries = len(entries)
 		st.PartialBytes = partial
 	}
-	st.Budget = e.maxCacheBytes
+	st.Budget = e.maxCacheBytes.Load()
 	st.Reserve = e.reserveBytes
 	if free, ferr := freeDiskSpace(e.dataDir); ferr == nil {
 		st.Free = free

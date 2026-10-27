@@ -20,11 +20,6 @@ func allocatedSize(_ string, info os.FileInfo) int64 {
 	return info.Size()
 }
 
-// sanitizePathComponent is a no-op on unix: every byte except '/' and NUL is
-// legal in a file name, so torrent names are used verbatim and the on-disk
-// layout matches what every previous release produced.
-func sanitizePathComponent(s string) string { return s }
-
 // freeDiskSpace reports the bytes available to unprivileged writers on the
 // volume holding path. Bavail (not Bfree) is the number that matters: the
 // cache must not eat the reserved blocks, or writes start failing.

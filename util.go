@@ -52,6 +52,16 @@ func (s *Server) baseURL(r *http.Request) string {
 	return scheme + "://" + r.Host
 }
 
+// readaheadBytes is the live read-ahead size. The console can rewrite it
+// while plays are being served, so the live value is atomic; cfg carries
+// only the boot value.
+func (s *Server) readaheadBytes() int64 {
+	if v := s.readahead.Load(); v > 0 {
+		return v
+	}
+	return s.cfg.ReadaheadBytes
+}
+
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")

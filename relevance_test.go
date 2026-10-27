@@ -341,3 +341,20 @@ func TestFilterRelevantDropsNonFeatureUploads(t *testing.T) {
 		}
 	}
 }
+
+func TestYearAgreesTitleNumbers(t *testing.T) {
+	// A year-shaped title number must not veto a release whose real year
+	// follows it in the same name; a genuinely wrong year still fails.
+	if !yearAgrees("1917 2019 1080p BluRay", 2019, 1) {
+		t.Error("1917 (2019) rejected")
+	}
+	if !yearAgrees("Blade Runner 2049 (2017) Remastered", 2017, 1) {
+		t.Error("Blade Runner 2049 (2017) rejected")
+	}
+	if yearAgrees("Some Movie 1998 1080p", 2020, 1) {
+		t.Error("wrong-year release accepted")
+	}
+	if !yearAgrees("Some Movie 1080p", 2020, 1) {
+		t.Error("yearless release rejected")
+	}
+}

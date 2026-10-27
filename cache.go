@@ -276,7 +276,7 @@ func (e *Engine) sweepCache(now time.Time) {
 	if ferr != nil {
 		free = -1
 	}
-	plan := planCache(units, used, e.maxCacheBytes, e.reserveBytes, free, now, e.graceFor, e.retainFor)
+	plan := planCache(units, used, e.maxCacheBytes.Load(), e.reserveBytes, free, now, e.graceFor, e.retainFor)
 
 	var freed int64
 	var freedCount int64
@@ -294,6 +294,10 @@ func (e *Engine) sweepCache(now time.Time) {
 		if d.Unit.Infohash != "" {
 			e.mu.Lock()
 			delete(e.act, d.Unit.Infohash)
+			// The other drop paths (reapIdle, evictOldest) release the
+			// per-torrent add lock with the activity entry; without this
+			// the lock map grows by one entry per evicted torrent forever.
+			delete(e.addLocks, d.Unit.Infohash)
 			e.mu.Unlock()
 		} else {
 			removedOrphans++
@@ -315,7 +319,7 @@ func (e *Engine) sweepCache(now time.Time) {
 
 	st := CacheStats{
 		Used:         used - freed,
-		Budget:       e.maxCacheBytes,
+		Budget:       e.maxCacheBytes.Load(),
 		Reserve:      e.reserveBytes,
 		Free:         free,
 		Entries:      len(entries) - int(freedCount),
@@ -337,6 +341,6 @@ func (e *Engine) sweepCache(now time.Time) {
 
 	if freedCount > 0 {
 		e.log.Printf("cache: reclaimed %s in %d entries (used %s / budget %s, free %s)",
-			humanBytes(freed), freedCount, humanBytes(st.Used), humanBytes(e.maxCacheBytes), humanBytes(free))
+			humanBytes(freed), freedCount, humanBytes(st.Used), humanBytes(e.maxCacheBytes.Load()), humanBytes(free))
 	}
 }

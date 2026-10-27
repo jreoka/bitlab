@@ -13,14 +13,6 @@ import (
 
 const gib = int64(1) << 30
 
-func cacheTestUnit(name string, size int64, age time.Duration, readers int) cacheUnit {
-	return cacheUnit{
-		cacheEntry: cacheEntry{Name: name, Bytes: size},
-		Readers:    readers,
-		LastUse:    time.Now().Add(-age),
-	}
-}
-
 func names(plan []cacheDecision) []string {
 	out := make([]string, len(plan))
 	for i, d := range plan {
@@ -180,16 +172,17 @@ func newTestEngine(t *testing.T, dir string) *Engine {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { cl.Close() })
-	return &Engine{
-		cl:            cl,
-		dataDir:       dir,
-		store:         store,
-		maxCacheBytes: 16 * gib,
-		act:           map[string]*activity{},
-		log:           log.New(io.Discard, "", 0),
-		graceFor:      10 * time.Minute,
-		retainFor:     24 * time.Hour,
+	e := &Engine{
+		cl:        cl,
+		dataDir:   dir,
+		store:     store,
+		act:       map[string]*activity{},
+		log:       log.New(io.Discard, "", 0),
+		graceFor:  10 * time.Minute,
+		retainFor: 24 * time.Hour,
 	}
+	e.maxCacheBytes.Store(16 * gib)
+	return e
 }
 
 // seedCacheEntry writes a .part file under a torrent-named entry and gives the
@@ -245,7 +238,7 @@ func TestSweepCacheReclaimsAbandonedPartials(t *testing.T) {
 func TestSweepCacheEvictsPartialsUnderBudget(t *testing.T) {
 	dir := t.TempDir()
 	e := newTestEngine(t, dir)
-	e.maxCacheBytes = 1 // force pressure
+	e.maxCacheBytes.Store(1) // force pressure
 	older := seedCacheEntry(t, dir, "Older (2018)", 3*time.Hour)
 	newer := seedCacheEntry(t, dir, "Newer (2025)", 1*time.Hour)
 

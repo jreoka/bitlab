@@ -120,26 +120,32 @@ func titleMatches(name, title string) bool {
 }
 
 // yearAgrees accepts a release when the requested year is unknown, when the
-// name carries no year at all, or when the years are within slack (festival
-// runs and staggered regional releases move the date by a year; anime films
-// commonly differ by two or three between Japan and the West).
+// name carries no year at all, or when any year in the name is within slack
+// (festival runs and staggered regional releases move the date by a year;
+// anime films commonly differ by two or three between Japan and the West).
+// Any year may match, not just the first: a work's own title can be a
+// year-shaped number ("1917", "Blade Runner 2049"), and that token must not
+// veto a release whose real year follows it in the same name.
 func yearAgrees(name string, year, slack int) bool {
 	if year <= 0 {
 		return true
 	}
-	m := reYearInName.FindString(name)
-	if m == "" {
-		return true
+	found := false
+	for _, m := range reYearInName.FindAllString(name, -1) {
+		found = true
+		var got int
+		for _, c := range m {
+			got = got*10 + int(c-'0')
+		}
+		diff := got - year
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff <= slack {
+			return true
+		}
 	}
-	var got int
-	for _, c := range m {
-		got = got*10 + int(c-'0')
-	}
-	diff := got - year
-	if diff < 0 {
-		diff = -diff
-	}
-	return diff <= slack
+	return !found
 }
 
 // filterRelevant drops candidates that cannot be the thing that was asked for.
@@ -249,8 +255,6 @@ func filterRelevant(results []Result, typ, title string, aliases []string, year,
 	}
 	return keep, dropped
 }
-
-var reSxxE = regexp.MustCompile(`(?i)\bS(\d{1,2})\s*E(\d{1,3})\b`)
 
 // Season markers come in three shapes ("S04", "Season 4", "4th Season") and
 // anime release groups use the last one constantly: "[Erai-raws] Re Zero kara

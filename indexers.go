@@ -185,7 +185,7 @@ type ixCacheEntry struct {
 // searchIndexer caches each (indexer, query) briefly. Paging through episodes
 // repeats most queries, and small indexers answer 429 when hammered.
 func (s *Server) searchIndexer(ctx context.Context, ix Indexer, q string, typ string, season, ep int, imdbID string) ([]Result, error) {
-	ck := ix.Kind + "|" + ix.URL + "|" + typ + "|" + strconv.Itoa(season) + "|" + strconv.Itoa(ep) + "|" + strings.ToLower(q)
+	ck := ix.Kind + "|" + ix.URL + "|" + typ + "|" + strconv.Itoa(season) + "|" + strconv.Itoa(ep) + "|" + strings.ToLower(q) + "|" + imdbID
 	if v, ok := s.ixCache.Load(ck); ok {
 		e := v.(ixCacheEntry)
 		if time.Now().Before(e.exp) {
@@ -637,9 +637,14 @@ func nyaaSearch(ctx context.Context, hc *http.Client, ix Indexer, q string) ([]R
 		base = "https://nyaa.si"
 	}
 	cat := "1_2" // anime, english-translated
-	if strings.HasPrefix(strings.TrimPrefix(ix.URL, base), "/c=") {
-		cat = strings.TrimPrefix(strings.TrimPrefix(ix.URL, base), "/c=")
-		base = strings.TrimRight(strings.TrimSuffix(base, "/c="+cat), "/")
+	// A configured URL may carry its category as a trailing /c=<cat>
+	// segment ("https://nyaa.si/c=1_2"); extract it so it becomes the c
+	// parameter instead of corrupting the request path.
+	if i := strings.Index(base, "/c="); i >= 0 {
+		if c := strings.TrimRight(base[i+3:], "/"); c != "" {
+			cat = c
+			base = strings.TrimRight(base[:i], "/")
+		}
 	}
 	u := base + "/?page=rss&q=" + url.QueryEscape(q) + "&c=" + url.QueryEscape(cat) + "&f=0&s=seeders&o=desc"
 	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)

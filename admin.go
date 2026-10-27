@@ -33,7 +33,14 @@ func (f *failWindow) blocked(ip string) bool {
 			keep = append(keep, t)
 		}
 	}
-	f.hits[ip] = keep
+	// Do not write back an empty entry: blocked() runs on every login
+	// attempt, and an entry per distinct address that never fails would
+	// grow the map for the life of the process.
+	if len(keep) == 0 {
+		delete(f.hits, ip)
+	} else {
+		f.hits[ip] = keep
+	}
 	return len(keep) >= 10
 }
 
@@ -278,7 +285,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	for i := range ix {
 		ix[i].APIKey = ""
 	}
-	idle := int(s.engine.idleTimeout.Minutes())
+	idle := int(time.Duration(s.engine.idleTimeout.Load()).Minutes())
 	cache := s.engine.CacheStats()
 	writeJSON(w, 200, overview{
 		Keys:       keys,
@@ -502,15 +509,15 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.CacheGB != nil && *body.CacheGB >= 0 && *body.CacheGB <= 1_000_000 {
-		s.engine.maxCacheBytes = int64(*body.CacheGB) << 30
+		s.engine.maxCacheBytes.Store(int64(*body.CacheGB) << 30)
 		s.store.SetSetting("cache_gb", strconv.Itoa(*body.CacheGB))
 	}
 	if body.IdleMinutes != nil && *body.IdleMinutes > 0 && *body.IdleMinutes <= 7*24*60 {
-		s.engine.idleTimeout = time.Duration(*body.IdleMinutes) * time.Minute
+		s.engine.idleTimeout.Store(int64(time.Duration(*body.IdleMinutes) * time.Minute))
 		s.store.SetSetting("idle_minutes", strconv.Itoa(*body.IdleMinutes))
 	}
 	if body.ReadaheadMB != nil && *body.ReadaheadMB > 0 && *body.ReadaheadMB <= 1024 {
-		s.cfg.ReadaheadBytes = int64(*body.ReadaheadMB) << 20
+		s.readahead.Store(int64(*body.ReadaheadMB) << 20)
 		s.store.SetSetting("readahead_mb", strconv.Itoa(*body.ReadaheadMB))
 	}
 	s.handleOverview(w, r)

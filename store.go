@@ -12,10 +12,11 @@ import (
 )
 
 var (
-	ErrKeyNotFound = errors.New("manifest key not recognised")
-	ErrKeyPaused   = errors.New("manifest key paused")
-	ErrKeyExpired  = errors.New("manifest key expired")
-	ErrNoKeys      = errors.New("no manifest keys exist")
+	ErrKeyNotFound     = errors.New("manifest key not recognised")
+	ErrKeyPaused       = errors.New("manifest key paused")
+	ErrKeyExpired      = errors.New("manifest key expired")
+	ErrNoKeys          = errors.New("no manifest keys exist")
+	ErrIndexerNotFound = errors.New("indexer not found")
 )
 
 // Key is a per-user manifest credential. Revoking deletes it outright;
@@ -253,8 +254,11 @@ func (s *Store) ListKeysPage(q, status string, limit, offset int) ([]Key, int, e
 	var conds []string
 	var args []any
 	if q = strings.TrimSpace(q); q != "" {
-		conds = append(conds, "(label LIKE ? OR note LIKE ? OR id LIKE ?)")
-		like := "%" + q + "%"
+		conds = append(conds, "(label LIKE ? ESCAPE '\\' OR note LIKE ? ESCAPE '\\' OR id LIKE ? ESCAPE '\\')")
+		// The search is a substring filter, not a pattern: escape the
+		// LIKE wildcards so a label containing % or _ matches literally.
+		esc := strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(q)
+		like := "%" + esc + "%"
 		args = append(args, like, like, like)
 	}
 	if status == "active" || status == "paused" {
@@ -461,9 +465,18 @@ func (s *Store) SaveIndexer(i Indexer) (Indexer, error) {
 			i.ID, i.Kind, i.Name, i.URL, i.APIKey, boolInt(i.Enabled), i.Priority)
 		return i, err
 	}
-	_, err := s.db.Exec(`UPDATE indexers SET kind=?,name=?,url=?,api_key=?,enabled=?,priority=? WHERE id=?`,
+	res, err := s.db.Exec(`UPDATE indexers SET kind=?,name=?,url=?,api_key=?,enabled=?,priority=? WHERE id=?`,
 		i.Kind, i.Name, i.URL, i.APIKey, boolInt(i.Enabled), i.Priority, i.ID)
-	return i, err
+	if err != nil {
+		return i, err
+	}
+	// An update against a stale id (deleted in another tab) matches no
+	// row; reporting success would have the console show a save that
+	// never persisted.
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return i, ErrIndexerNotFound
+	}
+	return i, nil
 }
 
 // UpsertIndexerByName inserts or updates an indexer identified by kind+name,
@@ -538,19 +551,6 @@ func (s *Store) SaveMedia(ih, name string, size int64, files []CachedFile) error
 		ON CONFLICT(infohash) DO UPDATE SET name=excluded.name, size=excluded.size, files=excluded.files, last_used=excluded.last_used`,
 		ih, name, size, string(b), now, now)
 	return err
-}
-
-func (s *Store) GetMedia(ih string) (string, int64, []CachedFile, bool) {
-	var name string
-	var size int64
-	var files string
-	if err := s.db.QueryRow(`SELECT name,size,files FROM media_cache WHERE infohash=?`, ih).Scan(&name, &size, &files); err != nil {
-		return "", 0, nil, false
-	}
-	var cf []CachedFile
-	json.Unmarshal([]byte(files), &cf)
-	s.db.Exec(`UPDATE media_cache SET last_used=? WHERE infohash=?`, time.Now().Unix(), ih)
-	return name, size, cf, true
 }
 
 func (s *Store) MediaCacheCount() int {

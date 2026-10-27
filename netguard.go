@@ -63,15 +63,27 @@ func guardedDialContext(allowPrivate bool) func(context.Context, string, string)
 		if err != nil {
 			return nil, err
 		}
+		// Try every public address in order: a host publishing several
+		// A/AAAA records must not fail because the first one is dead.
+		var lastErr error
+		tried := false
 		for _, ip := range ips {
 			if privateAddress(ip.IP) {
 				continue
 			}
+			tried = true
 			// Dial the resolved address rather than the name to avoid a second,
 			// rebindable lookup.
-			return dialer.DialContext(ctx, network, net.JoinHostPort(ip.IP.String(), port))
+			conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.IP.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
 		}
-		return nil, fmt.Errorf("refusing to connect to a private address (%s)", host)
+		if !tried {
+			return nil, fmt.Errorf("refusing to connect to a private address (%s)", host)
+		}
+		return nil, lastErr
 	}
 }
 

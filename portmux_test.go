@@ -108,24 +108,47 @@ func TestMuxRoutesBitTorrent(t *testing.T) {
 	}
 }
 
-func TestMuxDropsFakeHandshake(t *testing.T) {
+func TestMuxRoutesObscuredHandshakeToTorrent(t *testing.T) {
 	m, addr := startTestMux(t)
 	c := dial(t, addr)
+	// 0x13 not followed by the protocol string: indistinguishable from an
+	// MSE-encrypted handshake, whose first bytes are key material. The mux
+	// must hand it to the torrent client intact and let it decide.
 	fake := append([]byte{byte(len(btProtocolString))}, []byte("BitTorrent protocoX")...)
 	if _, err := c.Write(fake); err != nil {
 		t.Fatal(err)
 	}
-	// The mux must close the connection without routing it anywhere.
-	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
-	if _, err := c.Read(make([]byte, 1)); err == nil {
-		t.Fatal("fake handshake connection was not closed")
+	srv := acceptWithin(t, m.torrent, 2*time.Second)
+	got := make([]byte, len(fake))
+	if _, err := io.ReadFull(srv, got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, fake) {
+		t.Fatalf("prefix mangled: %q != %q", got, fake)
 	}
 	select {
 	case conn := <-m.http.ch:
-		t.Fatalf("fake handshake leaked to http side: %v", conn.RemoteAddr())
-	case conn := <-m.torrent.ch:
-		t.Fatalf("fake handshake leaked to torrent side: %v", conn.RemoteAddr())
-	case <-time.After(150 * time.Millisecond):
+		t.Fatalf("obscured handshake leaked to http side: %v", conn.RemoteAddr())
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestMuxRoutesNoiseToTorrent(t *testing.T) {
+	m, addr := startTestMux(t)
+	c := dial(t, addr)
+	// An MSE handshake can begin with any byte; only a positive HTTP
+	// method match may claim a connection for the web side.
+	noise := []byte{0x99, 0x00, 0x42, 0x13, 0x77}
+	if _, err := c.Write(noise); err != nil {
+		t.Fatal(err)
+	}
+	srv := acceptWithin(t, m.torrent, 2*time.Second)
+	got := make([]byte, len(noise))
+	if _, err := io.ReadFull(srv, got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, noise) {
+		t.Fatalf("prefix mangled: %v != %v", got, noise)
 	}
 }
 

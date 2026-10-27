@@ -144,9 +144,9 @@ func (s *Server) recoveryHashes() []string {
 	return out
 }
 
-func (s *Server) saveRecoveryHashes(h []string) {
+func (s *Server) saveRecoveryHashes(h []string) error {
 	b, _ := json.Marshal(h)
-	s.store.SetSetting("totp_recovery", string(b))
+	return s.store.SetSetting("totp_recovery", string(b))
 }
 
 func (s *Server) checkPassword(pw string) bool {
@@ -170,7 +170,11 @@ func (s *Server) checkSecondFactor(code string) bool {
 		if step <= last {
 			return false
 		}
-		s.store.SetSetting("totp_last_step", strconv.FormatInt(step, 10))
+		// If the consumed step cannot be persisted, the one-use guarantee
+		// cannot be kept — fail closed rather than accept a replayable code.
+		if err := s.store.SetSetting("totp_last_step", strconv.FormatInt(step, 10)); err != nil {
+			return false
+		}
 		return true
 	}
 	norm := strings.ToUpper(strings.TrimSpace(code))
@@ -181,7 +185,11 @@ func (s *Server) checkSecondFactor(code string) bool {
 	hashes := s.recoveryHashes()
 	for i, h := range hashes {
 		if subtle.ConstantTimeCompare([]byte(h), []byte(want)) == 1 {
-			s.saveRecoveryHashes(append(hashes[:i:i], hashes[i+1:]...))
+			// Same one-use rule as TOTP: if removing the spent code
+			// cannot be persisted, do not accept it.
+			if err := s.saveRecoveryHashes(append(hashes[:i:i], hashes[i+1:]...)); err != nil {
+				return false
+			}
 			return true
 		}
 	}

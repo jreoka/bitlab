@@ -46,12 +46,13 @@ type Server struct {
 	log        *log.Logger
 	start      time.Time
 	sessionKey []byte
-	bytesOut   int64
-	hints      sync.Map // infohash -> []string trackers, learned from search results
+	readahead  atomic.Int64 // live read-ahead size; cfg holds the boot value
+	hints      sync.Map     // infohash -> []string trackers, learned from search results
 	hintN      atomic.Int64
 	totpMu     sync.Mutex
 	ixCache    sync.Map // indexer+query -> cached results for a few minutes
 	epCache    sync.Map // imdb id -> ordered [season, episode] pairs
+	epN        atomic.Int64
 }
 
 // ---- addon protocol types ----
@@ -399,6 +400,19 @@ func truncate(s string, n int) string {
 	return s[:n]
 }
 
+// storeEpisodeList caches an IMDb id's episode list. The map is a cache,
+// not an archive: like the tracker hints, it is cleared when it grows past
+// a bound instead of accumulating an entry for every title ever resolved.
+func (s *Server) storeEpisodeList(imdbID string, eps [][2]int) {
+	if _, ok := s.epCache.Load(imdbID); !ok {
+		if s.epN.Add(1) > 4096 {
+			s.epCache.Clear()
+			s.epN.Store(1)
+		}
+	}
+	s.epCache.Store(imdbID, eps)
+}
+
 // resolveMeta looks up a title for an IMDb id via Cinemeta (Stremio's public catalogue).
 func (s *Server) resolveMeta(ctx context.Context, typ, imdbID string) (string, int, error) {
 	ck := "meta2:" + typ + ":" + imdbID
@@ -409,7 +423,7 @@ func (s *Server) resolveMeta(ctx context.Context, typ, imdbID string) (string, i
 			Eps  [][2]int `json:"eps"`
 		}
 		if json.Unmarshal([]byte(v), &m) == nil && m.Name != "" {
-			s.epCache.Store(imdbID, m.Eps)
+			s.storeEpisodeList(imdbID, m.Eps)
 			return m.Name, m.Year, nil
 		}
 	}
@@ -467,7 +481,7 @@ func (s *Server) resolveMeta(ctx context.Context, typ, imdbID string) (string, i
 		}
 		return eps[i][1] < eps[j][1]
 	})
-	s.epCache.Store(imdbID, eps)
+	s.storeEpisodeList(imdbID, eps)
 	b, _ := json.Marshal(map[string]any{"name": name, "year": year, "eps": eps})
 	s.store.CacheMeta(ck, string(b), 30*24*time.Hour)
 	return name, year, nil
