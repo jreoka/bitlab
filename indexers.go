@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -72,9 +73,11 @@ func (s *Server) searchAll(ctx context.Context, queries []string, typ string, se
 	// (romaji, English, synonyms) because release titles use any of them.
 	// Small indexers rate-limit hard (nyaa answers 429), so they get fewer.
 	ch := make(chan out, len(enabled)*len(queries))
+	launched := map[string]int{}
 	var wg sync.WaitGroup
 	for _, ix := range enabled {
 		for _, q := range queriesFor(ix.Kind, queries) {
+			launched[ix.Name]++
 			wg.Add(1)
 			go func(ix Indexer, q string) {
 				defer wg.Done()
@@ -85,27 +88,56 @@ func (s *Server) searchAll(ctx context.Context, queries []string, typ string, se
 			}(ix, q)
 		}
 	}
-	wg.Wait()
-	close(ch)
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	// The list is worth more fast than complete: sources still out at the
+	// soft deadline are cut off (their goroutines finish into the buffered
+	// channel on their own timeouts and are simply never read), and the
+	// log names them, so a source that starts stalling shows up instead of
+	// silently taxing every click.
+	deadline := time.NewTimer(searchSoftDeadline)
+	select {
+	case <-done:
+		deadline.Stop()
+	case <-deadline.C:
+	}
 
 	var all []Result
 	var errs []string
 	seen := map[string]bool{}
-	for o := range ch {
-		if o.err != nil {
-			errs = append(errs, o.name+": "+o.err.Error())
-			continue
-		}
-		for _, r := range o.res {
-			if r.InfoHash == "" || seen[r.InfoHash] {
-				if seen[r.InfoHash] {
-					continue
-				}
+	received := map[string]int{}
+drain:
+	for {
+		select {
+		case o := <-ch:
+			received[o.name]++
+			if o.err != nil {
+				errs = append(errs, o.name+": "+o.err.Error())
 				continue
 			}
-			seen[r.InfoHash] = true
-			all = append(all, r)
+			for _, r := range o.res {
+				if r.InfoHash == "" || seen[r.InfoHash] {
+					if seen[r.InfoHash] {
+						continue
+					}
+					continue
+				}
+				seen[r.InfoHash] = true
+				all = append(all, r)
+			}
+		default:
+			break drain
 		}
+	}
+	var slow []string
+	for name, n := range launched {
+		if received[name] < n {
+			slow = append(slow, name)
+		}
+	}
+	if len(slow) > 0 {
+		sort.Strings(slow)
+		s.log.Printf("search: answered without %s (still pending at %s)", strings.Join(slow, ", "), searchSoftDeadline)
 	}
 	for i := range all {
 		all[i].Score = scoreResult(all[i], typ, season, ep)
@@ -146,10 +178,16 @@ func dropDead(rs []Result) []Result {
 	return live
 }
 
-// indexerTimeout bounds how long one source may hold up the whole list. The
-// search waits for every goroutine, so a stalled source delays the player;
-// AnimeTosho is the only one seen to answer in either 0.1s or 15s+, so it gets
-// the shortest leash.
+// searchSoftDeadline caps how long a search waits for stragglers. The
+// per-kind timeouts below still bound each source's goroutine, but the
+// player-facing list stops waiting at this deadline and answers with
+// whatever has arrived. A var so tests can shrink it.
+var searchSoftDeadline = 5 * time.Second
+
+// indexerTimeout bounds one source's goroutine. A stalled source used to
+// delay the player for its full timeout; the soft deadline caps that now,
+// and these remain the hard bounds. AnimeTosho is the only one seen to
+// answer in either 0.1s or 15s+, so it gets the shortest leash.
 func indexerTimeout(kind string) time.Duration {
 	switch kind {
 	case "animetosho":
