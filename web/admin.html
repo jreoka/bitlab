@@ -424,6 +424,13 @@ tr:last-child td{border-bottom:0}
             <tbody id="torrents"></tbody>
           </table>
         </div>
+        <div class="pager hidden" id="t-pager">
+          <span class="where" id="t-count"></span>
+          <span class="spacer"></span>
+          <button id="t-prev" onclick="torPage(-1)">← Prev</button>
+          <span class="where" id="t-page"></span>
+          <button id="t-next" onclick="torPage(1)">Next →</button>
+        </div>
       </div>
     </section>
 
@@ -470,6 +477,13 @@ tr:last-child td{border-bottom:0}
             <tbody id="sessions"></tbody>
           </table>
         </div>
+        <div class="pager hidden" id="ss-pager">
+          <span class="where" id="ss-count"></span>
+          <span class="spacer"></span>
+          <button id="ss-prev" onclick="sessPage(-1)">← Prev</button>
+          <span class="where" id="ss-page"></span>
+          <button id="ss-next" onclick="sessPage(1)">Next →</button>
+        </div>
         <div class="mt"><button class="danger" onclick="revokeOthers()">Sign out everywhere else</button></div>
       </div>
     </section>
@@ -492,7 +506,7 @@ tr:last-child td{border-bottom:0}
 </div>
 
 <script>
-let state = {overview:null, security:null, keysQ:'', keysStatus:'all', keysPage:1, keysPer:25, keysTotal:0};
+let state = {overview:null, security:null, keysQ:'', keysStatus:'all', keysPage:1, keysPer:25, keysTotal:0, torPage:1, torPer:25, sessPage:1, sessPer:25};
 const $ = s => document.querySelector(s);
 const esc = s => String(s??'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
@@ -742,11 +756,17 @@ function renderKeys(keys, base){
 
 function renderTorrents(list){
   const tb = $('#torrents');
+  const pager = $('#t-pager');
   if (!list || !list.length){
     tb.innerHTML = '<tr><td colspan="5" class="empty">Nothing loaded right now.</td></tr>';
+    pager.classList.add('hidden');
     return;
   }
-  tb.innerHTML = list.map(t => {
+  const pages = Math.max(1, Math.ceil(list.length / state.torPer));
+  if (state.torPage > pages) state.torPage = pages;
+  const from = (state.torPage - 1) * state.torPer;
+  const pageItems = list.slice(from, from + state.torPer);
+  tb.innerHTML = pageItems.map(t => {
     const pct = Math.round((t.progress||0)*100);
     return `<tr>
       <td class="cell-main"><div class="tor-name">${esc(t.name||t.infohash.slice(0,10))}</div>
@@ -756,6 +776,18 @@ function renderTorrents(list){
       <td data-label="Rate"><div class="cell-v num">${t.rate ? bytes(t.rate)+'/s' : '—'}</div></td>
       <td data-label="Readers"><div class="cell-v num">${t.readers ? '<span class="ok">'+t.readers+'</span>' : '<span class="muted">0</span>'}</div></td></tr>`;
   }).join('');
+  pager.classList.toggle('hidden', pages <= 1);
+  $('#t-count').textContent = (from + 1) + '\u2013' + Math.min(from + state.torPer, list.length) + ' of ' + list.length;
+  $('#t-page').textContent = 'page ' + state.torPage + ' / ' + pages;
+  $('#t-prev').disabled = state.torPage <= 1;
+  $('#t-next').disabled = state.torPage >= pages;
+}
+
+function torPage(delta){
+  const next = state.torPage + delta;
+  if (next < 1) return;
+  state.torPage = next;
+  renderTorrents((state.overview && state.overview.torrents) || []);
 }
 
 /* ---- keys ---- */
@@ -794,16 +826,45 @@ async function loadSecurity(){
     $('#tfa-on').classList.toggle('hidden', !s.two_factor);
     $('#tfa-setup').classList.add('hidden');
     if (s.two_factor) $('#recovery-left').textContent = s.recovery_left + ' recovery codes left';
-    const tb = $('#sessions');
-    tb.innerHTML = (s.sessions||[]).map(x => `<tr>
+    renderSessions();
+  } catch(e){ toast(e.message, true); }
+}
+function renderSessions(){
+  const s = state.security;
+  if (!s) return;
+  const list = s.sessions || [];
+  const tb = $('#sessions');
+  const pager = $('#ss-pager');
+  if (!list.length){
+    tb.innerHTML = '<tr><td colspan="5" class="empty">No sessions.</td></tr>';
+    pager.classList.add('hidden');
+    return;
+  }
+  const pages = Math.max(1, Math.ceil(list.length / state.sessPer));
+  if (state.sessPage > pages) state.sessPage = pages;
+  const from = (state.sessPage - 1) * state.sessPer;
+  const pageItems = list.slice(from, from + state.sessPer);
+  tb.innerHTML = pageItems.map(x => `<tr>
       <td class="cell-main"><b>${esc(x.name||'Browser')}</b>${x.id===s.current?'<span class="tag">this device</span>':''}</td>
       <td data-label="IP"><span class="tiny muted mono">${esc(x.ip||'—')}</span></td>
       <td data-label="Last seen"><span class="tiny muted">${ago(x.last_seen_at)}</span></td>
       <td data-label="Started"><span class="tiny muted">${when(x.created_at)}</span></td>
       <td class="cell-action"><div class="key-actions" style="justify-content:flex-end">${x.id===s.current?'':'<button class="ghost" onclick="revokeSession(\''+x.id+'\')">Revoke</button>'}</div></td>
-    </tr>`).join('') || '<tr><td colspan="5" class="empty">No sessions.</td></tr>';
-  } catch(e){ toast(e.message, true); }
+    </tr>`).join('');
+  pager.classList.toggle('hidden', pages <= 1);
+  $('#ss-count').textContent = (from + 1) + '\u2013' + Math.min(from + state.sessPer, list.length) + ' of ' + list.length;
+  $('#ss-page').textContent = 'page ' + state.sessPage + ' / ' + pages;
+  $('#ss-prev').disabled = state.sessPage <= 1;
+  $('#ss-next').disabled = state.sessPage >= pages;
 }
+
+function sessPage(delta){
+  const next = state.sessPage + delta;
+  if (next < 1) return;
+  state.sessPage = next;
+  renderSessions();
+}
+
 // The admin password is asked once, when setup begins (the server checks
 // it before issuing the QR code). It is held in page memory only for the
 // duration of the setup flow so enabling does not ask a second time — the
