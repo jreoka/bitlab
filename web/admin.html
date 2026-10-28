@@ -147,7 +147,8 @@ label{display:block;font-size:11px;color:var(--faint);margin:0 0 5px;letter-spac
 .key-sub .sep{opacity:.45}
 .idtag{font-size:11px;color:#7c828c}
 .urlrow{display:flex;align-items:center;gap:6px;margin-top:9px}
-.urlbox{flex:1;min-width:0;font-size:12px;color:var(--dim);background:var(--bg);border:1px solid var(--line-soft);border-radius:4px;padding:7px 9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.urlbox{flex:1;min-width:0;font-size:12px;color:var(--dim);background:var(--bg);border:1px solid var(--line-soft);border-radius:4px;padding:7px 9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.urlbox.blurred{filter:blur(4px);user-select:none}
 .key-actions{display:flex;gap:0;flex:none}
 .key-stats{display:flex;gap:28px;margin-top:10px}
 .key-stats .k{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);font-weight:600}
@@ -506,7 +507,7 @@ tr:last-child td{border-bottom:0}
 </div>
 
 <script>
-let state = {overview:null, security:null, keysQ:'', keysStatus:'all', keysPage:1, keysPer:25, keysTotal:0, torPage:1, torPer:25, sessPage:1, sessPer:25};
+let state = {overview:null, security:null, keysQ:'', keysStatus:'all', keysPage:1, keysPer:25, keysTotal:0, torPage:1, torPer:25, sessPage:1, sessPer:25, revealedKeys:new Set()};
 const $ = s => document.querySelector(s);
 const esc = s => String(s??'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
@@ -742,7 +743,7 @@ function renderKeys(keys, base){
       </div>
       <div class="key-sub">${esc(k.note || 'no note')}<span class="sep">·</span>${expiry(k.expires_at)}</div>
       <div class="urlrow">
-        <code class="urlbox" title="${esc(url)}">${esc(url)}</code>
+        <code class="urlbox${state.revealedKeys.has(k.id) ? '' : ' blurred'}" data-id="${esc(k.id)}" title="${state.revealedKeys.has(k.id) ? 'Click to hide the manifest URL' : 'Click to reveal the manifest URL'}" onclick="toggleUrl(this)">${esc(url)}</code>
         <button class="icon" title="Copy manifest URL" data-url="${esc(url)}" onclick="copyUrl(this,this.dataset.url)">${ICON.copy}</button>
       </div>
       <div class="key-stats">
@@ -752,6 +753,13 @@ function renderKeys(keys, base){
       </div>
     </div>`;
   }).join('');
+}
+
+function toggleUrl(el){
+  const id = el.dataset.id;
+  const blurred = el.classList.toggle('blurred');
+  if (blurred) state.revealedKeys.delete(id); else state.revealedKeys.add(id);
+  el.title = blurred ? 'Click to reveal the manifest URL' : 'Click to hide the manifest URL';
 }
 
 function renderTorrents(list){
