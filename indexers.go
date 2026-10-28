@@ -104,7 +104,7 @@ func (s *Server) searchAll(ctx context.Context, queries []string, typ string, se
 
 	var all []Result
 	var errs []string
-	seen := map[string]bool{}
+	seen := map[string]int{} // infohash -> index into all
 	received := map[string]int{}
 drain:
 	for {
@@ -116,13 +116,21 @@ drain:
 				continue
 			}
 			for _, r := range o.res {
-				if r.InfoHash == "" || seen[r.InfoHash] {
-					if seen[r.InfoHash] {
-						continue
+				if r.InfoHash == "" {
+					continue
+				}
+				// The same release comes back from several sources with
+				// wildly different swarm counts (YTS caps its report at
+				// 100), so a duplicate replaces the stored copy when it
+				// reports more seeders — first-arrival-wins let the
+				// fastest source's capped count hide the real swarm.
+				if i, dup := seen[r.InfoHash]; dup {
+					if r.Seeders > all[i].Seeders {
+						all[i] = r
 					}
 					continue
 				}
-				seen[r.InfoHash] = true
+				seen[r.InfoHash] = len(all)
 				all = append(all, r)
 			}
 		default:
