@@ -148,7 +148,8 @@ label{display:block;font-size:11px;color:var(--faint);margin:0 0 5px;letter-spac
 .idtag{font-size:11px;color:#7c828c}
 .urlrow{display:flex;align-items:center;gap:6px;margin-top:9px}
 .urlbox{flex:1;min-width:0;font-size:12px;color:var(--dim);background:var(--bg);border:1px solid var(--line-soft);border-radius:4px;padding:7px 9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
-.urlbox.blurred{filter:blur(4px);user-select:none}
+.urlbox:hover{border-color:#2e343d}
+.urlbox.masked{color:var(--faint);user-select:none;letter-spacing:.02em}
 .key-actions{display:flex;gap:0;flex:none}
 .key-stats{display:flex;gap:28px;margin-top:10px}
 .key-stats .k{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);font-weight:600}
@@ -514,6 +515,8 @@ const esc = s => String(s??'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;'
 const ICON = {
   copy:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M5 15H4.5A1.5 1.5 0 0 1 3 13.5v-9A1.5 1.5 0 0 1 4.5 3h9A1.5 1.5 0 0 1 15 4.5V5"/></svg>',
   check:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+  eye:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>',
+  eyeOff:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.7 5.1A10.4 10.4 0 0 1 12 5c6.5 0 10 7 10 7a13.4 13.4 0 0 1-2.7 3.4M6.6 6.6A13.7 13.7 0 0 0 2 12s3.5 7 10 7a9.9 9.9 0 0 0 5.4-1.6"/><path d="m2 2 20 20"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>',
   pause:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M9 5v14M15 5v14"/></svg>',
   play:'<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg>',
   trash:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4.5A1.5 1.5 0 0 1 9.5 3h5A1.5 1.5 0 0 1 16 4.5V6m2.5 0 .8 13.1A1.9 1.9 0 0 1 17.4 21H6.6a1.9 1.9 0 0 1-1.9-1.9L5.5 6"/></svg>',
@@ -728,6 +731,8 @@ function renderKeys(keys, base){
   const origin = base || location.origin;
   box.innerHTML = keys.map(k => {
     const url = origin + '/k/' + k.token + '/manifest.json';
+    const masked = origin + '/k/••••••••••••/manifest.json';
+    const revealed = state.revealedKeys.has(k.id);
     const expired = k.expires_at && k.expires_at*1000 < Date.now();
     const paused = k.status === 'paused';
     const dot = expired ? 'dot expired' : paused ? 'dot paused' : 'dot';
@@ -743,7 +748,8 @@ function renderKeys(keys, base){
       </div>
       <div class="key-sub">${esc(k.note || 'no note')}<span class="sep">·</span>${expiry(k.expires_at)}</div>
       <div class="urlrow">
-        <code class="urlbox${state.revealedKeys.has(k.id) ? '' : ' blurred'}" data-id="${esc(k.id)}" title="${state.revealedKeys.has(k.id) ? 'Click to hide the manifest URL' : 'Click to reveal the manifest URL'}" onclick="toggleUrl(this)">${esc(url)}</code>
+        <code class="urlbox${revealed ? '' : ' masked'}" data-id="${esc(k.id)}" data-url="${esc(url)}" data-masked="${esc(masked)}" title="${revealed ? 'Click to hide the manifest URL' : 'Click to reveal the manifest URL'}" onclick="toggleUrl(this)">${esc(revealed ? url : masked)}</code>
+        <button class="icon url-toggle" title="${revealed ? 'Hide manifest URL' : 'Show manifest URL'}" aria-label="${revealed ? 'Hide manifest URL' : 'Show manifest URL'}" aria-pressed="${revealed}" data-id="${esc(k.id)}" onclick="toggleUrl(this)">${revealed ? ICON.eyeOff : ICON.eye}</button>
         <button class="icon" title="Copy manifest URL" data-url="${esc(url)}" onclick="copyUrl(this,this.dataset.url)">${ICON.copy}</button>
       </div>
       <div class="key-stats">
@@ -756,10 +762,24 @@ function renderKeys(keys, base){
 }
 
 function toggleUrl(el){
-  const id = el.dataset.id;
-  const blurred = el.classList.toggle('blurred');
-  if (blurred) state.revealedKeys.delete(id); else state.revealedKeys.add(id);
-  el.title = blurred ? 'Click to reveal the manifest URL' : 'Click to hide the manifest URL';
+  const row = el.closest('.urlrow');
+  if (!row) return;
+  const box = row.querySelector('.urlbox');
+  const btn = row.querySelector('.url-toggle');
+  const id = (box && box.dataset.id) || el.dataset.id;
+  const revealed = !state.revealedKeys.has(id);
+  if (revealed) state.revealedKeys.add(id); else state.revealedKeys.delete(id);
+  if (box){
+    box.textContent = revealed ? box.dataset.url : box.dataset.masked;
+    box.classList.toggle('masked', !revealed);
+    box.title = revealed ? 'Click to hide the manifest URL' : 'Click to reveal the manifest URL';
+  }
+  if (btn){
+    btn.innerHTML = revealed ? ICON.eyeOff : ICON.eye;
+    btn.title = revealed ? 'Hide manifest URL' : 'Show manifest URL';
+    btn.setAttribute('aria-label', btn.title);
+    btn.setAttribute('aria-pressed', String(revealed));
+  }
 }
 
 function renderTorrents(list){
