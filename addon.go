@@ -36,6 +36,7 @@ type Config struct {
 	Indexers          []Indexer
 	AdminPassword     string
 	TrustProxy        bool
+	WireGuardConf     string
 }
 
 type Server struct {

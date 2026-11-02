@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"mime"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -21,6 +22,7 @@ import (
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/anacrolix/torrent/storage"
+	"github.com/anacrolix/utp"
 )
 
 type activity struct {
@@ -61,11 +63,13 @@ type Engine struct {
 	// storageCloser is nil unless the platform supplies its own storage; the
 	// torrent client closes the default one itself.
 	storageCloser io.Closer
+	wgTunnel      *WireGuardTunnel
+	wgClosers     []io.Closer
 }
 
 // baseClientConfig builds the torrent client configuration from the static
 // config. Storage and the final data dir are layered on by NewEngine.
-func baseClientConfig(cfg Config) *torrent.ClientConfig {
+func baseClientConfig(cfg Config, wg ...*WireGuardTunnel) *torrent.ClientConfig {
 	cc := torrent.NewDefaultClientConfig()
 	cc.DataDir = cfg.DataDir
 	cc.Seed = false
@@ -76,29 +80,70 @@ func baseClientConfig(cfg Config) *torrent.ClientConfig {
 	cc.HalfOpenConnsPerTorrent = 100
 	cc.DisableWebtorrent = false
 	cc.DisablePEX = false
-	allowPrivate := os.Getenv("BITLAB_ALLOW_PRIVATE_INDEXERS") == "1"
-	// Trackers and metainfo sources are attacker-influenced URLs; they must not
-	// become a path to the pod network or cloud metadata.
-	cc.TrackerDialContext = guardedDialContext(allowPrivate)
+	var tunnel *WireGuardTunnel
+	if len(wg) > 0 && wg[0] != nil {
+		tunnel = wg[0]
+	}
 
-	cc.MetainfoSourcesClient = &http.Client{
-		Timeout:   30 * time.Second,
-		Transport: guardedTransport(allowPrivate),
+	if tunnel != nil {
+		tnet := tunnel.Net
+		cc.TrackerDialContext = tnet.DialContext
+		cc.HTTPDialContext = tnet.DialContext
+		cc.MetainfoSourcesClient = &http.Client{
+			Timeout:   30 * time.Second,
+			Transport: &http.Transport{DialContext: tnet.DialContext},
+		}
+		cc.TrackerListenPacket = func(network, addr string) (net.PacketConn, error) {
+			return tunnel.ListenUDP(0)
+		}
+		cc.DisableTCP = true
+		cc.DisableUTP = true
+		cc.NoDHT = true
+		cc.NoDefaultPortForwarding = true
+		cc.DialForPeerConns = false
+		cc.ListenPort = 0
+	} else {
+		allowPrivate := os.Getenv("BITLAB_ALLOW_PRIVATE_INDEXERS") == "1"
+		// Trackers and metainfo sources are attacker-influenced URLs; they must not
+		// become a path to the pod network or cloud metadata.
+		cc.TrackerDialContext = guardedDialContext(allowPrivate)
+
+		cc.MetainfoSourcesClient = &http.Client{
+			Timeout:   30 * time.Second,
+			Transport: guardedTransport(allowPrivate),
+		}
 	}
 	return cc
 }
 
+
 func NewEngine(cfg Config, store *Store, lg *log.Logger) (*Engine, error) {
-	cc := baseClientConfig(cfg)
+	var wgTunnel *WireGuardTunnel
+	if cfg.WireGuardConf != "" {
+		var err error
+		wgTunnel, err = StartWireGuard(cfg.WireGuardConf, lg)
+		if err != nil {
+			return nil, fmt.Errorf("wireguard: %w", err)
+		}
+		lg.Printf("wireguard tunnel active (local IPs: %v)", wgTunnel.LocalIPs)
+	}
+
+	cc := baseClientConfig(cfg, wgTunnel)
 	// Media lives in its own subdirectory. The engine state (bitlab.db and,
 	// without an env password, ADMIN_PASSWORD) stays in DataDir, so a torrent
 	// file named "bitlab.db" can never resolve to it.
 	mediaDir := filepath.Join(cfg.DataDir, "media")
 	if err := os.MkdirAll(mediaDir, 0o700); err != nil {
+		if wgTunnel != nil {
+			_ = wgTunnel.Close()
+		}
 		return nil, err
 	}
 	_ = os.Chmod(mediaDir, 0o700)
 	if err := migrateCacheRoot(cfg.DataDir, mediaDir); err != nil {
+		if wgTunnel != nil {
+			_ = wgTunnel.Close()
+		}
 		return nil, err
 	}
 	cc.DataDir = mediaDir
@@ -116,11 +161,60 @@ func NewEngine(cfg Config, store *Store, lg *log.Logger) (*Engine, error) {
 		if storageCloser != nil {
 			storageCloser.Close()
 		}
+		if wgTunnel != nil {
+			_ = wgTunnel.Close()
+		}
 		return nil, fmt.Errorf("torrent client: %w", err)
 	}
+
+	var wgClosers []io.Closer
+	if wgTunnel != nil {
+		tnet := wgTunnel.Net
+		cl.AddDialer(&netstackDialer{tnet: tnet, network: "tcp"})
+
+		tcpLn, err := wgTunnel.ListenTCP(cfg.TorrentPort)
+		if err != nil {
+			lg.Printf("wireguard tcp listen: %v", err)
+		} else {
+			cl.AddListener(tcpLn)
+			wgClosers = append(wgClosers, tcpLn)
+		}
+
+		udpConn, err := wgTunnel.ListenUDP(cfg.TorrentPort)
+		if err != nil {
+			lg.Printf("wireguard udp listen: %v", err)
+		} else {
+			utpSock, err := utp.NewSocketFromPacketConn(udpConn)
+			if err != nil {
+				lg.Printf("wireguard utp socket: %v", err)
+				_ = udpConn.Close()
+			} else {
+				cl.AddDialer(&utpDialer{sock: utpSock})
+				cl.AddListener(utpSock)
+				wgClosers = append(wgClosers, utpSock)
+			}
+		}
+
+		dhtConn, err := wgTunnel.ListenUDP(0)
+		if err != nil {
+			lg.Printf("wireguard dht listen: %v", err)
+		} else {
+			ds, err := cl.NewAnacrolixDhtServer(dhtConn)
+			if err != nil {
+				lg.Printf("wireguard dht server: %v", err)
+				_ = dhtConn.Close()
+			} else {
+				cl.AddDhtServer(torrent.AnacrolixDhtServerWrapper{Server: ds})
+				wgClosers = append(wgClosers, dhtCloser{ds: ds, conn: dhtConn})
+			}
+		}
+	}
+
 	e := &Engine{
 		cl:            cl,
 		storageCloser: storageCloser,
+		wgTunnel:      wgTunnel,
+		wgClosers:     wgClosers,
 		dataDir:       mediaDir,
 		trackers:      cfg.Trackers,
 		store:         store,
@@ -146,11 +240,21 @@ func (e *Engine) Close() {
 	e.closed = true
 	e.mu.Unlock()
 	e.cl.Close()
+	for _, c := range e.wgClosers {
+		_ = c.Close()
+	}
+	if e.wgTunnel != nil {
+		_ = e.wgTunnel.Close()
+	}
 	if e.storageCloser != nil {
 		if err := e.storageCloser.Close(); err != nil {
 			e.log.Printf("close storage: %v", err)
 		}
 	}
+}
+
+func (e *Engine) HasWireGuard() bool {
+	return e.wgTunnel != nil
 }
 
 // AddPeerListener registers an extra inbound peer listener with the torrent

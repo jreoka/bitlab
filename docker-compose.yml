@@ -13,6 +13,7 @@ services:
       BITLAB_BASE_URL: ${BITLAB_BASE_URL:-}
       BITLAB_CACHE_GB: ${BITLAB_CACHE_GB:-40}
       BITLAB_IDLE_MINUTES: ${BITLAB_IDLE_MINUTES:-20}
+      BITLAB_WG_CONF: ${BITLAB_WG_CONF:-}
     volumes:
       - ./data:/data
     read_only: true

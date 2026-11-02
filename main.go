@@ -70,6 +70,23 @@ func envIntClamped(k string, def, lo, hi int) int {
 	return n
 }
 
+func parseFlags() string {
+	for i := 1; i < len(os.Args); i++ {
+		arg := os.Args[i]
+		if arg == "-wg-conf" || arg == "--wg-conf" || arg == "-wireguard-conf" || arg == "--wireguard-conf" {
+			if i+1 < len(os.Args) {
+				return os.Args[i+1]
+			}
+		}
+		for _, prefix := range []string{"-wg-conf=", "--wg-conf=", "-wireguard-conf=", "--wireguard-conf="} {
+			if strings.HasPrefix(arg, prefix) {
+				return strings.TrimPrefix(arg, prefix)
+			}
+		}
+	}
+	return ""
+}
+
 func loadConfig() Config {
 	dataDir := env("BITLAB_DATA", "./data")
 	cfg := Config{
@@ -105,6 +122,15 @@ func loadConfig() Config {
 	}
 	if len(cfg.Trackers) == 0 {
 		cfg.Trackers = defaultTrackers
+	}
+	rawWG := parseFlags()
+	if rawWG == "" {
+		rawWG = env("BITLAB_WG_CONF", env("BITLAB_WIREGUARD_CONF", ""))
+	}
+	if wgConf, err := loadWireGuardConf(rawWG, dataDir); err == nil && wgConf != "" {
+		cfg.WireGuardConf = wgConf
+	} else if err != nil {
+		fmt.Fprintf(os.Stderr, "wireguard conf: %v\n", err)
 	}
 	return cfg
 }
@@ -313,7 +339,12 @@ func main() {
 		// arrive and nothing needs to change — the client was unreachable
 		// there either way.
 		pm := newPortMux(ln)
-		eng.AddPeerListener(pm.TorrentListener())
+		if eng.HasWireGuard() {
+			lg.Printf("wireguard: active, routing bittorrent traffic through wireguard tunnel")
+			pm.TorrentListener().Close()
+		} else {
+			eng.AddPeerListener(pm.TorrentListener())
+		}
 		go pm.Serve()
 		if err := srv.Serve(pm.HTTPListener()); err != nil && err != http.ErrServerClosed {
 			lg.Fatalf("listen: %v", err)
