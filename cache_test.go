@@ -254,3 +254,39 @@ func TestSweepCacheEvictsPartialsUnderBudget(t *testing.T) {
 		t.Fatalf("stats wrong after eviction: %+v", e.stats)
 	}
 }
+
+
+func TestMigrateCacheRootPreservesWireGuard(t *testing.T) {
+	root := t.TempDir()
+	media := filepath.Join(root, "media")
+	if err := os.MkdirAll(media, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	keepFiles := []string{"wireguard.conf", "wg0.conf", "bitlab.db", "ADMIN_PASSWORD"}
+	for _, f := range keepFiles {
+		if err := os.WriteFile(filepath.Join(root, f), []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "old-video.mkv"), []byte("video"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := migrateCacheRoot(root, media); err != nil {
+		t.Fatalf("migrateCacheRoot failed: %v", err)
+	}
+
+	for _, f := range keepFiles {
+		if _, err := os.Stat(filepath.Join(root, f)); err != nil {
+			t.Errorf("expected %s to remain in root: %v", f, err)
+		}
+		if _, err := os.Stat(filepath.Join(media, f)); !os.IsNotExist(err) {
+			t.Errorf("expected %s NOT to be moved to media", f)
+		}
+	}
+
+	if _, err := os.Stat(filepath.Join(media, "old-video.mkv")); err != nil {
+		t.Errorf("expected old-video.mkv to be migrated to media: %v", err)
+	}
+}

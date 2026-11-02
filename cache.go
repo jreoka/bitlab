@@ -62,7 +62,7 @@ type CacheStats struct {
 // media, so neither the budget nor the sweeper touches it.
 func cacheSkip(name string) bool {
 	switch name {
-	case "bitlab.db", "bitlab.db-wal", "bitlab.db-shm", "bitlab.db-journal", "ADMIN_PASSWORD", "lost+found":
+	case "bitlab.db", "bitlab.db-wal", "bitlab.db-shm", "bitlab.db-journal", "ADMIN_PASSWORD", "lost+found", "wireguard.conf", "wg0.conf":
 		return true
 	}
 	return name == "" || strings.HasPrefix(name, ".")
