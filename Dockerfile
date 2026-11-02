@@ -1,11 +1,13 @@
 # syntax=docker/dockerfile:1
-FROM golang:alpine AS build
+FROM --platform=$BUILDPLATFORM golang:alpine AS build
 WORKDIR /src
+ARG TARGETOS
+ARG TARGETARCH
 ENV CGO_ENABLED=0 GOFLAGS=-trimpath
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN go build -ldflags="-s -w" -o /out/bitlab .
+RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -ldflags="-s -w" -o /out/bitlab .
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata && adduser -D -u 65532 bitlab

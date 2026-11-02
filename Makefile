@@ -3,18 +3,22 @@ DIST := dist
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 GO ?= go
 LDFLAGS := -s -w
+DOCKER_IMAGE ?= ghcr.io/jreoka/bitlab
+DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
 # macOS ships shasum rather than sha256sum.
 SHA256 := $(shell command -v sha256sum >/dev/null 2>&1 && echo sha256sum || echo "shasum -a 256")
 
-.PHONY: build run test tidy docker dist clean help
+.PHONY: build run test tidy docker docker-amd64 docker-arm64 dist clean help
 
 help:
-	@echo "build   native binary for this machine"
-	@echo "test    go test ./..."
-	@echo "dist    linux/darwin/windows for amd64+arm64, plus SHA256SUMS"
-	@echo "run     build, then run out of ./data"
-	@echo "docker  linux container image"
-	@echo "clean   remove the native binary and dist/"
+	@echo "build         native binary for this machine"
+	@echo "test          go test ./..."
+	@echo "dist          linux/darwin/windows for amd64+arm64, plus SHA256SUMS"
+	@echo "run           build, then run out of ./data"
+	@echo "docker        multi-arch (amd64 + arm64) container image"
+	@echo "docker-amd64  linux/amd64 container image"
+	@echo "docker-arm64  linux/arm64 container image"
+	@echo "clean         remove the native binary and dist/"
 
 build:
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags="$(LDFLAGS)" -o $(BIN) .
@@ -41,7 +45,13 @@ dist:
 	@cd $(DIST) && $(SHA256) bitlab-* > SHA256SUMS && cat SHA256SUMS
 
 docker:
-	docker build -t ghcr.io/jreoka/bitlab:latest .
+	docker buildx build --platform $(DOCKER_PLATFORMS) -t $(DOCKER_IMAGE):latest .
+
+docker-amd64:
+	docker buildx build --platform linux/amd64 -t $(DOCKER_IMAGE):amd64 -t bitlab:amd64 .
+
+docker-arm64:
+	docker buildx build --platform linux/arm64 -t $(DOCKER_IMAGE):arm64 -t bitlab:arm64 .
 
 clean:
 	rm -f $(BIN)
