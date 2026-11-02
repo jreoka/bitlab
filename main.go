@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -113,13 +112,6 @@ func loadConfig() Config {
 			}
 		}
 	}
-	if raw := os.Getenv("BITLAB_INDEXERS"); raw != "" {
-		// Declarative indexer config, applied on every boot:
-		// [{"kind":"torznab","name":"prowlarr","url":"http://prowlarr:9696/1/api","api_key":"..."}]
-		if err := json.Unmarshal([]byte(raw), &cfg.Indexers); err != nil {
-			fmt.Fprintf(os.Stderr, "BITLAB_INDEXERS is not valid JSON: %v\n", err)
-		}
-	}
 	if len(cfg.Trackers) == 0 {
 		cfg.Trackers = defaultTrackers
 	}
@@ -165,68 +157,6 @@ func main() {
 	}
 	defer store.Close()
 
-	if len(cfg.Indexers) > 0 {
-		for _, ix := range cfg.Indexers {
-			ix.Enabled = true
-			if ix.Name == "" {
-				ix.Name = ix.Kind
-			}
-			if err := store.UpsertIndexerByName(ix); err != nil {
-				lg.Printf("indexer %q: %v", ix.Name, err)
-				continue
-			}
-			lg.Printf("indexer from BITLAB_INDEXERS: %s (%s)", ix.Name, ix.Kind)
-		}
-	}
-
-	// An explicit BITLAB_INDEXERS list is the whole configuration: do not add
-	// public defaults on top of it.
-	if len(cfg.Indexers) == 0 && env("BITLAB_SEED_INDEXER", "on") != "off" {
-		// knaben on first run, then the public extras once each: anime needs its
-		// own index, and EZTV/YTS carry TV and movie releases that knaben's
-		// single remaining TPB feed does not.
-		list, _ := store.ListIndexers()
-		if len(list) == 0 {
-			if _, err := store.SaveIndexer(Indexer{Kind: "knaben", Name: "knaben", Enabled: true}); err != nil {
-				lg.Printf("seed indexer: %v", err)
-			}
-		}
-		for _, def := range []Indexer{
-			{Kind: "nyaa", Name: "nyaa"},
-			{Kind: "eztv", Name: "eztv"},
-			{Kind: "yts", Name: "yts"},
-			{Kind: "animetosho", Name: "animetosho"},
-			// Torrentio aggregates the trackers the pod cannot reach directly
-			// (1337x, TGx, Rutracker, RARBG's cache) and is keyed on imdb ids.
-			{Kind: "torrentio", Name: "torrentio"},
-			// apibay is TPB's own API: a second, deeper view of the catalogue
-			// knaben already serves, worth having for older releases.
-			{Kind: "apibay", Name: "apibay"},
-		} {
-			key := "seeded:" + def.Kind
-			if store.GetSetting(key, "") != "" {
-				continue
-			}
-			have := false
-			for _, ix := range list {
-				if ix.Kind == def.Kind {
-					have = true
-				}
-			}
-			if !have {
-				def.Enabled = true
-				if _, err := store.SaveIndexer(def); err != nil {
-					// Do not mark it seeded: the flag would suppress the
-					// retry on every later boot and the indexer would
-					// stay silently missing.
-					lg.Printf("seed %s indexer: %v", def.Name, err)
-					continue
-				}
-				lg.Printf("added %s indexer for wider coverage", def.Name)
-			}
-			store.SetSetting(key, "1")
-		}
-	}
 
 	// Settings stored in the DB win over env defaults, so the UI is authoritative.
 	if v := store.GetSetting("cache_gb", ""); v != "" {
@@ -431,9 +361,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/api/keys", s.requireAdmin(s.handleCreateKey))
 	mux.HandleFunc("POST /admin/api/keys/{id}/pause", s.requireAdmin(s.handlePauseKey))
 	mux.HandleFunc("DELETE /admin/api/keys/{id}", s.requireAdmin(s.handleDeleteKey))
-	mux.HandleFunc("POST /admin/api/indexers", s.requireAdmin(s.handleSaveIndexer))
-	mux.HandleFunc("DELETE /admin/api/indexers/{id}", s.requireAdmin(s.handleDeleteIndexer))
-	mux.HandleFunc("POST /admin/api/indexers/test", s.requireAdmin(s.handleTestIndexer))
 	mux.HandleFunc("GET /admin/api/search", s.requireAdmin(s.handleSearch))
 	mux.HandleFunc("POST /admin/api/settings", s.requireAdmin(s.handleSettings))
 	mux.HandleFunc("GET /admin/api/security", s.requireAdmin(s.handleSecurity))

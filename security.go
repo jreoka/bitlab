@@ -70,11 +70,6 @@ func verifyTOTPStep(secret, code string) (int64, bool) {
 	return 0, false
 }
 
-func verifyTOTP(secret, code string) bool {
-	_, ok := verifyTOTPStep(secret, code)
-	return ok
-}
-
 func newTOTPSecret() string {
 	b := make([]byte, 20)
 	if _, err := crand.Read(b); err != nil {

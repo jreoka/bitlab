@@ -227,9 +227,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			queries = append(queries, withYear(forms[1], year))
 		}
 		aliases = s.animeAliases(ctx, lookup)
-		for _, f := range forms[1:] {
-			aliases = append(aliases, f) // the part is what releases say
-		}
+		aliases = append(aliases, forms[1:]...) // the part is what releases say
 		for i, alias := range aliases {
 			if i >= 2 {
 				break

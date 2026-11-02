@@ -268,18 +268,12 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		httpError(w, 500, "store unavailable")
 		return
 	}
-	ix, err := s.store.ListIndexers()
-	if err != nil {
-		s.log.Printf("overview: list indexers: %v", err)
-		httpError(w, 500, "store unavailable")
-		return
-	}
 	if keys == nil {
 		keys = []Key{}
 	}
-	if ix == nil {
-		ix = []Indexer{}
-	}
+	all := s.indexers()
+	ix := make([]Indexer, len(all))
+	copy(ix, all)
 	// The console never renders indexers; do not ship their credentials to
 	// every admin page load (and every XSS that reaches this endpoint).
 	for i := range ix {
@@ -392,77 +386,6 @@ func (s *Server) handleDeleteKey(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Printf("key %s revoked (deleted)", r.PathValue("id"))
 	writeJSON(w, 200, map[string]any{"ok": true})
-}
-
-func (s *Server) handleSaveIndexer(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		ID       string `json:"id"`
-		Kind     string `json:"kind"`
-		Name     string `json:"name"`
-		URL      string `json:"url"`
-		APIKey   string `json:"api_key"`
-		Enabled  *bool  `json:"enabled"`
-		Priority int    `json:"priority"`
-	}
-	if !decodeJSON(w, r, &body) {
-		return
-	}
-	ix := Indexer{ID: body.ID, Kind: body.Kind, Name: body.Name, URL: body.URL,
-		APIKey: body.APIKey, Priority: body.Priority, Enabled: true}
-	if body.Enabled != nil {
-		ix.Enabled = *body.Enabled
-	}
-	if ix.Name == "" {
-		ix.Name = "indexer"
-	}
-	if ix.URL != "" {
-		if err := checkOutboundURL(ix.URL); err != nil {
-			httpError(w, 400, err.Error())
-			return
-		}
-	}
-	out, err := s.store.SaveIndexer(ix)
-	if err != nil {
-		httpError(w, 500, err.Error())
-		return
-	}
-	writeJSON(w, 200, out)
-}
-
-func (s *Server) handleDeleteIndexer(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.DeleteIndexer(r.PathValue("id")); err != nil {
-		httpError(w, 500, err.Error())
-		return
-	}
-	writeJSON(w, 200, map[string]any{"ok": true})
-}
-
-func (s *Server) handleTestIndexer(w http.ResponseWriter, r *http.Request) {
-	var ix Indexer
-	if !decodeJSON(w, r, &ix) {
-		return
-	}
-	if ix.URL != "" {
-		if err := checkOutboundURL(ix.URL); err != nil {
-			httpError(w, 400, err.Error())
-			return
-		}
-	}
-	q := r.URL.Query().Get("q")
-	if q == "" {
-		q = "big buck bunny"
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-	defer cancel()
-	res, err := s.searchIndexer(ctx, ix, q, "movie", 0, 0, "")
-	if err != nil {
-		httpError(w, 200, err.Error())
-		return
-	}
-	if len(res) > 5 {
-		res = res[:5]
-	}
-	writeJSON(w, 200, map[string]any{"count": len(res), "results": res})
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {

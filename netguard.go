@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/url"
-	"strings"
 	"time"
 )
 
@@ -98,18 +96,3 @@ func guardedTransport(allowPrivate bool) *http.Transport {
 	return tr
 }
 
-// checkOutboundURL rejects URLs that are not plain web URLs or that point at a
-// literal private address. Name resolution is enforced by guardedTransport.
-func checkOutboundURL(raw string) error {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || u.Host == "" {
-		return fmt.Errorf("invalid URL")
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("only http and https URLs are allowed")
-	}
-	if ip := net.ParseIP(u.Hostname()); ip != nil && privateAddress(ip) {
-		return fmt.Errorf("private addresses are not allowed")
-	}
-	return nil
-}

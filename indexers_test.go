@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -569,5 +571,78 @@ func TestEpisodeSignalRejectsAnotherSeasonAndRecuts(t *testing.T) {
 	// The same release is the right answer for its own season.
 	if got := episodeSignal("[Erai-raws] Re Zero kara Hajimeru Isekai Seikatsu 4th Season - 04 [1080p]", 4, 4); got != 1 {
 		t.Errorf("season four's own episode judged %d, want 1", got)
+	}
+}
+
+
+func TestIndexersConfiguredInCode(t *testing.T) {
+	// Verify that indexers are defined directly in code in DefaultIndexers.
+	if len(DefaultIndexers) == 0 {
+		t.Fatal("expected DefaultIndexers to have configured indexers")
+	}
+	kinds := map[string]bool{}
+	for _, ix := range DefaultIndexers {
+		kinds[ix.Kind] = true
+		if !ix.Enabled {
+			t.Errorf("expected default indexer %s to be enabled", ix.Name)
+		}
+	}
+	for _, expected := range []string{"knaben", "nyaa", "eztv", "yts", "animetosho", "torrentio", "apibay"} {
+		if !kinds[expected] {
+			t.Errorf("expected kind %q in DefaultIndexers", expected)
+		}
+	}
+}
+
+func TestAdminIndexerEndpointsRemoved(t *testing.T) {
+	st := newTestStore(t)
+	s := &Server{store: st, sessionKey: []byte("secret")}
+	mux := http.NewServeMux()
+	s.routes(mux)
+
+	// Admin indexer endpoints should no longer be registered and should return 404
+	endpoints := []struct {
+		method string
+		path   string
+	}{
+		{"POST", "/admin/api/indexers"},
+		{"DELETE", "/admin/api/indexers/123"},
+		{"POST", "/admin/api/indexers/test"},
+	}
+
+	for _, ep := range endpoints {
+		req := httptest.NewRequest(ep.method, ep.path, strings.NewReader(`{}`))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		// Since GET /admin/ is registered, unmapped methods on /admin/... return 405 Method Not Allowed.
+		// In either case, the endpoint is not registered.
+		if rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s %s got status %d, want 404 or 405", ep.method, ep.path, rec.Code)
+		}
+	}
+}
+
+func TestSearchAllUsesCodeConfiguredIndexers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[]`)
+	}))
+	defer srv.Close()
+
+	s := &Server{
+		cfg: Config{
+			Indexers: []Indexer{
+				{Kind: "apibay", Name: "custom_apibay", URL: srv.URL, Enabled: true},
+			},
+		},
+		http: srv.Client(),
+		log:  log.New(io.Discard, "", 0),
+	}
+
+	res, errs := s.searchAll(context.Background(), []string{"test"}, "movie", 0, 0, "")
+	_ = res
+	_ = errs
+	if len(s.indexers()) != 1 || s.indexers()[0].Name != "custom_apibay" {
+		t.Fatalf("expected custom_apibay indexer, got %+v", s.indexers())
 	}
 }

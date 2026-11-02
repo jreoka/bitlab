@@ -29,7 +29,7 @@ func TestTOTPMatchesRFC6238(t *testing.T) {
 	if _, err := totpCode(secret, time.Unix(1111111109, 0)); err != nil {
 		t.Fatal(err)
 	}
-	if verifyTOTP(secret, "000000") && code != "000000" {
+	if _, ok := verifyTOTPStep(secret, "000000"); ok && code != "000000" {
 		t.Fatal("wrong code accepted")
 	}
 }

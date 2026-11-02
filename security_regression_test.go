@@ -198,24 +198,3 @@ func TestIndexerErrorRedactsAPIKey(t *testing.T) {
 		t.Fatalf("API key leaked: %v", err)
 	}
 }
-
-func TestOutboundURLRejectsPrivate(t *testing.T) {
-	for _, raw := range []string{
-		"http://127.0.0.1:8090/admin",
-		"http://169.254.169.254/latest/meta-data",
-		"http://10.0.0.1/",
-		"http://100.64.0.1:8080/",
-		"http://198.18.0.1/",
-		"http://192.0.0.1/",
-		"http://240.0.0.1/",
-		"file:///etc/passwd",
-		"gopher://example.com/",
-	} {
-		if err := checkOutboundURL(raw); err == nil {
-			t.Errorf("accepted %q", raw)
-		}
-	}
-	if err := checkOutboundURL("https://torrentio.strem.fun/x"); err != nil {
-		t.Errorf("public https rejected: %v", err)
-	}
-}

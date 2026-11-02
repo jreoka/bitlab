@@ -15,8 +15,6 @@ var (
 	ErrKeyNotFound     = errors.New("manifest key not recognised")
 	ErrKeyPaused       = errors.New("manifest key paused")
 	ErrKeyExpired      = errors.New("manifest key expired")
-	ErrNoKeys          = errors.New("no manifest keys exist")
-	ErrIndexerNotFound = errors.New("indexer not found")
 )
 
 // Key is a per-user manifest credential. Revoking deletes it outright;
@@ -45,17 +43,6 @@ type Session struct {
 	CreatedAt int64  `json:"created_at"`
 	LastSeen  int64  `json:"last_seen_at"`
 	ExpiresAt int64  `json:"expires_at"`
-}
-
-// Indexer is one configured search source.
-type Indexer struct {
-	ID       string `json:"id"`
-	Kind     string `json:"kind"` // torznab | knaben | nyaa | apibay | eztv | yts | animetosho
-	Name     string `json:"name"`
-	URL      string `json:"url"`
-	APIKey   string `json:"api_key,omitempty"`
-	Enabled  bool   `json:"enabled"`
-	Priority int    `json:"priority"`
 }
 
 // CachedFile is a file entry remembered from torrent metadata.
@@ -436,73 +423,6 @@ func (s *Store) PruneSessions(keep int) {
 	}
 }
 
-// --- indexers ---
-
-func (s *Store) ListIndexers() ([]Indexer, error) {
-	rows, err := s.db.Query(`SELECT id,kind,name,url,api_key,enabled,priority FROM indexers ORDER BY priority, name`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []Indexer{}
-	for rows.Next() {
-		var i Indexer
-		if err := rows.Scan(&i.ID, &i.Kind, &i.Name, &i.URL, &i.APIKey, &i.Enabled, &i.Priority); err != nil {
-			return nil, err
-		}
-		out = append(out, i)
-	}
-	return out, rows.Err()
-}
-
-func (s *Store) SaveIndexer(i Indexer) (Indexer, error) {
-	if i.Kind == "" {
-		i.Kind = "torznab"
-	}
-	if i.ID == "" {
-		i.ID = randHex(5)
-		_, err := s.db.Exec(`INSERT INTO indexers(id,kind,name,url,api_key,enabled,priority) VALUES(?,?,?,?,?,?,?)`,
-			i.ID, i.Kind, i.Name, i.URL, i.APIKey, boolInt(i.Enabled), i.Priority)
-		return i, err
-	}
-	res, err := s.db.Exec(`UPDATE indexers SET kind=?,name=?,url=?,api_key=?,enabled=?,priority=? WHERE id=?`,
-		i.Kind, i.Name, i.URL, i.APIKey, boolInt(i.Enabled), i.Priority, i.ID)
-	if err != nil {
-		return i, err
-	}
-	// An update against a stale id (deleted in another tab) matches no
-	// row; reporting success would have the console show a save that
-	// never persisted.
-	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		return i, ErrIndexerNotFound
-	}
-	return i, nil
-}
-
-// UpsertIndexerByName inserts or updates an indexer identified by kind+name,
-// which is how BITLAB_INDEXERS is applied on every boot without duplicating rows.
-func (s *Store) UpsertIndexerByName(ix Indexer) error {
-	var id string
-	err := s.db.QueryRow(`SELECT id FROM indexers WHERE kind=? AND name=?`, ix.Kind, ix.Name).Scan(&id)
-	if err == nil {
-		ix.ID = id
-		_, err = s.db.Exec(`UPDATE indexers SET url=?,api_key=?,enabled=?,priority=? WHERE id=?`,
-			ix.URL, ix.APIKey, boolInt(ix.Enabled), ix.Priority, id)
-		return err
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	_, err = s.db.Exec(`INSERT INTO indexers(id,kind,name,url,api_key,enabled,priority) VALUES(?,?,?,?,?,?,?)`,
-		randHex(5), ix.Kind, ix.Name, ix.URL, ix.APIKey, boolInt(ix.Enabled), ix.Priority)
-	return err
-}
-
-func (s *Store) DeleteIndexer(id string) error {
-	_, err := s.db.Exec(`DELETE FROM indexers WHERE id=?`, id)
-	return err
-}
-
 // --- settings ---
 
 func (s *Store) GetSetting(k, def string) string {
@@ -584,9 +504,3 @@ func (s *Store) ForgetMedia(ih, name string) {
 	s.db.Exec(`DELETE FROM media_cache WHERE name=?`, name)
 }
 
-func boolInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
-}

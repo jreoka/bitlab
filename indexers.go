@@ -17,6 +17,34 @@ import (
 	"time"
 )
 
+// Indexer is one configured search source.
+type Indexer struct {
+	Kind    string `json:"kind"` // torznab | knaben | nyaa | apibay | eztv | yts | animetosho | torrentio
+	Name    string `json:"name"`
+	URL     string `json:"url"`
+	APIKey  string `json:"api_key,omitempty"`
+	Enabled bool   `json:"enabled"`
+}
+
+// DefaultIndexers contains the search indexers configured in the codebase.
+// Indexers can only be added, configured, or removed by editing this list in code.
+var DefaultIndexers = []Indexer{
+	{Kind: "knaben", Name: "knaben", Enabled: true},
+	{Kind: "nyaa", Name: "nyaa", Enabled: true},
+	{Kind: "eztv", Name: "eztv", Enabled: true},
+	{Kind: "yts", Name: "yts", Enabled: true},
+	{Kind: "animetosho", Name: "animetosho", Enabled: true},
+	{Kind: "torrentio", Name: "torrentio", Enabled: true},
+	{Kind: "apibay", Name: "apibay", Enabled: true},
+}
+
+func (s *Server) indexers() []Indexer {
+	if len(s.cfg.Indexers) > 0 {
+		return s.cfg.Indexers
+	}
+	return DefaultIndexers
+}
+
 // Result is one candidate release discovered by an indexer.
 type Result struct {
 	Title    string
@@ -44,12 +72,8 @@ func (s *Server) searchAll(ctx context.Context, queries []string, typ string, se
 	if len(queries) > 6 {
 		queries = queries[:6]
 	}
-	indexers, err := s.store.ListIndexers()
-	if err != nil {
-		return nil, []string{err.Error()}
-	}
 	var enabled []Indexer
-	for _, ix := range indexers {
+	for _, ix := range s.indexers() {
 		if !ix.Enabled {
 			continue
 		}
