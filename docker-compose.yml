@@ -1,6 +1,6 @@
 services:
   bitlab:
-    build: .
+    image: jreoka/bitlab:latest
     container_name: bitlab
     restart: unless-stopped
     ports:
