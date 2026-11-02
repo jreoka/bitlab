@@ -338,16 +338,18 @@ func main() {
 		// HTTP-only ingress sits in front, the BitTorrent bytes never
 		// arrive and nothing needs to change — the client was unreachable
 		// there either way.
-		pm := newPortMux(ln)
+		var serveErr error
 		if eng.HasWireGuard() {
 			lg.Printf("wireguard: active, routing bittorrent traffic through wireguard tunnel")
-			pm.TorrentListener().Close()
+			serveErr = srv.Serve(ln)
 		} else {
+			pm := newPortMux(ln)
 			eng.AddPeerListener(pm.TorrentListener())
+			go pm.Serve()
+			serveErr = srv.Serve(pm.HTTPListener())
 		}
-		go pm.Serve()
-		if err := srv.Serve(pm.HTTPListener()); err != nil && err != http.ErrServerClosed {
-			lg.Fatalf("listen: %v", err)
+		if serveErr != nil && serveErr != http.ErrServerClosed {
+			lg.Fatalf("listen: %v", serveErr)
 		}
 	}()
 

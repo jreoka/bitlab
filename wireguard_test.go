@@ -5,11 +5,14 @@ import (
 	"encoding/base64"
 	"io"
 	"log"
+	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func genKey(t *testing.T) string {
@@ -306,5 +309,44 @@ AllowedIPs = 0.0.0.0/0
 
 	if cnt := eng.TorrentCount(); cnt != 0 {
 		t.Errorf("expected 0 torrents, got %d", cnt)
+	}
+}
+
+func TestWireGuardServerServing(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})}
+
+	// When WireGuard is active, the HTTP server serves ln directly without closing it.
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.Serve(ln)
+	}()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://" + ln.Addr().String() + "/healthz")
+	if err != nil {
+		t.Fatalf("failed to make request: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+	}
+
+	_ = srv.Close()
+	select {
+	case err := <-errCh:
+		if err != nil && err != http.ErrServerClosed {
+			t.Fatalf("unexpected serve error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server close timed out")
 	}
 }
