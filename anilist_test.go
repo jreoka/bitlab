@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"net/http"
+	"testing"
+)
 
 func TestPickAliases(t *testing.T) {
 	got := pickAliases("Re:ZERO -Starting Life in Another World-", []string{
@@ -25,6 +29,38 @@ func TestPickAliases(t *testing.T) {
 	}
 }
 
+func TestPickAliasesRampartsOfIce(t *testing.T) {
+	got := pickAliases("Koori no Jyouheki", []string{
+		"Koori no Jouheki",
+		"The Ramparts of Ice",
+		"氷の城壁",
+		"Стены изо льда",
+	})
+	if len(got) != 2 {
+		t.Fatalf("want 2 aliases, got %d: %v", len(got), got)
+	}
+	if got[0] != "Koori no Jouheki" {
+		t.Errorf("first alias = %q, want Koori no Jouheki", got[0])
+	}
+	if got[1] != "The Ramparts of Ice" {
+		t.Errorf("second alias = %q, want The Ramparts of Ice", got[1])
+	}
+}
+
+func TestRomanizationVariants(t *testing.T) {
+	vars := romanizationVariants("Koori no Jyouheki")
+	found := false
+	for _, v := range vars {
+		if v == "Koori no Jouheki" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("romanizationVariants(Koori no Jyouheki) = %v, want Koori no Jouheki", vars)
+	}
+}
+
 func TestIsLatin(t *testing.T) {
 	if !isLatin("Re:Zero kara Hajimeru Isekai Seikatsu") {
 		t.Error("romaji should pass")
@@ -32,8 +68,34 @@ func TestIsLatin(t *testing.T) {
 	if isLatin("进击的巨人") {
 		t.Error("CJK should fail")
 	}
+	if isLatin("Стены изо льда") {
+		t.Error("Cyrillic should fail")
+	}
+	if isLatin("ปราการน้ำแข็งแห่งหัวใจ") {
+		t.Error("Thai should fail")
+	}
+	if !isLatin("Kōri no Jōheki") {
+		t.Error("romaji with macrons should pass isLatin")
+	}
+	if !isLatin("Pokémon") {
+		t.Error("Latin with accents should pass isLatin")
+	}
 	if !isLatin("ab") {
 		t.Error("two letters is the floor, so it should pass")
+	}
+}
+
+func TestExpandMacronCandidates(t *testing.T) {
+	expanded := expandMacronCandidates([]string{"Kōri no Jōheki"})
+	wantFound := false
+	for _, e := range expanded {
+		if e == "Kouri no Jouheki" || e == "Kori no Joheki" {
+			wantFound = true
+			break
+		}
+	}
+	if !wantFound {
+		t.Fatalf("expanded macrons = %v, expected unfolded variants", expanded)
 	}
 }
 
@@ -123,5 +185,32 @@ func TestChooseFileForEpisode(t *testing.T) {
 	idx, _ = chooseFileForEpisode([]string{"a/movie.mkv", "a/extra.mkv"}, []int64{2 << 30, 100}, -1, 1, 4)
 	if idx != 0 {
 		t.Fatalf("fallback picked %d", idx)
+	}
+}
+
+func TestAnimeAliasesRealFetch(t *testing.T) {
+	// Smoke test to ensure live AniList / Kitsu resolution resolves The Ramparts of Ice
+	store, err := OpenStore(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	srv := &Server{
+		store: store,
+		http:  http.DefaultClient,
+	}
+	aliases := srv.animeAliases(context.Background(), "Koori no Jyouheki")
+	if len(aliases) == 0 {
+		t.Fatal("animeAliases(Koori no Jyouheki) returned empty, want aliases")
+	}
+	foundRamparts := false
+	for _, a := range aliases {
+		if a == "The Ramparts of Ice" || a == "Koori no Jouheki" {
+			foundRamparts = true
+			break
+		}
+	}
+	if !foundRamparts {
+		t.Fatalf("expected The Ramparts of Ice or Koori no Jouheki in aliases, got %v", aliases)
 	}
 }

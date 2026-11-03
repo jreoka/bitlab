@@ -62,6 +62,9 @@ func TestTitleMatches(t *testing.T) {
 		{"The.Uprising.2026", "Pacific Rim Uprising", false},
 		{"Severance.S02E01.1080p", "Severance", true},
 		{"", "Severance", false},
+		{"[Erai-raws] Koori no Jouheki - 01", "Koori no Jyouheki", true},
+		{"[NanakoRaws] Koori no Jouheki S2 - 05", "Koori no Jyouheki", true},
+		{"[Trix] The Ramparts of Ice S01E01", "The Ramparts of Ice", true},
 	}
 	for _, c := range cases {
 		if got := titleMatches(c.name, c.title); got != c.want {
@@ -356,5 +359,22 @@ func TestYearAgreesTitleNumbers(t *testing.T) {
 	}
 	if !yearAgrees("Some Movie 1080p", 2020, 1) {
 		t.Error("yearless release rejected")
+	}
+}
+
+func TestFilterRelevantRampartsOfIce(t *testing.T) {
+	in := []Result{
+		{Title: "[Trix] The Ramparts of Ice S01 (Batch) 1080p NF WEB-DL AAC2.0 AV1 (Multi-Subs) (Koori no Jouheki) Season S1"},
+		{Title: "The Ramparts of Ice S01E01 SINIRLAR VE DUVARLAR REPACK 1080p NF WEB-DL MULTi AAC2.0 H 264-VARYG (Koori no Jouheki Multi-Audio Multi-Subs)"},
+		{Title: "[Erai-raws] Koori no Jouheki - 01 [1080p NF WEB-DL AVC AAC][MultiSub][9CA087AD].mkv"},
+		{Title: "[NanakoRaws] The Ramparts of Ice - 01 (BSN TV 1080p HEVC AAC)"},
+	}
+	aliases := []string{"Koori no Jouheki", "The Ramparts of Ice"}
+	got, dropped := filterRelevant(in, "series", "Koori no Jyouheki", aliases, 2026, 1)
+	if dropped != 0 {
+		t.Fatalf("expected 0 dropped, got dropped = %d (kept %d)", dropped, len(got))
+	}
+	if len(got) != 4 {
+		t.Fatalf("expected 4 kept, got %d", len(got))
 	}
 }

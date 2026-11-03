@@ -67,6 +67,27 @@ func normName(s string) string {
 	return reNonAlnum.ReplaceAllString(strings.ToLower(s), "")
 }
 
+// normRomaji normalizes common Japanese romanization conventions (Hepburn vs
+// Kunrei-shiki/Wapuro digraphs, long vowel spellings, and macrons).
+func normRomaji(s string) string {
+	s = strings.ToLower(s)
+	replacements := []struct{ from, to string }{
+		{"jyou", "jo"}, {"jyo", "jo"}, {"jya", "ja"}, {"jyu", "ju"},
+		{"zyou", "jo"}, {"zyo", "jo"}, {"zya", "ja"}, {"zyu", "ju"}, {"zi", "ji"},
+		{"shyou", "sho"}, {"syou", "sho"}, {"syo", "sho"}, {"sya", "sha"}, {"syu", "shu"}, {"si", "shi"},
+		{"chyou", "cho"}, {"tyou", "cho"}, {"tyo", "cho"}, {"tya", "cha"}, {"tyu", "chu"},
+		{"cyou", "cho"}, {"cyo", "cho"}, {"cya", "cha"}, {"cyu", "chu"},
+		{"ti", "chi"}, {"tu", "tsu"}, {"hu", "fu"},
+		{"ou", "o"}, {"oo", "o"}, {"oh", "o"},
+		{"uu", "u"}, {"aa", "a"}, {"ee", "e"}, {"ii", "i"},
+		{"ō", "o"}, {"ū", "u"}, {"ā", "a"}, {"ī", "i"}, {"ē", "e"},
+	}
+	for _, r := range replacements {
+		s = strings.ReplaceAll(s, r.from, r.to)
+	}
+	return s
+}
+
 // looksLikeEpisode reports whether a name carries an episode marker of any of
 // the conventions indexers use.
 func looksLikeEpisode(name string) bool {
@@ -95,6 +116,15 @@ func significantWords(title string) []string {
 // them. That second clause is what stops "Pacific Rim: Uprising" standing in for
 // "The Uprising".
 func titleMatches(name, title string) bool {
+	if matchNormalized(name, title) {
+		return true
+	}
+	// Try romaji normalized match for Japanese transliteration variations
+	// (e.g. jyou vs jou, ou vs oo, macrons).
+	return matchNormalized(normRomaji(name), normRomaji(title))
+}
+
+func matchNormalized(name, title string) bool {
 	want := normName(title)
 	if want == "" {
 		return true
@@ -348,11 +378,12 @@ func extraTitleWords(name string, titles []string) int {
 	for _, t := range titles {
 		for _, w := range hintWords(t) {
 			own[w] = true
+			own[normRomaji(w)] = true
 		}
 	}
 	extra := map[string]bool{}
 	for _, w := range hintWords(s) {
-		if own[w] || releaseFurniture[w] || strings.ContainsAny(w, "0123456789") {
+		if own[w] || own[normRomaji(w)] || releaseFurniture[w] || strings.ContainsAny(w, "0123456789") {
 			continue
 		}
 		extra[w] = true

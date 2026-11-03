@@ -191,23 +191,22 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	queries := []string{query}
 	var aliases, playHints []string
 	if typ == "series" && season > 0 {
-		// Older seasons are usually only available as a batch, which is never
-		// titled "S01E01" — ask for the season as well as the episode.
-		queries = append(queries, fmt.Sprintf("%s S%02d", title, season))
 		aliases = s.animeAliases(ctx, title)
 		for i, alias := range aliases {
 			if i >= 2 {
 				break
 			}
 			queries = append(queries, fmt.Sprintf("%s S%02dE%02d", alias, season, ep))
-			if i == 0 {
-				queries = append(queries, fmt.Sprintf("%s S%02d", alias, season))
-			}
 		}
 		// Release groups write anime as "Show - 04" far more often than "SxxE04",
 		// so aliases are also searched by name alone and filtered by episode later.
 		if len(aliases) > 0 {
 			queries = append(queries, aliases[0])
+		}
+		// Season batches follow after episode-specific queries
+		queries = append(queries, fmt.Sprintf("%s S%02d", title, season))
+		if len(aliases) > 0 {
+			queries = append(queries, fmt.Sprintf("%s S%02d", aliases[0], season))
 		}
 	} else if typ == "movie" {
 		// Anime films are indexed under their romaji title and usually carry the
