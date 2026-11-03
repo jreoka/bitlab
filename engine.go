@@ -750,10 +750,12 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 		s.engine.mu.Unlock()
 	}()
 
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
 	reader := f.NewReader()
 	reader.SetReadahead(s.readaheadBytes())
 	reader.SetResponsive()
-	reader.SetContext(ctx)
+	reader.SetContext(streamCtx)
 	defer reader.Close()
 
 	name := filepath.Base(f.DisplayPath())
@@ -787,11 +789,74 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Bitlab-File", strconv.Itoa(idx))
 
-	cw := &countingWriter{ResponseWriter: w}
+	var lastActivity atomic.Int64
+	lastActivity.Store(time.Now().UnixNano())
+
+	touchStream := func() {
+		now := time.Now()
+		lastActivity.Store(now.UnixNano())
+		s.engine.mu.Lock()
+		act.lastAccess = now
+		s.engine.mu.Unlock()
+	}
+
+	rc := http.NewResponseController(w)
+	watchDone := make(chan struct{})
+	defer close(watchDone)
+
+	idle := time.Duration(s.engine.idleTimeout.Load())
+	if idle <= 0 {
+		idle = 20 * time.Minute
+	}
+	checkInterval := idle / 4
+	if checkInterval < 50*time.Millisecond {
+		checkInterval = 50 * time.Millisecond
+	} else if checkInterval > 10*time.Second {
+		checkInterval = 10 * time.Second
+	}
+
+	go func() {
+		ticker := time.NewTicker(checkInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-watchDone:
+				return
+			case <-streamCtx.Done():
+				return
+			case <-ticker.C:
+				idleLimit := time.Duration(s.engine.idleTimeout.Load())
+				if idleLimit <= 0 {
+					idleLimit = 20 * time.Minute
+				}
+				last := time.Unix(0, lastActivity.Load())
+				if time.Since(last) >= idleLimit {
+					s.log.Printf("play %s idle for %s (paused/stopped); expiring reader", ih[:8], time.Since(last).Round(time.Second))
+					_ = rc.SetWriteDeadline(time.Now())
+					cancelStream()
+					return
+				}
+			}
+		}
+	}()
+
+	cw := &countingWriter{
+		ResponseWriter: w,
+		rc:             rc,
+		timeout: func() time.Duration {
+			return time.Duration(s.engine.idleTimeout.Load())
+		},
+		onAccess: touchStream,
+	}
 	// ServeContent probes the size with Seek(0, End) before writing anything.
 	// Answering that arithmetically avoids telling the torrent client to
 	// prioritise the tail of the file, which delays the first byte.
-	http.ServeContent(cw, r, name, time.Time{}, &sizedReader{r: reader, size: f.Length()})
+	sr := &sizedReader{
+		r:        reader,
+		size:     f.Length(),
+		onAccess: touchStream,
+	}
+	http.ServeContent(cw, r, name, time.Time{}, sr)
 	s.store.AddKeyBytes(key.ID, cw.written)
 	s.log.Printf("play %s key=%s file=%d served=%s range=%q", ih[:8], key.ID, idx, humanBytes(cw.written), r.Header.Get("Range"))
 }
@@ -819,12 +884,34 @@ func rangeStart(h string) (int64, bool) {
 
 type countingWriter struct {
 	http.ResponseWriter
-	written int64
+	rc         *http.ResponseController
+	timeout    func() time.Duration
+	written    int64
+	onAccess   func()
+	lastAccess time.Time
+}
+
+func (c *countingWriter) Unwrap() http.ResponseWriter {
+	return c.ResponseWriter
 }
 
 func (c *countingWriter) Write(p []byte) (int, error) {
+	if c.rc != nil && c.timeout != nil {
+		idle := c.timeout()
+		if idle <= 0 {
+			idle = 20 * time.Minute
+		}
+		_ = c.rc.SetWriteDeadline(time.Now().Add(idle))
+	}
 	n, err := c.ResponseWriter.Write(p)
 	c.written += int64(n)
+	if n > 0 && c.onAccess != nil {
+		now := time.Now()
+		if now.Sub(c.lastAccess) >= 2*time.Second {
+			c.lastAccess = now
+			c.onAccess()
+		}
+	}
 	return n, err
 }
 
@@ -986,7 +1073,9 @@ func (e *Engine) TorrentCount() int { return len(e.cl.Torrents()) }
 type sizedReader struct {
 	r    io.ReadSeeker
 	size int64
-	pos  int64
+	pos        int64
+	onAccess   func()
+	lastAccess time.Time
 }
 
 func (s *sizedReader) Read(p []byte) (int, error) {
@@ -998,6 +1087,13 @@ func (s *sizedReader) Read(p []byte) (int, error) {
 	}
 	n, err := s.r.Read(p)
 	s.pos += int64(n)
+	if n > 0 && s.onAccess != nil {
+		now := time.Now()
+		if now.Sub(s.lastAccess) >= 2*time.Second {
+			s.lastAccess = now
+			s.onAccess()
+		}
+	}
 	return n, err
 }
 
