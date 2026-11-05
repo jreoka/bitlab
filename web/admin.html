@@ -313,10 +313,7 @@ tr:last-child td{border-bottom:0}
   <aside class="sidebar">
     <div class="brand">
       <div class="mark">B</div>
-      <div>
-        <div class="name">Bitlab</div>
-        <div class="ver"><span id="ver">—</span></div>
-      </div>
+      <div class="name">Bitlab</div>
     </div>
     <nav>
       <button class="nav on" data-tab="keys" onclick="tab('keys')">
@@ -639,7 +636,6 @@ async function refresh(){
     const o = await api('/admin/api/overview');
     if (!o || o.twofa) return;
     state.overview = o;
-    $('#ver').textContent = 'v' + o.version;
     $('#chipcache').innerHTML = '<b>' + bytes(o.cache_bytes) + '</b>';
     $('#chipup').innerHTML = '<b>' + uptime(o.uptime_seconds) + '</b>';
     $('#s-keys').textContent = o.active_keys;
