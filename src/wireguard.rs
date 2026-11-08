@@ -18,15 +18,8 @@ pub struct WireGuardPeer {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct WireGuardTunnel {
     pub local_ips: Vec<String>,
-    pub config: WireGuardConfig,
-}
-
-impl WireGuardTunnel {
-    #[allow(dead_code)]
-    pub fn close(&self) {}
 }
 
 fn parse_key(raw: &str) -> anyhow::Result<String> {
@@ -242,5 +235,5 @@ pub fn start_wireguard(conf_str: &str) -> anyhow::Result<WireGuardTunnel> {
     // Validate UAPI rendering as a sanity check.
     let _ = cfg.to_uapi();
     let local_ips: Vec<String> = cfg.addresses.iter().map(|a| a.split('/').next().unwrap_or(a).to_string()).collect();
-    Ok(WireGuardTunnel { local_ips, config: cfg })
+    Ok(WireGuardTunnel { local_ips })
 }

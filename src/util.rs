@@ -113,33 +113,3 @@ pub fn range_start(h: &str) -> Option<i64> {
     }
     spec[..dash].trim().parse::<i64>().ok()
 }
-
-#[allow(dead_code)]
-pub fn sniff_container(b: &[u8]) -> Option<(&'static str, &'static str)> {
-    if b.len() >= 8 && &b[4..8] == b"ftyp" {
-        let brand = if b.len() >= 12 { String::from_utf8_lossy(&b[8..12.min(b.len())]).trim().to_string() } else { String::new() };
-        if brand.starts_with("qt") {
-            return Some((".mov", "video/quicktime"));
-        }
-        return Some((".mp4", "video/mp4"));
-    }
-    if b.len() >= 4 && b[0] == 0x1a && b[1] == 0x45 && b[2] == 0xdf && b[3] == 0xa3 {
-        return Some((".mkv", "video/x-matroska"));
-    }
-    if b.len() >= 12 && &b[0..4] == b"RIFF" && &b[8..12] == b"AVI " {
-        return Some((".avi", "video/x-msvideo"));
-    }
-    if b.len() >= 4 && &b[0..4] == b"OggS" {
-        return Some((".ogv", "video/ogg"));
-    }
-    if b.len() >= 3 && &b[0..3] == b"FLV" {
-        return Some((".flv", "video/x-flv"));
-    }
-    if !b.is_empty() && b[0] == 0x47 {
-        return Some((".ts", "video/mp2t"));
-    }
-    if b.len() >= 4 && b[0] == 0x00 && b[1] == 0x00 && b[2] == 0x01 && (b[3] == 0xba || b[3] == 0xb3) {
-        return Some((".mpg", "video/mpeg"));
-    }
-    None
-}

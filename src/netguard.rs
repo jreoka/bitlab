@@ -75,33 +75,3 @@ pub fn build_client(allow_private: bool) -> reqwest::Client {
         .build()
         .expect("http client")
 }
-
-/// Returns true if the URL's host resolves only to public addresses, or if
-/// allow_private is set. Used to guard custom indexer URLs (torznab) against SSRF.
-#[allow(dead_code)]
-pub async fn host_is_allowed(url_str: &str, allow_private: bool) -> bool {
-    if allow_private {
-        return true;
-    }
-    let host = match url::Url::parse(url_str).ok().and_then(|u| u.host_str().map(|s| s.to_string())) {
-        Some(h) => h,
-        None => return false,
-    };
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        return !is_private_address_ip(&ip);
-    }
-    // Resolve via Tokio DNS; require at least one public address.
-    match tokio::net::lookup_host(format!("{host}:80")).await {
-        Ok(addrs) => {
-            let mut any_public = false;
-            for a in addrs {
-                if !is_private_address_ip(&a.ip()) {
-                    any_public = true;
-                    break;
-                }
-            }
-            any_public
-        }
-        Err(_) => false,
-    }
-}

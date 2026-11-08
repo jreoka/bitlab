@@ -478,18 +478,6 @@ pub fn filter_relevant_generic(
     (keep, dropped)
 }
 
-#[allow(dead_code)]
-pub fn atoi_safe(s: &str) -> i32 {
-    let mut n = 0;
-    for c in s.chars() {
-        if !c.is_ascii_digit() {
-            return n;
-        }
-        n = n * 10 + (c as i32 - '0' as i32);
-    }
-    n
-}
-
 // fileSignal + chooseFile helpers (pure, used by engine)
 use std::path::Path as FsPath;
 
@@ -556,17 +544,6 @@ pub fn choose_file(paths: &[String], sizes: &[i64], want: i32) -> anyhow::Result
     }
     Ok(b)
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
-pub struct NoEpisode;
-
-impl std::fmt::Display for NoEpisode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "release has no file for this episode")
-    }
-}
-impl std::error::Error for NoEpisode {}
 
 pub fn choose_file_for_episode(paths: &[String], sizes: &[i64], want: i32, season: i32, ep: i32) -> anyhow::Result<usize> {
     if want >= 0 && (want as usize) < paths.len() {

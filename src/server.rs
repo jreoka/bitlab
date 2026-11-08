@@ -40,16 +40,8 @@ use std::collections::HashMap;
         pub fn get(&self, k: &str) -> Option<Vec<String>> {
             self.inner.read().unwrap().get(k).cloned()
         }
-        #[allow(dead_code)]
-        pub fn remove(&self, k: &str) {
-            self.inner.write().unwrap().remove(k);
-        }
         pub fn clear(&self) {
             self.inner.write().unwrap().clear();
-        }
-        #[allow(dead_code)]
-        pub fn len(&self) -> usize {
-            self.inner.read().unwrap().len()
         }
     }
     pub struct IxCache {
@@ -73,10 +65,6 @@ use std::collections::HashMap;
         }
         pub fn remove(&self, k: &str) {
             self.inner.write().unwrap().remove(k);
-        }
-        #[allow(dead_code)]
-        pub fn clear(&self) {
-            self.inner.write().unwrap().clear();
         }
     }
     pub struct EpCache {
@@ -131,16 +119,6 @@ impl App {
         }
         let scheme = if tls { "https" } else { "http" };
         format!("{scheme}://{host}")
-    }
-
-    #[allow(dead_code)]
-    pub fn readahead_bytes(&self) -> i64 {
-        let v = self.readahead.load(std::sync::atomic::Ordering::Relaxed);
-        if v > 0 {
-            v
-        } else {
-            self.cfg.readahead_bytes
-        }
     }
 
     pub fn play_token(&self, key_id: &str, ih: &str, season: i32, ep: i32, exp: i64) -> String {

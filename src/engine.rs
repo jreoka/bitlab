@@ -64,10 +64,9 @@ pub fn hex_to_id20(ih: &str) -> Option<Id20> {
     Some(Id20::new(out))
 }
 
+#[derive(Clone)]
 pub struct Engine {
     session: Arc<librqbit::Session>,
-    #[allow(dead_code)]
-    data_dir: PathBuf,
     media_dir: PathBuf,
     trackers: Vec<String>,
     store: Arc<crate::store::Store>,
@@ -167,7 +166,6 @@ impl Engine {
 
         let e = Self {
             session,
-            data_dir: Path::new(&cfg.data_dir).to_path_buf(),
             media_dir,
             trackers: cfg.trackers.clone(),
             store,
@@ -418,7 +416,7 @@ impl Engine {
         if !crate::util::valid_infohash(&ih.to_lowercase()) {
             return;
         }
-        let this = self.clone_handle();
+        let this = self.clone();
         tokio::spawn(async move {
             let permit = match this.warm_sem.clone().try_acquire_owned() {
                 Ok(p) => p,
@@ -513,18 +511,15 @@ impl Engine {
     pub async fn cache_stats(&self) -> crate::cache::CacheStats {
         let entries = crate::cache::scan_cache(&self.media_dir).unwrap_or_default();
         let mut used = 0i64;
-        let mut apparent = 0i64;
         let mut partial = 0i64;
         for e in &entries {
             used += e.bytes;
-            apparent += e.apparent;
             if e.partial {
                 partial += e.bytes;
             }
         }
         let mut st = self.stats.read().await.clone();
         st.used_bytes = used;
-        st.apparent_bytes = apparent;
         st.entries = entries.len();
         st.partial_bytes = partial;
         st.budget_bytes = self.max_cache_bytes.load(std::sync::atomic::Ordering::Relaxed);
@@ -541,11 +536,6 @@ impl Engine {
 
     pub fn torrent_count(&self) -> usize {
         self.session.with_torrents(|iter| iter.count())
-    }
-
-    #[allow(dead_code)]
-    pub fn media_dir(&self) -> &Path {
-        &self.media_dir
     }
 
     pub async fn select_only_file(&self, handle: &ManagedTorrentHandle, file_idx: usize) -> anyhow::Result<()> {
@@ -634,249 +624,6 @@ impl Engine {
         if let Some(a) = m.get_mut(ih) {
             a.last_access = SystemTime::now();
         }
-    }
-
-    #[allow(dead_code)]
-    pub async fn peek_activity(&self, ih: &str) -> (i32, SystemTime) {
-        let m = self.act.read().await;
-        if let Some(a) = m.get(ih) {
-            (a.readers, a.last_access)
-        } else {
-            (0, SystemTime::UNIX_EPOCH)
-        }
-    }
-
-    fn clone_handle(&self) -> EngineHandle {
-        EngineHandle {
-            session: self.session.clone(),
-            media_dir: self.media_dir.clone(),
-            trackers: self.trackers.clone(),
-            store: self.store.clone(),
-            max_cache_bytes: self.max_cache_bytes.clone(),
-            reserve_bytes: self.reserve_bytes,
-            idle_timeout: self.idle_timeout.clone(),
-            grace: self.grace,
-            retain: self.retain,
-            max_torrents: self.max_torrents,
-            info_timeout: self.info_timeout,
-            act: self.act.clone(),
-            add_locks: self.add_locks.clone(),
-            warm_sem: self.warm_sem.clone(),
-            stats: self.stats.clone(),
-            evicted_bytes: self.evicted_bytes.clone(),
-            evicted_count: self.evicted_count.clone(),
-            closed: self.closed.clone(),
-            has_wg: self.has_wg,
-        }
-    }
-}
-
-#[derive(Clone)]
-#[allow(dead_code)]
-struct EngineHandle {
-    session: Arc<librqbit::Session>,
-    media_dir: PathBuf,
-    trackers: Vec<String>,
-    store: Arc<crate::store::Store>,
-    max_cache_bytes: Arc<std::sync::atomic::AtomicI64>,
-    reserve_bytes: i64,
-    idle_timeout: Arc<std::sync::atomic::AtomicI64>,
-    grace: Duration,
-    retain: Duration,
-    max_torrents: usize,
-    info_timeout: Duration,
-    act: Arc<RwLock<HashMap<String, Activity>>>,
-    add_locks: Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
-    warm_sem: Arc<tokio::sync::Semaphore>,
-    stats: Arc<RwLock<crate::cache::CacheStats>>,
-    evicted_bytes: Arc<std::sync::atomic::AtomicI64>,
-    evicted_count: Arc<std::sync::atomic::AtomicI64>,
-    closed: Arc<std::sync::atomic::AtomicBool>,
-    has_wg: bool,
-}
-
-impl EngineHandle {
-    #[allow(dead_code)]
-    async fn stream_busy(&self) -> bool {
-        let m = self.act.read().await;
-        m.values().any(|a| a.readers > 0)
-    }
-
-    async fn touch(&self, ih: &str, label: &str) {
-        let mut m = self.act.write().await;
-        let a = m.entry(ih.to_string()).or_insert_with(Activity::default);
-        if !label.is_empty() {
-            a.label = label.to_string();
-        }
-        a.last_access = SystemTime::now();
-    }
-
-    async fn lock_for(&self, ih: &str) -> Arc<tokio::sync::Mutex<()>> {
-        let mut m = self.add_locks.lock().await;
-        m.entry(ih.to_string()).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))).clone()
-    }
-
-    async fn ensure(&self, ih: &str, name: &str, extra: &[String]) -> anyhow::Result<ManagedTorrentHandle> {
-        self.ensure_inner(ih, name, extra, true).await
-    }
-
-    #[allow(dead_code)]
-    async fn ensure_play(&self, ih: &str, name: &str, extra: &[String]) -> anyhow::Result<ManagedTorrentHandle> {
-        self.ensure_inner(ih, name, extra, false).await
-    }
-
-    async fn ensure_inner(&self, ih: &str, name: &str, extra: &[String], paused: bool) -> anyhow::Result<ManagedTorrentHandle> {
-        if !crate::util::valid_infohash(ih) && !crate::util::valid_infohash_strict_lower(&ih.to_lowercase()) {
-            anyhow::bail!("invalid infohash");
-        }
-        let ih = ih.to_lowercase();
-        self.touch(&ih, name).await;
-        let id20 = hex_to_id20(&ih).ok_or_else(|| anyhow::anyhow!("invalid infohash"))?;
-
-        if let Some(handle) = self.session.get(librqbit::api::TorrentIdOrHash::Hash(id20)) {
-            return Ok(handle);
-        }
-
-        let lk = self.lock_for(&ih).await;
-        let _g = lk.lock().await;
-
-        if let Some(handle) = self.session.get(librqbit::api::TorrentIdOrHash::Hash(id20)) {
-            return Ok(handle);
-        }
-
-        {
-            let mut m = self.act.write().await;
-            if let Some(a) = m.get_mut(&ih) {
-                a.adding = true;
-            }
-        }
-
-        let mut trs = self.trackers.clone();
-        for t in extra {
-            if !t.is_empty() && !trs.contains(t) {
-                trs.push(t.clone());
-            }
-        }
-
-        let current_count = self.session.with_torrents(|iter| iter.count());
-        if self.max_torrents > 0 && current_count >= self.max_torrents {
-            let oldest = {
-                let m = self.act.read().await;
-                let mut oldest: Option<String> = None;
-                let mut when: Option<SystemTime> = None;
-                for (k, a) in m.iter() {
-                    if a.readers > 0 || a.adding {
-                        continue;
-                    }
-                    match when {
-                        None => {
-                            oldest = Some(k.clone());
-                            when = Some(a.last_access);
-                        }
-                        Some(w) if a.last_access < w => {
-                            oldest = Some(k.clone());
-                            when = Some(a.last_access);
-                        }
-                        _ => {}
-                    }
-                }
-                oldest
-            };
-            let mut evicted = false;
-            if let Some(o) = oldest {
-                {
-                    let mut m = self.act.write().await;
-                    m.remove(&o);
-                }
-                if let Some(id20_old) = hex_to_id20(&o) {
-                    let _ = self.session.delete(librqbit::api::TorrentIdOrHash::Hash(id20_old), false).await;
-                    evicted = true;
-                }
-            }
-            if !evicted {
-                let mut m = self.act.write().await;
-                if let Some(a) = m.get_mut(&ih) {
-                    a.adding = false;
-                }
-                anyhow::bail!("too many active torrents; try again shortly");
-            }
-        }
-
-        let magnet = crate::indexers::magnet_uri(&ih, name, &trs);
-        let add = librqbit::AddTorrent::from_url(magnet);
-        let dir = self.media_dir.join(&ih);
-        let _ = tokio::fs::create_dir_all(&dir).await;
-
-        let opts = librqbit::AddTorrentOptions {
-            overwrite: true,
-            paused,
-            output_folder: Some(dir.to_string_lossy().to_string()),
-            ..Default::default()
-        };
-
-        let timeout_dur = if self.info_timeout.is_zero() {
-            Duration::from_secs(45)
-        } else {
-            self.info_timeout
-        };
-        let res = match tokio::time::timeout(timeout_dur, self.session.add_torrent(add, Some(opts))).await {
-            Ok(r) => r,
-            Err(_) => Err(anyhow::anyhow!("timeout waiting for torrent metadata")),
-        };
-        {
-            let mut m = self.act.write().await;
-            if let Some(a) = m.get_mut(&ih) {
-                a.adding = false;
-            }
-        }
-
-        let handle = res.map_err(|e| anyhow::anyhow!("{e}"))?
-            .into_handle()
-            .ok_or_else(|| anyhow::anyhow!("failed to get managed torrent handle"))?;
-
-        Ok(handle)
-    }
-
-    #[allow(dead_code)]
-    pub async fn add_torrent_bytes(&self, bytes: bytes::Bytes) -> anyhow::Result<ManagedTorrentHandle> {
-        let add = librqbit::AddTorrent::TorrentFileBytes(bytes);
-        let opts = librqbit::AddTorrentOptions {
-            overwrite: true,
-            paused: false,
-            ..Default::default()
-        };
-        let res = self.session.add_torrent(add, Some(opts)).await
-            .map_err(|e| anyhow::anyhow!("{e}"))?
-            .into_handle()
-            .ok_or_else(|| anyhow::anyhow!("failed to get managed torrent handle"))?;
-        let ih = res.info_hash().as_string();
-        self.touch(&ih, &res.name().unwrap_or_default()).await;
-        Ok(res)
-    }
-
-    async fn record_media(&self, handle: &ManagedTorrentHandle) {
-        let (name, total, files_out) = match handle.with_metadata(|meta| {
-            let name = meta.info.name().map(|n| n.to_string()).unwrap_or_default();
-            let total = meta.lengths().total_length() as i64;
-            let mut files_out = vec![];
-            for (i, fi) in meta.file_infos.iter().enumerate() {
-                let rel = fi.relative_filename.to_string_lossy().to_string();
-                if !crate::relevance::is_video_path(&rel) {
-                    continue;
-                }
-                files_out.push(crate::store::CachedFile {
-                    idx: i,
-                    path: rel,
-                    size: fi.len as i64,
-                });
-            }
-            (name, total, files_out)
-        }) {
-            Ok(v) => v,
-            Err(_) => return,
-        };
-        let ih = handle.info_hash().as_string();
-        let _ = self.store.save_media(&ih, &name, total, &files_out);
     }
 }
 
@@ -986,14 +733,12 @@ async fn sweep_cache_once(
 
     let mut units: Vec<crate::cache::CacheUnit> = vec![];
     let mut used = 0i64;
-    let mut apparent_total = 0i64;
     let mut partial_bytes = 0i64;
     let mut orphan_bytes = 0i64;
     let mut orphan_count = 0usize;
     let mut loaded = 0usize;
     for en in &entries {
         used += en.bytes;
-        apparent_total += en.apparent;
         if en.partial {
             partial_bytes += en.bytes;
         }
@@ -1024,7 +769,6 @@ async fn sweep_cache_once(
     let free = crate::platform::free_disk_space(data_dir).unwrap_or(-1);
     let plan = crate::cache::plan_cache(&units, used, max_cache.load(std::sync::atomic::Ordering::Relaxed), reserve, free, now, grace, retain);
     let mut freed = 0i64;
-    let mut freed_apparent = 0i64;
     let mut freed_count = 0i64;
     let mut rem_orphans = 0i64;
     let mut rem_orphan_bytes = 0i64;
@@ -1052,7 +796,6 @@ async fn sweep_cache_once(
         }
         store.forget_media(&u.infohash, "");
         freed += u.entry.bytes;
-        freed_apparent += u.entry.apparent;
         freed_count += 1;
         if reason != "retention" {
             tracing::info!("cache: evicted {} ({}, {reason})", u.entry.name, crate::util::human_bytes(u.entry.bytes));
@@ -1060,7 +803,6 @@ async fn sweep_cache_once(
     }
     let mut st = crate::cache::CacheStats {
         used_bytes: used - freed,
-        apparent_bytes: apparent_total - freed_apparent,
         budget_bytes: max_cache.load(std::sync::atomic::Ordering::Relaxed),
         reserve_bytes: reserve,
         free_bytes: free,

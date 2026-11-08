@@ -7,7 +7,6 @@ mod engine;
 mod indexers;
 mod netguard;
 mod platform;
-mod portmux;
 mod relevance;
 mod security;
 mod server;
@@ -132,10 +131,9 @@ async fn main() {
                     let st = eng.cache_stats().await;
                     let free = if st.free_bytes >= 0 { util::human_bytes(st.free_bytes) } else { "unknown".to_string() };
                     tracing::info!(
-                        "stats: torrents={} cache={} (apparent {}) / {} free={free} entries={} partial={} reclaimed={}",
+                        "stats: torrents={} cache={} / {} free={free} entries={} partial={} reclaimed={}",
                         eng.torrent_count(),
                         util::human_bytes(st.used_bytes),
-                        util::human_bytes(st.apparent_bytes),
                         util::human_bytes(st.budget_bytes),
                         st.entries,
                         util::human_bytes(st.partial_bytes),
