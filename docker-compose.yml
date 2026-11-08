@@ -5,12 +5,15 @@ services:
     restart: always
     ports:
       - "127.0.0.1:8090:8090"
+      - "51413:51413/tcp"
+      - "51413:51413/udp"
     environment:
       BITLAB_ADMIN_PASSWORD: ${BITLAB_ADMIN_PASSWORD:-}
       BITLAB_BASE_URL: "https://bitlab.dill.moe"
       BITLAB_CACHE_GB: 25
       BITLAB_IDLE_MINUTES: 30
       BITLAB_WG_CONF: ${BITLAB_WG_CONF:-}
+      BITLAB_TORRENT_PORT: "51413"
     volumes:
       - ./data:/data
     read_only: true

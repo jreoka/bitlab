@@ -257,8 +257,10 @@ pub async fn handle_stream(
                     break;
                 }
                 let t = tr.trim();
-                let tl = t.to_lowercase();
-                if crate::util::valid_tracker(t) && (tl.starts_with("http://") || tl.starts_with("https://")) {
+                // valid_tracker already allows http/https/udp and rejects
+                // private/local hosts. Keep UDP trackers: they usually answer
+                // faster than HTTP and materially speed up first-peer time.
+                if crate::util::valid_tracker(t) {
                     clean.push(t.to_string());
                 }
             }
@@ -369,7 +371,8 @@ async fn handle_play_inner(
         return crate::server::http_error(403, "play link expired or not issued for this key — reopen the stream list");
     }
     let extra: Vec<String> = app.hints.get(&ih).unwrap_or_default();
-    let handle = match app.engine.ensure(&ih, &hint, &extra).await {
+    // Unpaused add: announces + dials peers while metadata resolves.
+    let handle = match app.engine.ensure_play(&ih, &hint, &extra).await {
         Ok(h) => h,
         Err(e) => return crate::server::http_error(500, &format!("torrent: {e}")),
     };

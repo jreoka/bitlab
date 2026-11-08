@@ -104,22 +104,61 @@ impl Engine {
             tracing::warn!("migrate cache: {e}");
         }
 
+        // DHT with persistent routing table: reuses the previous port and known
+        // nodes so peer discovery on click is warm instead of cold.
         let mut dht_config = librqbit::DhtSessionConfig::default();
-        dht_config.persistence = None;
         if cfg.torrent_port != 0 {
             dht_config.port = Some(cfg.torrent_port);
         }
+        dht_config.persistence = Some(librqbit::dht::DhtPersistenceConfig {
+            dump_interval: Some(Duration::from_secs(60)),
+            config_filename: Some(Path::new(&cfg.data_dir).join("dht.json")),
+        });
+        // Session-level trackers: every torrent (including resumed ones) gets
+        // the full tracker list even if its magnet omitted some.
+        let mut session_trackers = std::collections::HashSet::new();
+        for t in &cfg.trackers {
+            if let Ok(u) = url::Url::parse(t) {
+                session_trackers.insert(u);
+            }
+        }
+        // Aggressive-but-sane peer tuning for fast start:
+        // - 5s connect timeout culls slow peers quickly (default 10s)
+        // - 32 request window reacts to seeks/new streams faster (default 128)
+        let peer_opts = librqbit::PeerConnectionOptions {
+            connect_timeout: Some(Duration::from_secs(5)),
+            read_write_timeout: Some(Duration::from_secs(10)),
+            keep_alive_interval: Some(Duration::from_secs(30)),
+            max_request_window: Some(32),
+        };
         let mut session_opts = librqbit::SessionOptions {
             dht: Some(dht_config),
             fastresume: true,
+            trackers: session_trackers,
+            peer_limit: Some(150),
+            concurrent_init_limit: Some(10),
+            connect: Some(librqbit::ConnectionOptions {
+                enable_tcp: true,
+                peer_opts: Some(peer_opts),
+                ..Default::default()
+            }),
             ..Default::default()
         };
-        if cfg.torrent_port != 0 {
+        // Always listen (even with port 0 = random port) so we get incoming
+        // connections. Previously port 0 meant no listener at all, which
+        // roughly halves the reachable peer set and hurts first-byte time.
+        // UPnP is enabled so a fixed BITLAB_TORRENT_PORT gets forwarded
+        // automatically on home routers.
+        {
             let mut listen_opts = librqbit::ListenerOptions::default();
-            listen_opts.listen_addr = std::net::SocketAddr::new(
-                std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
-                cfg.torrent_port,
-            );
+            if cfg.torrent_port != 0 {
+                listen_opts.listen_addr = std::net::SocketAddr::new(
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+                    cfg.torrent_port,
+                );
+                listen_opts.announce_port = Some(cfg.torrent_port);
+            }
+            listen_opts.enable_upnp_port_forwarding = true;
             session_opts.listen = Some(listen_opts);
         }
 
@@ -217,7 +256,20 @@ impl Engine {
         m.entry(ih.to_string()).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))).clone()
     }
 
+    /// Metadata-only path used by background warm(): stays paused so it only
+    /// fetches metadata, never downloads payload in the background.
+    #[allow(dead_code)]
     pub async fn ensure(&self, ih: &str, name: &str, extra: &[String]) -> anyhow::Result<ManagedTorrentHandle> {
+        self.ensure_inner(ih, name, extra, true).await
+    }
+
+    /// Play path: starts UNPAUSED so DHT/tracker announces and peer
+    /// connections begin during metadata resolution instead of after it.
+    pub async fn ensure_play(&self, ih: &str, name: &str, extra: &[String]) -> anyhow::Result<ManagedTorrentHandle> {
+        self.ensure_inner(ih, name, extra, false).await
+    }
+
+    async fn ensure_inner(&self, ih: &str, name: &str, extra: &[String], paused: bool) -> anyhow::Result<ManagedTorrentHandle> {
         if !crate::util::valid_infohash_strict_lower(&ih.to_lowercase()) && !crate::util::valid_infohash(ih) {
             anyhow::bail!("invalid infohash");
         }
@@ -268,7 +320,7 @@ impl Engine {
 
         let opts = librqbit::AddTorrentOptions {
             overwrite: true,
-            paused: true,
+            paused,
             output_folder: Some(dir.to_string_lossy().to_string()),
             ..Default::default()
         };
@@ -496,7 +548,11 @@ impl Engine {
     }
 
     pub async fn select_only_file(&self, handle: &ManagedTorrentHandle, file_idx: usize) -> anyhow::Result<()> {
-        let _ = handle.wait_until_initialized().await;
+        // Play path already waited for metadata; skip the second wait when
+        // metadata is present so peer/piece work isn't stalled an extra RTT.
+        if handle.with_metadata(|_| true).is_err() {
+            let _ = handle.wait_until_initialized().await;
+        }
         let mut set = std::collections::HashSet::new();
         set.insert(file_idx);
         let _ = self.session.update_only_files(handle, &set).await;
@@ -660,6 +716,15 @@ impl EngineHandle {
     }
 
     async fn ensure(&self, ih: &str, name: &str, extra: &[String]) -> anyhow::Result<ManagedTorrentHandle> {
+        self.ensure_inner(ih, name, extra, true).await
+    }
+
+    #[allow(dead_code)]
+    async fn ensure_play(&self, ih: &str, name: &str, extra: &[String]) -> anyhow::Result<ManagedTorrentHandle> {
+        self.ensure_inner(ih, name, extra, false).await
+    }
+
+    async fn ensure_inner(&self, ih: &str, name: &str, extra: &[String], paused: bool) -> anyhow::Result<ManagedTorrentHandle> {
         if !crate::util::valid_infohash(ih) && !crate::util::valid_infohash_strict_lower(&ih.to_lowercase()) {
             anyhow::bail!("invalid infohash");
         }
@@ -743,7 +808,7 @@ impl EngineHandle {
 
         let opts = librqbit::AddTorrentOptions {
             overwrite: true,
-            paused: true,
+            paused,
             output_folder: Some(dir.to_string_lossy().to_string()),
             ..Default::default()
         };
