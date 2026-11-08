@@ -4,25 +4,30 @@ pub fn allocated_size(path: &std::path::Path, md: &std::fs::Metadata) -> i64 {
         let _ = path;
         use std::os::unix::fs::MetadataExt;
         let blocks = md.blocks() as i64;
-        // st_blocks is in 512-byte units
-        let b = blocks * 512;
-        if b > 0 {
-            return b;
-        }
-        md.len() as i64
+        // st_blocks is in 512-byte units.
+        // For sparse files, st_blocks correctly reflects only the blocks actually allocated on disk.
+        // If a file is completely unwritten/sparse (or empty), blocks is 0, meaning 0 bytes allocated.
+        blocks * 512
     }
     #[cfg(windows)]
     {
-        // Approximate NTFS allocated size: round up to 4KiB clusters for
-        // sparse torrent files the apparent size overstates the footprint.
-        // We do not query FileStandardInfo here to avoid windows-sys dep;
-        // cluster rounding is a good approximation.
-        let len = md.len() as i64;
         if md.file_type().is_dir() {
             return 0;
         }
-        let _ = path;
-        ((len + 4095) / 4096) * 4096
+        use std::os::windows::ffi::OsStrExt;
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        extern "system" {
+            fn GetCompressedFileSizeW(lpFileName: *const u16, lpFileSizeHigh: *mut u32) -> u32;
+            fn GetLastError() -> u32;
+        }
+        let mut high: u32 = 0;
+        let low = unsafe { GetCompressedFileSizeW(wide.as_ptr(), &mut high) };
+        const INVALID_FILE_SIZE: u32 = 0xFFFFFFFF;
+        if low == INVALID_FILE_SIZE && unsafe { GetLastError() } != 0 {
+            md.len() as i64
+        } else {
+            (((high as u64) << 32) | (low as u64)) as i64
+        }
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -111,3 +116,21 @@ pub async fn remove_all_async(path: &std::path::Path) -> std::io::Result<()> {
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_allocated_size_empty_file() {
+        let dir = std::env::temp_dir().join(format!("bitlab_test_alloc_{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("empty.bin");
+        std::fs::File::create(&file_path).unwrap();
+        let md = std::fs::metadata(&file_path).unwrap();
+        let size = allocated_size(&file_path, &md);
+        assert_eq!(size, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
