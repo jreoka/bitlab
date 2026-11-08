@@ -1,6 +1,7 @@
 pub fn allocated_size(path: &std::path::Path, md: &std::fs::Metadata) -> i64 {
     #[cfg(unix)]
     {
+        let _ = path;
         use std::os::unix::fs::MetadataExt;
         let blocks = md.blocks() as i64;
         // st_blocks is in 512-byte units

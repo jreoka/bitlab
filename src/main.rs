@@ -183,33 +183,25 @@ async fn main() {
         }
     };
 
-    // graceful shutdown
+    // graceful shutdown (ctrl_c + SIGTERM on unix)
     let srv = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>());
-    let shutdown = async {
-        let _ = tokio::signal::ctrl_c().await;
+    let shutdown_signal = async {
         #[cfg(unix)]
         {
-            // also handle SIGTERM via signal crate? tokio signal handles ctrl_c only; add unix SIGTERM
-            tracing::info!("shutting down");
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut term = signal(SignalKind::terminate()).expect("sigterm");
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = term.recv() => {},
+            }
         }
         #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
         tracing::info!("shutting down");
     };
-    // Handle SIGTERM on unix
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{signal, SignalKind};
-        let mut term = signal(SignalKind::terminate()).expect("sigterm");
-        tokio::select! {
-            _ = srv.into_future() => {},
-            _ = tokio::signal::ctrl_c() => { tracing::info!("shutting down"); },
-            _ = term.recv() => { tracing::info!("shutting down"); },
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        srv.with_graceful_shutdown(shutdown).await.unwrap();
-    }
+    srv.with_graceful_shutdown(shutdown_signal).await.unwrap();
 }
 
 fn bootstrap_admin_password(data_dir: &str) -> String {
