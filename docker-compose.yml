@@ -7,9 +7,9 @@ services:
       - "127.0.0.1:8090:8090"
     environment:
       BITLAB_ADMIN_PASSWORD: ${BITLAB_ADMIN_PASSWORD:-}
-      BITLAB_BASE_URL: ${BITLAB_BASE_URL:-}
-      BITLAB_CACHE_GB: ${BITLAB_CACHE_GB:-40}
-      BITLAB_IDLE_MINUTES: ${BITLAB_IDLE_MINUTES:-30}
+      BITLAB_BASE_URL: "https://bitlab.dill.moe"
+      BITLAB_CACHE_GB: 25
+      BITLAB_IDLE_MINUTES: 30
       BITLAB_WG_CONF: ${BITLAB_WG_CONF:-}
     volumes:
       - ./data:/data
