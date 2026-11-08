@@ -4,6 +4,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::sync::RwLock;
 
+pub use librqbit_core::hash_id::Id20;
+pub type ManagedTorrentHandle = Arc<librqbit::ManagedTorrent>;
+
 #[derive(Debug, Clone)]
 struct Activity {
     readers: i32,
@@ -20,7 +23,17 @@ struct Activity {
 impl Default for Activity {
     fn default() -> Self {
         let now = SystemTime::now();
-        Self { readers: 0, adding: false, last_access: now, label: String::new(), size: 0, rate: 0.0, prev_bytes: 0, prev_at: now, warned_no_peers: false }
+        Self {
+            readers: 0,
+            adding: false,
+            last_access: now,
+            label: String::new(),
+            size: 0,
+            rate: 0.0,
+            prev_bytes: 0,
+            prev_at: now,
+            warned_no_peers: false,
+        }
     }
 }
 
@@ -38,8 +51,21 @@ pub struct TorrentView {
     pub idle_seconds: i64,
 }
 
+pub fn hex_to_id20(ih: &str) -> Option<Id20> {
+    if ih.len() != 40 {
+        return None;
+    }
+    let v = hex::decode(ih).ok()?;
+    if v.len() != 20 {
+        return None;
+    }
+    let mut out = [0u8; 20];
+    out.copy_from_slice(&v);
+    Some(Id20::new(out))
+}
+
 pub struct Engine {
-    session: std::sync::Arc<torrent::session::Session>,
+    session: Arc<librqbit::Session>,
     #[allow(dead_code)]
     data_dir: PathBuf,
     media_dir: PathBuf,
@@ -51,8 +77,8 @@ pub struct Engine {
     grace: Duration,
     retain: Duration,
     max_torrents: usize,
+    info_timeout: Duration,
     act: Arc<RwLock<HashMap<String, Activity>>>,
-    // per-infohash add locks to serialize ensures
     add_locks: Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     warm_sem: Arc<tokio::sync::Semaphore>,
     stats: Arc<RwLock<crate::cache::CacheStats>>,
@@ -60,23 +86,6 @@ pub struct Engine {
     evicted_count: Arc<std::sync::atomic::AtomicI64>,
     closed: Arc<std::sync::atomic::AtomicBool>,
     has_wg: bool,
-}
-
-fn hex_to_infohash(ih: &str) -> Option<[u8; 20]> {
-    if ih.len() != 40 {
-        return None;
-    }
-    let v = hex::decode(ih).ok()?;
-    if v.len() != 20 {
-        return None;
-    }
-    let mut out = [0u8; 20];
-    out.copy_from_slice(&v);
-    Some(out)
-}
-
-fn infohash_hex(h: &[u8; 20]) -> String {
-    hex::encode(h)
 }
 
 impl Engine {
@@ -88,23 +97,34 @@ impl Engine {
                 Err(e) => anyhow::bail!("wireguard: {e}"),
             }
         }
-        let mut scfg = torrent::session::SessionConfig::default();
-        scfg.listen_port = if cfg.torrent_port == 0 { 6881 } else { cfg.torrent_port };
-        scfg.max_active_torrents = cfg.max_torrents;
-        scfg.tracker_timeout = Duration::from_secs(15);
-        if has_wg {
-            // Route through WG is not yet implemented in this port; DHT stays
-            // enabled so magnets can still resolve over the host network.
-            tracing::warn!("wireguard: BitTorrent traffic currently uses the host network (tunnel parsed, device not attached)");
-        }
-        let session = std::sync::Arc::new(torrent::session::Session::new(scfg).await.map_err(|e| anyhow::anyhow!("torrent client: {e}"))?);
 
         let media_dir = Path::new(&cfg.data_dir).join("media");
         tokio::fs::create_dir_all(&media_dir).await?;
-        // migrate old cache root
         if let Err(e) = migrate_cache_root(Path::new(&cfg.data_dir), &media_dir).await {
             tracing::warn!("migrate cache: {e}");
         }
+
+        let mut dht_config = librqbit::DhtSessionConfig::default();
+        dht_config.persistence = None;
+        if cfg.torrent_port != 0 {
+            dht_config.port = Some(cfg.torrent_port);
+        }
+        let mut session_opts = librqbit::SessionOptions {
+            dht: Some(dht_config),
+            fastresume: true,
+            ..Default::default()
+        };
+        if cfg.torrent_port != 0 {
+            let mut listen_opts = librqbit::ListenerOptions::default();
+            listen_opts.listen_addr = std::net::SocketAddr::new(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+                cfg.torrent_port,
+            );
+            session_opts.listen = Some(listen_opts);
+        }
+
+        let session = librqbit::Session::new_with_opts(media_dir.clone(), session_opts).await
+            .map_err(|e| anyhow::anyhow!("librqbit session: {e}"))?;
 
         let e = Self {
             session,
@@ -118,6 +138,7 @@ impl Engine {
             grace: cfg.cache_grace,
             retain: cfg.cache_retain,
             max_torrents: cfg.max_torrents,
+            info_timeout: cfg.info_timeout,
             act: Arc::new(RwLock::new(HashMap::new())),
             add_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             warm_sem: Arc::new(tokio::sync::Semaphore::new(4)),
@@ -164,8 +185,6 @@ impl Engine {
         let retain = self.retain;
         let idle = self.idle_timeout.clone();
         let closed = self.closed.clone();
-        let max_t = self.max_torrents;
-        let _ = max_t;
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(30));
             let mut sweeps = 0u64;
@@ -198,43 +217,41 @@ impl Engine {
         m.entry(ih.to_string()).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))).clone()
     }
 
-    /// Ensure a torrent handle exists, adding the magnet if needed.
-    pub async fn ensure(&self, ih: &str, name: &str, extra: &[String]) -> anyhow::Result<[u8; 20]> {
+    pub async fn ensure(&self, ih: &str, name: &str, extra: &[String]) -> anyhow::Result<ManagedTorrentHandle> {
         if !crate::util::valid_infohash_strict_lower(&ih.to_lowercase()) && !crate::util::valid_infohash(ih) {
             anyhow::bail!("invalid infohash");
         }
         let ih = ih.to_lowercase();
         self.touch(&ih, name).await;
-        let hb = hex_to_infohash(&ih).ok_or_else(|| anyhow::anyhow!("invalid infohash"))?;
-        // already present?
-        if self.session.active_torrents().iter().any(|h| h == &hb) {
-            return Ok(hb);
+        let id20 = hex_to_id20(&ih).ok_or_else(|| anyhow::anyhow!("invalid infohash"))?;
+
+        if let Some(handle) = self.session.get(librqbit::api::TorrentIdOrHash::Hash(id20)) {
+            return Ok(handle);
         }
-        // also check metainfo presence (registered but not active)?
-        // torrent crate keeps registered torrents even without swarm; active_torrents only lists running ones.
-        // Try status query: if metainfo exists, treat as present.
-        if self.session.metainfo(&hb).is_some() {
-            return Ok(hb);
-        }
+
         let lk = self.lock_for(&ih).await;
         let _g = lk.lock().await;
-        // re-check
-        if self.session.active_torrents().iter().any(|h| h == &hb) || self.session.metainfo(&hb).is_some() {
-            return Ok(hb);
+
+        if let Some(handle) = self.session.get(librqbit::api::TorrentIdOrHash::Hash(id20)) {
+            return Ok(handle);
         }
+
         {
             let mut m = self.act.write().await;
             if let Some(a) = m.get_mut(&ih) {
                 a.adding = true;
             }
         }
+
         let mut trs = self.trackers.clone();
         for t in extra {
             if !t.is_empty() && !trs.contains(t) {
                 trs.push(t.clone());
             }
         }
-        if self.max_torrents > 0 && self.session.active_torrents().len() >= self.max_torrents {
+
+        let current_count = self.session.with_torrents(|iter| iter.count());
+        if self.max_torrents > 0 && current_count >= self.max_torrents {
             if !self.evict_oldest().await {
                 let mut m = self.act.write().await;
                 if let Some(a) = m.get_mut(&ih) {
@@ -243,20 +260,57 @@ impl Engine {
                 anyhow::bail!("too many active torrents; try again shortly");
             }
         }
+
         let magnet = crate::indexers::magnet_uri(&ih, name, &trs);
-        let res = self.session.add_magnet_str(&magnet);
+        let add = librqbit::AddTorrent::from_url(magnet);
+        let dir = self.media_dir.join(&ih);
+        let _ = tokio::fs::create_dir_all(&dir).await;
+
+        let opts = librqbit::AddTorrentOptions {
+            overwrite: true,
+            paused: true,
+            output_folder: Some(dir.to_string_lossy().to_string()),
+            ..Default::default()
+        };
+
+        let timeout_dur = if self.info_timeout.is_zero() {
+            Duration::from_secs(45)
+        } else {
+            self.info_timeout
+        };
+        let res = match tokio::time::timeout(timeout_dur, self.session.add_torrent(add, Some(opts))).await {
+            Ok(r) => r,
+            Err(_) => Err(anyhow::anyhow!("timeout waiting for torrent metadata")),
+        };
         {
             let mut m = self.act.write().await;
             if let Some(a) = m.get_mut(&ih) {
                 a.adding = false;
             }
         }
-        let builder = res.map_err(|e| anyhow::anyhow!("{e}"))?;
-        let dir = self.media_dir.join(&ih);
-        // create dir eagerly so pending detection works
-        let _ = tokio::fs::create_dir_all(&dir).await;
-        builder.download_dir(dir).start().await.map_err(|e| anyhow::anyhow!("{e}"))?;
-        Ok(hb)
+
+        let handle = res.map_err(|e| anyhow::anyhow!("{e}"))?
+            .into_handle()
+            .ok_or_else(|| anyhow::anyhow!("failed to get managed torrent handle"))?;
+
+        Ok(handle)
+    }
+
+    #[allow(dead_code)]
+    pub async fn add_torrent_bytes(&self, bytes: bytes::Bytes) -> anyhow::Result<ManagedTorrentHandle> {
+        let add = librqbit::AddTorrent::TorrentFileBytes(bytes);
+        let opts = librqbit::AddTorrentOptions {
+            overwrite: true,
+            paused: false,
+            ..Default::default()
+        };
+        let res = self.session.add_torrent(add, Some(opts)).await
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .into_handle()
+            .ok_or_else(|| anyhow::anyhow!("failed to get managed torrent handle"))?;
+        let ih = res.info_hash().as_string();
+        self.touch(&ih, &res.name().unwrap_or_default()).await;
+        Ok(res)
     }
 
     async fn evict_oldest(&self) -> bool {
@@ -295,14 +349,9 @@ impl Engine {
                 let mut l = self.add_locks.lock().await;
                 l.remove(&oldest);
             }
-            if let Some(hb) = hex_to_infohash(&oldest) {
-                if self.session.metainfo(&hb).is_some() || self.session.active_torrents().contains(&hb) {
-                    let _ = self.session.remove_torrent(&hb).await;
-                    return true;
-                }
-                continue;
-            } else {
-                continue;
+            if let Some(id20) = hex_to_id20(&oldest) {
+                let _ = self.session.delete(librqbit::api::TorrentIdOrHash::Hash(id20), false).await;
+                return true;
             }
         }
     }
@@ -313,7 +362,7 @@ impl Engine {
         m.values().any(|a| a.readers > 0)
     }
 
-    pub fn warm(&self, ih: String, name: String, extra: Vec<String>, mb: i64) {
+    pub fn warm(&self, ih: String, name: String, extra: Vec<String>, _mb: i64) {
         if !crate::util::valid_infohash(&ih.to_lowercase()) {
             return;
         }
@@ -328,110 +377,69 @@ impl Engine {
                 tracing::info!("warm {} skipped: a stream is active (stream-first)", &ih[..8.min(ih.len())]);
                 return;
             }
-            let hb = match this.ensure(&ih, &name, &extra).await {
+            let handle = match this.ensure(&ih, &name, &extra).await {
                 Ok(h) => h,
                 Err(_) => return,
             };
-            // wait metadata up to 60s
-            let ok = wait_metainfo(&this.session, &hb, Duration::from_secs(60)).await;
-            if !ok {
-                return;
-            }
-            this.record_media(&hb).await;
-            if this.stream_busy().await {
-                return;
-            }
-            this.prebuffer(&hb, mb).await;
+            let _ = tokio::time::timeout(Duration::from_secs(30), handle.wait_until_initialized()).await;
+            this.record_media(&handle).await;
         });
     }
 
-    #[allow(dead_code)]
-    async fn prebuffer(&self, hb: &[u8; 20], mb: i64) {
-        if mb <= 0 {
-            return;
-        }
-        let Some(meta) = self.session.metainfo(hb) else { return };
-        let (paths, sizes) = crate::tmeta::torrent_files(&meta);
-        let idx = match crate::relevance::choose_file(&paths, &sizes, -1) {
-            Ok(i) => i,
+    pub async fn record_media(&self, handle: &ManagedTorrentHandle) {
+        let (name, total, files_out) = match handle.with_metadata(|meta| {
+            let name = meta.info.name().map(|n| n.to_string()).unwrap_or_default();
+            let total = meta.lengths().total_length() as i64;
+            let mut files_out = vec![];
+            for (i, fi) in meta.file_infos.iter().enumerate() {
+                let rel = fi.relative_filename.to_string_lossy().to_string();
+                if !crate::relevance::is_video_path(&rel) {
+                    continue;
+                }
+                files_out.push(crate::store::CachedFile {
+                    idx: i,
+                    path: rel,
+                    size: fi.len as i64,
+                });
+            }
+            (name, total, files_out)
+        }) {
+            Ok(v) => v,
             Err(_) => return,
         };
-        // Prebuffer = wait until first `mb` bytes of the file exist on disk, polling.
-        let ih = infohash_hex(hb);
-        let dir = self.media_dir.join(&ih);
-        // Resolve file path on disk: media/<ih>/<torrent_name>/<file_path...>
-        // torrent crate FileStorageFactory layout: download_dir/<file_path>.
-        // For single-file torrents, file is directly under dir.
-        let rel = paths[idx].clone();
-        let fp = dir.join(&rel);
-        let alt = dir.join(crate::tmeta::torrent_name(&meta)).join(&rel);
-        let target = (mb as u64) * 1024 * 1024;
-        let start = SystemTime::now();
-        let mut last_log = 0u64;
-        loop {
-            if self.stream_busy().await {
-                break;
-            }
-            if start.elapsed().unwrap_or_default() > Duration::from_secs(20) {
-                break;
-            }
-            let have = tokio::fs::metadata(&fp).await.map(|m| m.len()).unwrap_or(0).max(tokio::fs::metadata(&alt).await.map(|m| m.len()).unwrap_or(0));
-            if have > 0 && have != last_log {
-                last_log = have;
-            }
-            if have as u64 >= target {
-                break;
-            }
-            // check if download completed or stalled
-            if let Ok(st) = self.session.torrent_status(hb).await {
-                if st.progress >= 1.0 {
-                    break;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            // if file appeared with some bytes, keep waiting until target/timeout
-            if have > 0 && start.elapsed().unwrap_or_default() > Duration::from_secs(10) && have as u64 >= 1 * 1024 * 1024 {
-                // log partial
-            }
-        }
-        if last_log > 0 {
-            tracing::info!("prebuffered {} of {:?} ({})", crate::util::human_bytes(last_log as i64), paths[idx], &ih[..8.min(ih.len())]);
-        }
-    }
-
-    #[allow(dead_code)]
-    async fn record_media(&self, hb: &[u8; 20]) {
-        let Some(meta) = self.session.metainfo(hb) else { return };
-        let ih = infohash_hex(hb);
-        let (paths2, sizes2) = crate::tmeta::torrent_files(&meta);
-        let tname = crate::tmeta::torrent_name(&meta);
-        let mut files_out = vec![];
-        for (i, p) in paths2.iter().enumerate() {
-            if !crate::relevance::is_video_path(p) { continue; }
-            files_out.push(crate::store::CachedFile { idx: i, path: p.clone(), size: sizes2[i] });
-        }
-        let total = crate::tmeta::torrent_total(&meta);
-        let _ = self.store.save_media(&ih, &tname, total, &files_out);
+        let ih = handle.info_hash().as_string();
+        let _ = self.store.save_media(&ih, &name, total, &files_out);
     }
 
     pub async fn views(&self) -> Vec<TorrentView> {
         let mut out = vec![];
-        for hb in self.session.active_torrents() {
-            let ih = infohash_hex(&hb);
-            let (readers, rate, idle_s, label) = {
+        let handles = self.session.with_torrents(|iter| {
+            iter.map(|(_id, handle)| handle.clone()).collect::<Vec<_>>()
+        });
+        let now = SystemTime::now();
+        for handle in handles {
+            let ih = handle.info_hash().as_string();
+            let (readers, idle_s, label) = {
                 let m = self.act.read().await;
                 if let Some(a) = m.get(&ih) {
-                    (a.readers, a.rate, SystemTime::now().duration_since(a.last_access).map(|d| d.as_secs() as i64).unwrap_or(0), a.label.clone())
+                    (
+                        a.readers,
+                        now.duration_since(a.last_access).map(|d| d.as_secs() as i64).unwrap_or(0),
+                        a.label.clone(),
+                    )
                 } else {
-                    (0, 0.0, 0, String::new())
+                    (0, 0, String::new())
                 }
             };
-            let status = self.session.torrent_status(&hb).await.ok();
-            let meta = self.session.metainfo(&hb);
-            let name = meta.as_ref().map(crate::tmeta::torrent_name).unwrap_or(label);
-            let (size, completed, progress, peers, seeders) = match status {
-                Some(s) => (s.total_size as i64, s.total_downloaded as i64, s.progress, s.num_peers, s.num_seeds),
-                None => (0, 0, 0.0, 0, 0),
+            let stats = handle.stats();
+            let name = handle.name().unwrap_or_else(|| if label.is_empty() { ih.clone() } else { label });
+            let size = stats.total_bytes as i64;
+            let completed = stats.progress_bytes as i64;
+            let progress = if size > 0 { (completed as f64) / (size as f64) } else { 0.0 };
+            let (peers, rate) = if let Some(live) = &stats.live {
+                (live.snapshot.peer_stats.live as usize, live.download_speed.as_bytes() as f64)
+            } else {
+                (0, 0.0)
             };
             out.push(TorrentView {
                 infohash: ih,
@@ -440,7 +448,7 @@ impl Engine {
                 completed,
                 progress,
                 peers,
-                seeders,
+                seeders: peers,
                 rate,
                 readers,
                 idle_seconds: idle_s,
@@ -479,19 +487,65 @@ impl Engine {
     }
 
     pub fn torrent_count(&self) -> usize {
-        self.session.active_torrents().len()
+        self.session.with_torrents(|iter| iter.count())
     }
 
+    #[allow(dead_code)]
     pub fn media_dir(&self) -> &Path {
         &self.media_dir
     }
 
-    pub fn session_ref(&self) -> &torrent::session::Session {
-        &self.session
+    pub async fn select_only_file(&self, handle: &ManagedTorrentHandle, file_idx: usize) -> anyhow::Result<()> {
+        let _ = handle.wait_until_initialized().await;
+        let mut set = std::collections::HashSet::new();
+        set.insert(file_idx);
+        let _ = self.session.update_only_files(handle, &set).await;
+        if handle.is_paused() {
+            self.session.unpause(handle).await?;
+        }
+        Ok(())
     }
-    #[allow(dead_code)]
-    pub fn session_arc(&self) -> std::sync::Arc<torrent::session::Session> {
-        self.session.clone()
+
+    pub async fn pause_others(&self, current_ih: &str) {
+        let act = self.act.read().await;
+        let idle_hashes: Vec<String> = act.iter()
+            .filter(|(ih, a)| ih.as_str() != current_ih && a.readers == 0)
+            .map(|(ih, _)| ih.clone())
+            .collect();
+        drop(act);
+
+        for ih in idle_hashes {
+            if let Some(id20) = hex_to_id20(&ih) {
+                if let Some(handle) = self.session.get(librqbit::api::TorrentIdOrHash::Hash(id20)) {
+                    if !handle.is_paused() {
+                        tracing::info!("pausing idle torrent {} (stream-first)", &ih[..8.min(ih.len())]);
+                        let _ = self.session.pause(&handle).await;
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn schedule_pause_if_idle(&self, ih: String, delay: Duration) {
+        let act = self.act.clone();
+        let session = self.session.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            let readers = {
+                let m = act.read().await;
+                m.get(&ih).map(|a| a.readers).unwrap_or(0)
+            };
+            if readers == 0 {
+                if let Some(id20) = hex_to_id20(&ih) {
+                    if let Some(handle) = session.get(librqbit::api::TorrentIdOrHash::Hash(id20)) {
+                        if !handle.is_paused() {
+                            tracing::info!("halted torrent {} after disconnect (0 readers)", &ih[..8.min(ih.len())]);
+                            let _ = session.pause(&handle).await;
+                        }
+                    }
+                }
+            }
+        });
     }
 
     pub async fn inc_reader(&self, ih: &str, size: i64) {
@@ -503,10 +557,18 @@ impl Engine {
     }
 
     pub async fn dec_reader(&self, ih: &str) {
-        let mut m = self.act.write().await;
-        if let Some(a) = m.get_mut(ih) {
-            a.readers = (a.readers - 1).max(0);
-            a.last_access = SystemTime::now();
+        let (zero_readers, ih_owned) = {
+            let mut m = self.act.write().await;
+            if let Some(a) = m.get_mut(ih) {
+                a.readers = (a.readers - 1).max(0);
+                a.last_access = SystemTime::now();
+                (a.readers == 0, ih.to_string())
+            } else {
+                (false, String::new())
+            }
+        };
+        if zero_readers {
+            self.schedule_pause_if_idle(ih_owned, Duration::from_secs(5));
         }
     }
 
@@ -539,6 +601,7 @@ impl Engine {
             grace: self.grace,
             retain: self.retain,
             max_torrents: self.max_torrents,
+            info_timeout: self.info_timeout,
             act: self.act.clone(),
             add_locks: self.add_locks.clone(),
             warm_sem: self.warm_sem.clone(),
@@ -551,11 +614,10 @@ impl Engine {
     }
 }
 
-// A cheap cloneable handle that reuses the same Arcs (Engine itself is not Clone due to Session? Session is Clone).
 #[derive(Clone)]
 #[allow(dead_code)]
 struct EngineHandle {
-    session: std::sync::Arc<torrent::session::Session>,
+    session: Arc<librqbit::Session>,
     media_dir: PathBuf,
     trackers: Vec<String>,
     store: Arc<crate::store::Store>,
@@ -565,6 +627,7 @@ struct EngineHandle {
     grace: Duration,
     retain: Duration,
     max_torrents: usize,
+    info_timeout: Duration,
     act: Arc<RwLock<HashMap<String, Activity>>>,
     add_locks: Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     warm_sem: Arc<tokio::sync::Semaphore>,
@@ -575,24 +638,13 @@ struct EngineHandle {
     has_wg: bool,
 }
 
-impl std::ops::Deref for EngineHandle {
-    type Target = Engine;
-    fn deref(&self) -> &Engine {
-        // SAFETY: layout-compatible hack is not possible; instead implement methods directly.
-        // This Deref is never actually used for Engine methods that need &self with different fields;
-        // we implement the needed methods on EngineHandle via inherent impl below by duplicating logic.
-        // To keep the compiler happy, we panic if deref is used.
-        panic!("deref not supported")
-    }
-}
-
-// Implement the subset of Engine methods on EngineHandle by duplicating bodies.
 impl EngineHandle {
     #[allow(dead_code)]
     async fn stream_busy(&self) -> bool {
         let m = self.act.read().await;
         m.values().any(|a| a.readers > 0)
     }
+
     async fn touch(&self, ih: &str, label: &str) {
         let mut m = self.act.write().await;
         let a = m.entry(ih.to_string()).or_insert_with(Activity::default);
@@ -601,39 +653,47 @@ impl EngineHandle {
         }
         a.last_access = SystemTime::now();
     }
+
     async fn lock_for(&self, ih: &str) -> Arc<tokio::sync::Mutex<()>> {
         let mut m = self.add_locks.lock().await;
         m.entry(ih.to_string()).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))).clone()
     }
-    async fn ensure(&self, ih: &str, name: &str, extra: &[String]) -> anyhow::Result<[u8; 20]> {
+
+    async fn ensure(&self, ih: &str, name: &str, extra: &[String]) -> anyhow::Result<ManagedTorrentHandle> {
         if !crate::util::valid_infohash(ih) && !crate::util::valid_infohash_strict_lower(&ih.to_lowercase()) {
             anyhow::bail!("invalid infohash");
         }
         let ih = ih.to_lowercase();
         self.touch(&ih, name).await;
-        let hb = hex_to_infohash(&ih).ok_or_else(|| anyhow::anyhow!("invalid infohash"))?;
-        if self.session.active_torrents().iter().any(|h| h == &hb) || self.session.metainfo(&hb).is_some() {
-            return Ok(hb);
+        let id20 = hex_to_id20(&ih).ok_or_else(|| anyhow::anyhow!("invalid infohash"))?;
+
+        if let Some(handle) = self.session.get(librqbit::api::TorrentIdOrHash::Hash(id20)) {
+            return Ok(handle);
         }
+
         let lk = self.lock_for(&ih).await;
         let _g = lk.lock().await;
-        if self.session.active_torrents().iter().any(|h| h == &hb) || self.session.metainfo(&hb).is_some() {
-            return Ok(hb);
+
+        if let Some(handle) = self.session.get(librqbit::api::TorrentIdOrHash::Hash(id20)) {
+            return Ok(handle);
         }
+
         {
             let mut m = self.act.write().await;
             if let Some(a) = m.get_mut(&ih) {
                 a.adding = true;
             }
         }
+
         let mut trs = self.trackers.clone();
         for t in extra {
             if !t.is_empty() && !trs.contains(t) {
                 trs.push(t.clone());
             }
         }
-        if self.max_torrents > 0 && self.session.active_torrents().len() >= self.max_torrents {
-            // evict oldest (duplicate logic)
+
+        let current_count = self.session.with_torrents(|iter| iter.count());
+        if self.max_torrents > 0 && current_count >= self.max_torrents {
             let oldest = {
                 let m = self.act.read().await;
                 let mut oldest: Option<String> = None;
@@ -662,11 +722,9 @@ impl EngineHandle {
                     let mut m = self.act.write().await;
                     m.remove(&o);
                 }
-                if let Some(hbo) = hex_to_infohash(&o) {
-                    if self.session.metainfo(&hbo).is_some() || self.session.active_torrents().contains(&hbo) {
-                        let _ = self.session.remove_torrent(&hbo).await;
-                        evicted = true;
-                    }
+                if let Some(id20_old) = hex_to_id20(&o) {
+                    let _ = self.session.delete(librqbit::api::TorrentIdOrHash::Hash(id20_old), false).await;
+                    evicted = true;
                 }
             }
             if !evicted {
@@ -677,87 +735,82 @@ impl EngineHandle {
                 anyhow::bail!("too many active torrents; try again shortly");
             }
         }
+
         let magnet = crate::indexers::magnet_uri(&ih, name, &trs);
-        let res = self.session.add_magnet_str(&magnet);
+        let add = librqbit::AddTorrent::from_url(magnet);
+        let dir = self.media_dir.join(&ih);
+        let _ = tokio::fs::create_dir_all(&dir).await;
+
+        let opts = librqbit::AddTorrentOptions {
+            overwrite: true,
+            paused: true,
+            output_folder: Some(dir.to_string_lossy().to_string()),
+            ..Default::default()
+        };
+
+        let timeout_dur = if self.info_timeout.is_zero() {
+            Duration::from_secs(45)
+        } else {
+            self.info_timeout
+        };
+        let res = match tokio::time::timeout(timeout_dur, self.session.add_torrent(add, Some(opts))).await {
+            Ok(r) => r,
+            Err(_) => Err(anyhow::anyhow!("timeout waiting for torrent metadata")),
+        };
         {
             let mut m = self.act.write().await;
             if let Some(a) = m.get_mut(&ih) {
                 a.adding = false;
             }
         }
-        let builder = res.map_err(|e| anyhow::anyhow!("{e}"))?;
-        let dir = self.media_dir.join(&ih);
-        let _ = tokio::fs::create_dir_all(&dir).await;
-        builder.download_dir(dir).start().await.map_err(|e| anyhow::anyhow!("{e}"))?;
-        Ok(hb)
+
+        let handle = res.map_err(|e| anyhow::anyhow!("{e}"))?
+            .into_handle()
+            .ok_or_else(|| anyhow::anyhow!("failed to get managed torrent handle"))?;
+
+        Ok(handle)
     }
-    async fn record_media(&self, hb: &[u8; 20]) {
-        let Some(meta) = self.session.metainfo(hb) else { return };
-        let ih = infohash_hex(hb);
-        let (paths2, sizes2) = crate::tmeta::torrent_files(&meta);
-        let tname = crate::tmeta::torrent_name(&meta);
-        let mut files_out = vec![];
-        for (i, p) in paths2.iter().enumerate() {
-            if !crate::relevance::is_video_path(p) { continue; }
-            files_out.push(crate::store::CachedFile { idx: i, path: p.clone(), size: sizes2[i] });
-        }
-        let total = crate::tmeta::torrent_total(&meta);
-        let _ = self.store.save_media(&ih, &tname, total, &files_out);
+
+    #[allow(dead_code)]
+    pub async fn add_torrent_bytes(&self, bytes: bytes::Bytes) -> anyhow::Result<ManagedTorrentHandle> {
+        let add = librqbit::AddTorrent::TorrentFileBytes(bytes);
+        let opts = librqbit::AddTorrentOptions {
+            overwrite: true,
+            paused: false,
+            ..Default::default()
+        };
+        let res = self.session.add_torrent(add, Some(opts)).await
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .into_handle()
+            .ok_or_else(|| anyhow::anyhow!("failed to get managed torrent handle"))?;
+        let ih = res.info_hash().as_string();
+        self.touch(&ih, &res.name().unwrap_or_default()).await;
+        Ok(res)
     }
-    async fn prebuffer(&self, hb: &[u8; 20], mb: i64) {
-        if mb <= 0 {
-            return;
-        }
-        let Some(meta) = self.session.metainfo(hb) else { return };
-        let (paths, sizes) = crate::tmeta::torrent_files(&meta);
-        let idx = match crate::relevance::choose_file(&paths, &sizes, -1) {
-            Ok(i) => i,
+
+    async fn record_media(&self, handle: &ManagedTorrentHandle) {
+        let (name, total, files_out) = match handle.with_metadata(|meta| {
+            let name = meta.info.name().map(|n| n.to_string()).unwrap_or_default();
+            let total = meta.lengths().total_length() as i64;
+            let mut files_out = vec![];
+            for (i, fi) in meta.file_infos.iter().enumerate() {
+                let rel = fi.relative_filename.to_string_lossy().to_string();
+                if !crate::relevance::is_video_path(&rel) {
+                    continue;
+                }
+                files_out.push(crate::store::CachedFile {
+                    idx: i,
+                    path: rel,
+                    size: fi.len as i64,
+                });
+            }
+            (name, total, files_out)
+        }) {
+            Ok(v) => v,
             Err(_) => return,
         };
-        let ih = infohash_hex(hb);
-        let dir = self.media_dir.join(&ih);
-        let rel = paths[idx].clone();
-        let fp = dir.join(&rel);
-        let target = (mb as u64) * 1024 * 1024;
-        let start = SystemTime::now();
-        let mut last_log = 0u64;
-        loop {
-            if self.stream_busy().await {
-                break;
-            }
-            if start.elapsed().unwrap_or_default() > Duration::from_secs(20) {
-                break;
-            }
-            let have = tokio::fs::metadata(&fp).await.map(|m| m.len()).unwrap_or(0);
-            if have > 0 {
-                last_log = have;
-            }
-            if have as u64 >= target {
-                break;
-            }
-            if let Ok(st) = self.session.torrent_status(hb).await {
-                if st.progress >= 1.0 {
-                    break;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-        if last_log > 0 {
-            tracing::info!("prebuffered {} of {:?} ({})", crate::util::human_bytes(last_log as i64), paths[idx], &ih[..8.min(ih.len())]);
-        }
-    }
-}
-
-pub async fn wait_metainfo(session: &torrent::session::Session, hb: &[u8; 20], timeout: Duration) -> bool {
-    let start = SystemTime::now();
-    loop {
-        if session.metainfo(hb).is_some() {
-            return true;
-        }
-        if start.elapsed().unwrap_or_default() > timeout {
-            return session.metainfo(hb).is_some();
-        }
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        let ih = handle.info_hash().as_string();
+        let _ = self.store.save_media(&ih, &name, total, &files_out);
     }
 }
 
@@ -780,13 +833,15 @@ async fn migrate_cache_root(root: &Path, media: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn reap_idle(session: &torrent::session::Session, act: &Arc<RwLock<HashMap<String, Activity>>>, idle: &Arc<std::sync::atomic::AtomicI64>, now: SystemTime) {
-    for hb in session.active_torrents() {
-        let ih = infohash_hex(&hb);
-        let (size, completed) = match session.torrent_status(&hb).await {
-            Ok(s) => (s.total_size, s.total_downloaded),
-            Err(_) => (0, 0),
-        };
+async fn reap_idle(session: &librqbit::Session, act: &Arc<RwLock<HashMap<String, Activity>>>, idle: &Arc<std::sync::atomic::AtomicI64>, now: SystemTime) {
+    let handles = session.with_torrents(|iter| {
+        iter.map(|(_id, handle)| handle.clone()).collect::<Vec<_>>()
+    });
+    for handle in handles {
+        let ih = handle.info_hash().as_string();
+        let stats = handle.stats();
+        let size = stats.total_bytes;
+        let completed = stats.progress_bytes;
         {
             let mut m = act.write().await;
             let a = m.entry(ih.clone()).or_insert_with(Activity::default);
@@ -807,10 +862,9 @@ async fn reap_idle(session: &torrent::session::Session, act: &Arc<RwLock<HashMap
                 None => (0, now, false),
             }
         };
-        // peer warning
         if readers > 0 {
-            let peers = session.torrent_status(&hb).await.map(|s| s.num_peers).unwrap_or(0);
-            if size as i64 > 0 && peers == 0 && now.duration_since(last).unwrap_or_default() > Duration::from_secs(15) && !warned {
+            let peers = stats.live.as_ref().map(|l| l.snapshot.peer_stats.live as usize).unwrap_or(0);
+            if size > 0 && peers == 0 && now.duration_since(last).unwrap_or_default() > Duration::from_secs(15) && !warned {
                 tracing::warn!("no peers for {} after {:?}", &ih[..8.min(ih.len())], now.duration_since(last).unwrap_or_default());
                 let mut m = act.write().await;
                 if let Some(a) = m.get_mut(&ih) {
@@ -821,7 +875,7 @@ async fn reap_idle(session: &torrent::session::Session, act: &Arc<RwLock<HashMap
         let idle_dur = Duration::from_nanos(idle.load(std::sync::atomic::Ordering::Relaxed) as u64);
         if readers == 0 && now.duration_since(last).unwrap_or_default() > idle_dur {
             tracing::info!("drop idle torrent {} ({:?} idle)", &ih[..8.min(ih.len())], now.duration_since(last).unwrap_or_default());
-            let _ = session.remove_torrent(&hb).await;
+            let _ = session.delete(librqbit::api::TorrentIdOrHash::Hash(handle.info_hash()), false).await;
             let mut m = act.write().await;
             m.remove(&ih);
         }
@@ -830,7 +884,7 @@ async fn reap_idle(session: &torrent::session::Session, act: &Arc<RwLock<HashMap
 
 #[allow(clippy::too_many_arguments)]
 async fn sweep_cache_once(
-    session: &torrent::session::Session,
+    session: &librqbit::Session,
     data_dir: &Path,
     store: &Arc<crate::store::Store>,
     act: &Arc<RwLock<HashMap<String, Activity>>>,
@@ -850,18 +904,20 @@ async fn sweep_cache_once(
             return;
         }
     };
-    // owned/pending
-    let mut owned: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut pending: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for hb in session.active_torrents() {
-        let ih = infohash_hex(&hb);
-        if session.metainfo(&hb).is_some() {
-            owned.insert(ih);
-        } else if store.media_name(&ih).is_some() {
-            pending.insert(ih);
+    let (owned, pending) = session.with_torrents(|iter| {
+        let mut owned = std::collections::HashSet::new();
+        let mut pending = std::collections::HashSet::new();
+        for (_id, handle) in iter {
+            let ih = handle.info_hash().as_string();
+            if handle.with_metadata(|_| true).is_ok() {
+                owned.insert(ih);
+            } else if store.media_name(&ih).is_some() {
+                pending.insert(ih);
+            }
         }
-    }
-    // also include registered-but-not-active metainfo? session.metainfo covers them only if active? Include anyway by checking all act keys?
+        (owned, pending)
+    });
+
     let mut units: Vec<crate::cache::CacheUnit> = vec![];
     let mut used = 0i64;
     let mut partial_bytes = 0i64;
@@ -907,8 +963,8 @@ async fn sweep_cache_once(
     for (idx, reason) in plan {
         let u = &units[idx];
         if u.loaded {
-            if let Some(hb) = hex_to_infohash(&u.infohash) {
-                let _ = session.remove_torrent(&hb).await;
+            if let Some(id20) = hex_to_id20(&u.infohash) {
+                let _ = session.delete(librqbit::api::TorrentIdOrHash::Hash(id20), false).await;
             }
         }
         if crate::platform::remove_all_async(&u.entry.path).await.is_err() {
@@ -956,5 +1012,85 @@ async fn sweep_cache_once(
     if freed_count > 0 {
         tracing::info!("cache: reclaimed {} in {freed_count} entries (used {} / budget {}, free {})",
             crate::util::human_bytes(freed), crate::util::human_bytes(st.used_bytes), crate::util::human_bytes(max_cache.load(std::sync::atomic::Ordering::Relaxed)), crate::util::human_bytes(free));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_engine_init() {
+        let temp_dir = std::env::temp_dir().join(format!("bitlab_test_{}", rand::random::<u64>()));
+        tokio::fs::create_dir_all(&temp_dir).await.unwrap();
+        let cfg = crate::config::Config {
+            addr: "127.0.0.1:0".to_string(),
+            data_dir: temp_dir.to_string_lossy().to_string(),
+            base_url: "".to_string(),
+            trackers: vec![],
+            cache_max_bytes: 10 * 1024 * 1024,
+            cache_reserve_bytes: 1024 * 1024,
+            cache_retain: Duration::from_secs(60),
+            cache_grace: Duration::from_secs(60),
+            idle_timeout: Duration::from_secs(60),
+            info_timeout: Duration::from_secs(10),
+            readahead_bytes: 1024 * 1024,
+            prebuffer_mb: 1,
+            torrent_port: 0,
+            max_torrents: 5,
+            admin_password: "".to_string(),
+            trust_proxy: false,
+            wireguard_conf: "".to_string(),
+        };
+        let store = Arc::new(crate::store::Store::open(&temp_dir.join("store.db")).unwrap());
+        let engine = Engine::new(&cfg, store).await.unwrap();
+        assert_eq!(engine.torrent_count(), 0);
+        let views = engine.views().await;
+        assert!(views.is_empty());
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_engine_ensure_and_views() {
+        let temp_dir = std::env::temp_dir().join(format!("bitlab_test_{}", rand::random::<u64>()));
+        tokio::fs::create_dir_all(&temp_dir).await.unwrap();
+        let cfg = crate::config::Config {
+            addr: "127.0.0.1:0".to_string(),
+            data_dir: temp_dir.to_string_lossy().to_string(),
+            base_url: "".to_string(),
+            trackers: vec![],
+            cache_max_bytes: 10 * 1024 * 1024,
+            cache_reserve_bytes: 1024 * 1024,
+            cache_retain: Duration::from_secs(60),
+            cache_grace: Duration::from_secs(60),
+            idle_timeout: Duration::from_secs(60),
+            info_timeout: Duration::from_millis(50),
+            readahead_bytes: 1024 * 1024,
+            prebuffer_mb: 1,
+            torrent_port: 0,
+            max_torrents: 5,
+            admin_password: "".to_string(),
+            trust_proxy: false,
+            wireguard_conf: "".to_string(),
+        };
+        let store = Arc::new(crate::store::Store::open(&temp_dir.join("store.db")).unwrap());
+        let engine = Engine::new(&cfg, store).await.unwrap();
+        
+        // Ensure dead magnet times out cleanly
+        let ih = "0123456789abcdef0123456789abcdef01234567";
+        let res = engine.ensure(ih, "Test Torrent", &[]).await;
+        assert!(res.is_err(), "expected timeout or error for nonexistent magnet");
+
+        // Add dummy torrent bytes
+        let dummy = bytes::Bytes::from_static(b"d4:infod6:lengthi10e4:name8:test.bin12:piece lengthi16384e6:pieces20:12345678901234567890ee");
+        let handle = engine.add_torrent_bytes(dummy).await.unwrap();
+        let actual_ih = handle.info_hash().as_string();
+        assert_eq!(engine.torrent_count(), 1);
+
+        let views = engine.views().await;
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].infohash, actual_ih);
+
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
     }
 }

@@ -12,7 +12,6 @@ mod relevance;
 mod security;
 mod server;
 mod store;
-mod tmeta;
 mod util;
 mod wireguard;
 

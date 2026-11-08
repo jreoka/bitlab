@@ -119,7 +119,7 @@ fn truncate(s: &str, n: usize) -> String {
     if s.len() <= n {
         s.to_string()
     } else {
-        s[..n].to_string()
+        s[..s.floor_char_boundary(n)].to_string()
     }
 }
 
@@ -312,7 +312,7 @@ pub async fn handle_stream(
         });
         if i < 6 {
             let mb = if i < 3 { app.cfg.prebuffer_mb * 3 } else { 6 };
-            app.engine.warm(ih.clone(), res.title.clone(), vec![], mb);
+            app.engine.warm(ih.clone(), res.title.clone(), res.trackers.clone(), mb);
         }
     }
     crate::server::json_response(200, serde_json::json!({"streams": streams}))
@@ -369,36 +369,32 @@ async fn handle_play_inner(
         return crate::server::http_error(403, "play link expired or not issued for this key — reopen the stream list");
     }
     let extra: Vec<String> = app.hints.get(&ih).unwrap_or_default();
-    let hb = match app.engine.ensure(&ih, &hint, &extra).await {
+    let handle = match app.engine.ensure(&ih, &hint, &extra).await {
         Ok(h) => h,
         Err(e) => return crate::server::http_error(500, &format!("torrent: {e}")),
     };
     // wait metadata
     let info_timeout = app.cfg.info_timeout;
-    if !crate::engine::wait_metainfo(app.engine.session_ref(), &hb, info_timeout).await {
-        // Check if metadata arrived anyway
-        if app.engine.session_ref().metainfo(&hb).is_none() {
-            return crate::server::http_error(504, "waiting for metadata: timeout");
-        }
+    let wait_res = tokio::time::timeout(info_timeout, handle.wait_until_initialized()).await;
+    if wait_res.is_err() || wait_res.unwrap().is_err() {
+        return crate::server::http_error(504, "waiting for metadata: timeout");
     }
     // file list
-    let meta = match app.engine.session_ref().metainfo(&hb) {
-        Some(m) => m,
-        None => return crate::server::http_error(504, "waiting for metadata: unavailable"),
+    let (paths, sizes, tname) = match handle.with_metadata(|meta| {
+        let paths: Vec<String> = meta.file_infos.iter().map(|f| f.relative_filename.to_string_lossy().to_string()).collect();
+        let sizes: Vec<i64> = meta.file_infos.iter().map(|f| f.len as i64).collect();
+        let name = meta.info.name().map(|n| n.to_string()).unwrap_or_default();
+        (paths, sizes, name)
+    }) {
+        Ok(m) => m,
+        Err(_) => return crate::server::http_error(504, "waiting for metadata: unavailable"),
     };
-    let (paths, sizes) = crate::tmeta::torrent_files(&meta);
-    let tname = crate::tmeta::torrent_name(&meta);
+    app.engine.record_media(&handle).await;
+    let _ = tname;
     // titles for movie
-    let titles: Vec<String> = {
-        // axum Query<HashMap> keeps only last `t`; parse raw query for repeats is complex.
-        // Fall back to single value + split? For full multi-t support, read from `q` map is limited.
-        // We collect `t` if present (last one) — acceptable degradation; most links carry 1-2 hints.
-        // To preserve all, clients send repeated `t`; HashMap loses all but one.
-        // Workaround: parse the raw query string is not available here; accept single.
-        match q.get("t") {
-            Some(v) => vec![v.clone()],
-            None => vec![],
-        }
+    let titles: Vec<String> = match q.get("t") {
+        Some(v) => vec![v.clone()],
+        None => vec![],
     };
     let idx_res = if !titles.is_empty() && ep_wanted == 0 {
         crate::relevance::choose_file_for_title(&paths, &sizes, want_idx, &titles)
@@ -425,105 +421,48 @@ async fn handle_play_inner(
             }
         }
     }
-    // resolve on-disk path
-    let dir = app.engine.media_dir().join(&ih);
-    // torrent crate stores as download_dir/<path>. For multi-file, path includes top dir? meta.info.name is top dir for multi-file? Actually files' paths are relative to torrent root; storage factory joins download_dir + path.
-    // Our download_dir is media/<ih>, so file is media/<ih>/<rel> OR media/<ih>/<torrent_name>/<rel> depending on factory.
-    // Try both.
-    let mut candidates = vec![dir.join(&rel), dir.join(&tname).join(&rel)];
-    // single-file: file may be directly named torrent name
-    if paths.len() <= 1 {
-        candidates.push(dir.join(&tname));
-    }
-    let mut found: Option<std::path::PathBuf> = None;
-    for c in &candidates {
-        if tokio::fs::metadata(c).await.is_ok() {
-            found = Some(c.clone());
-            break;
-        }
-    }
-    // If file not yet on disk, wait for it to appear (up to info_timeout) by polling.
-    if found.is_none() {
-        let start = std::time::Instant::now();
-        while start.elapsed() < info_timeout {
-            for c in &candidates {
-                if tokio::fs::metadata(c).await.is_ok() {
-                    found = Some(c.clone());
-                    break;
-                }
-            }
-            if found.is_some() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-    }
-    let fpath = match found {
-        Some(p) => p,
-        None => {
-            // Metadata known but bytes not yet downloaded; still stream via waiting reader?
-            // Return 504 with hint to retry: player will retry.
-            return crate::server::http_error(504, "file bytes not yet available — retry shortly");
-        }
-    };
-    // content type
-    let fname = fpath.file_name().and_then(|s| s.to_str()).unwrap_or("video");
-    let mut ct = mime_guess::from_path(fname).first_raw().unwrap_or("application/octet-stream").to_string();
-    let mut disp_name = fname.to_string();
-    if ct == "application/octet-stream" {
-        // sniff
-        if let Ok(mut f) = tokio::fs::File::open(&fpath).await {
-            use tokio::io::AsyncReadExt;
-            let mut hdr = vec![0u8; 16];
-            if let Ok(n) = f.read(&mut hdr).await {
-                hdr.truncate(n);
-                if let Some((ext, sniffed)) = crate::util::sniff_container(&hdr) {
-                    ct = sniffed.to_string();
-                    if std::path::Path::new(fname).extension().is_none() {
-                        disp_name = format!("{fname}{ext}");
-                    }
-                }
-            }
-        }
-    }
-    if ct.is_empty() {
-        ct = "application/octet-stream".to_string();
-    }
+
+    let fname = std::path::Path::new(&rel).file_name().and_then(|s| s.to_str()).unwrap_or("video");
+    let mut ct = mime_guess::from_path(fname).first_raw().unwrap_or("video/mp4").to_string();
+    let disp_name = fname.to_string();
     if !ct.starts_with("video/") {
-        return crate::server::http_error(415, "this file is not a playable video");
+        ct = "video/mp4".to_string();
     }
 
     // readers accounting
     app.engine.inc_reader(&ih, file_len).await;
     let app2 = app.clone();
     let ih2 = ih.clone();
-    // We need to decrement on drop: use a guard that runs when response stream completes.
-    // Simplify: spawn a task that decrements after response is sent? Instead, decrement after streaming via Stream wrapper.
-    // For now, decrement after 1s? No — correct: wrap file stream with accounting.
-    // We'll create a stream that touches on each chunk and decrements on end.
 
-    // Open file
-    let file = match tokio::fs::File::open(&fpath).await {
-        Ok(f) => f,
+    // Stream-first: immediately pause any background/idle torrents
+    app.engine.pause_others(&ih).await;
+
+    // Select only this file to prevent downloading other files/episodes in the swarm
+    if let Err(e) = app.engine.select_only_file(&handle, idx).await {
+        tracing::warn!("select_only_file({idx}): {e}");
+    }
+
+    // Stream directly via librqbit Piece Prioritizer
+    let mut stream = match handle.stream(idx).await {
+        Ok(s) => s,
         Err(e) => {
             app.engine.dec_reader(&ih).await;
-            return crate::server::http_error(500, &format!("open: {e}"));
+            return crate::server::http_error(500, &format!("stream: {e}"));
         }
     };
-    let md = file.metadata().await.map(|m| m.len() as i64).unwrap_or(file_len);
-    let size = if md > 0 { md } else { file_len };
 
     // Range handling
     let range_hdr = headers.get("range").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
-    let (start, end, status) = parse_range(&range_hdr, size);
+    let (start, end, status) = parse_range(&range_hdr, file_len);
     let content_len = end - start + 1;
 
     use tokio::io::AsyncSeekExt;
-    let mut file = file;
     if start > 0 {
-        file.seek(std::io::SeekFrom::Start(start as u64)).await.ok();
+        if let Err(e) = stream.seek(std::io::SeekFrom::Start(start as u64)).await {
+            tracing::warn!("stream seek to {start}: {e}");
+        }
     }
-    let limited = tokio::io::AsyncReadExt::take(file, content_len as u64);
+    let limited = tokio::io::AsyncReadExt::take(stream, content_len as u64);
 
     // counting + touch stream
     let reader_stream = tokio_util::io::ReaderStream::new(limited);
@@ -647,10 +586,10 @@ async fn handle_play_inner(
         .header("x-bitlab-file", idx.to_string());
     if status == 206 {
         builder = builder.status(206)
-            .header("content-range", format!("bytes {start}-{end}/{size}"))
+            .header("content-range", format!("bytes {start}-{end}/{file_len}"))
             .header("content-length", content_len.to_string());
     } else {
-        builder = builder.status(200).header("content-length", size.to_string());
+        builder = builder.status(200).header("content-length", file_len.to_string());
     }
     builder.body(body).unwrap()
 }
@@ -687,4 +626,18 @@ fn parse_range(hdr: &str, size: i64) -> (i64, i64, u16) {
     }
     let end = end.min(size - 1).max(start);
     (start, end, 206)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_utf8() {
+        let title = "The 100 Girlfriends Who Really, Really, Really, Really, REALLY Love You - 君のことが大大大大大好きな100人の彼女";
+        let res = truncate(title, 120);
+        assert!(res.len() <= 120);
+        // Ensure valid UTF-8 slice and doesn't panic
+        assert_eq!(res, &title[..title.floor_char_boundary(120)]);
+    }
 }

@@ -114,6 +114,7 @@ pub fn range_start(h: &str) -> Option<i64> {
     spec[..dash].trim().parse::<i64>().ok()
 }
 
+#[allow(dead_code)]
 pub fn sniff_container(b: &[u8]) -> Option<(&'static str, &'static str)> {
     if b.len() >= 8 && &b[4..8] == b"ftyp" {
         let brand = if b.len() >= 12 { String::from_utf8_lossy(&b[8..12.min(b.len())]).trim().to_string() } else { String::new() };
