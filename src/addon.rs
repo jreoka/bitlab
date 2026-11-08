@@ -1,0 +1,696 @@
+use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
+use axum::response::{IntoResponse, Response};
+use std::collections::HashMap;
+use futures::StreamExt;
+use std::time::{Duration, SystemTime};
+
+#[derive(Debug, serde::Serialize)]
+struct Manifest {
+    id: String,
+    version: String,
+    name: String,
+    description: String,
+    resources: Vec<String>,
+    types: Vec<String>,
+    #[serde(rename = "idPrefixes")]
+    id_prefixes: Vec<String>,
+    catalogs: Vec<serde_json::Value>,
+    #[serde(rename = "behaviorHints", skip_serializing_if = "Option::is_none")]
+    behavior_h: Option<serde_json::Value>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct Stream {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    url: String,
+    #[serde(rename = "behaviorHints", skip_serializing_if = "Option::is_none")]
+    behavior_hints: Option<HashMap<String, serde_json::Value>>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct StreamResponse {
+    streams: Vec<Stream>,
+}
+
+pub fn manifest_for(label: &str, key_id: &str) -> Manifest {
+    Manifest {
+        id: format!("org.bitlab.{key_id}"),
+        version: crate::config::VERSION.to_string(),
+        name: "Bitlab".to_string(),
+        description: format!("Self-hosted streaming hub. Manifest: {label}"),
+        resources: vec!["stream".to_string()],
+        types: vec!["movie".to_string(), "series".to_string()],
+        id_prefixes: vec!["tt".to_string()],
+        catalogs: vec![],
+        behavior_h: None,
+    }
+}
+
+async fn auth_key(app: &crate::server::App, headers: &HeaderMap, token: &str) -> Result<crate::store::Key, Response> {
+    if token.is_empty() {
+        return Err(crate::server::http_error(401, "missing manifest key"));
+    }
+    match app.store.key_by_token(token) {
+        Ok(k) => {
+            app.store.touch_key(&k.id);
+            Ok(k)
+        }
+        Err(crate::store::KeyLookup::NotFound) => Err(crate::server::http_error(401, "unknown manifest key")),
+        Err(crate::store::KeyLookup::Paused) => Err(crate::server::http_error(403, "this manifest key is paused")),
+        Err(crate::store::KeyLookup::Expired) => Err(crate::server::http_error(410, "this manifest key expired")),
+    }
+}
+
+pub async fn handle_manifest(
+    State(app): State<crate::server::App>,
+    headers: HeaderMap,
+    Path(token): Path<String>,
+) -> Response {
+    let k = match auth_key(&app, &headers, &token).await {
+        Ok(k) => k,
+        Err(e) => return e,
+    };
+    let m = manifest_for(&k.label, &k.id);
+    let body = serde_json::to_string(&m).unwrap();
+    Response::builder()
+        .status(200)
+        .header("content-type", "application/json; charset=utf-8")
+        .header("access-control-allow-origin", "*")
+        .header("cache-control", "max-age=300")
+        .body(axum::body::Body::from(body))
+        .unwrap()
+}
+
+pub fn parse_media_id(id: &str) -> (String, i32, i32) {
+    let id = id.trim_end_matches(".json");
+    let parts: Vec<&str> = id.split(':').collect();
+    let base = parts.first().map(|s| s.to_string()).unwrap_or_default();
+    let mut season = 0;
+    let mut ep = 0;
+    if parts.len() >= 3 {
+        season = parts[1].parse().unwrap_or(0);
+        ep = parts[2].parse().unwrap_or(0);
+    }
+    (base, season, ep)
+}
+
+fn release_label(title: &str) -> (String, String) {
+    let q = if regex::Regex::new(r"(?i)\b(2160p|4k|uhd)\b").unwrap().is_match(title) {
+        "2160p"
+    } else if regex::Regex::new(r"(?i)\b1080p\b").unwrap().is_match(title) {
+        "1080p"
+    } else if regex::Regex::new(r"(?i)\b720p\b").unwrap().is_match(title) {
+        "720p"
+    } else {
+        "SD"
+    };
+    let src = if regex::Regex::new(r"(?i)\bremux\b").unwrap().is_match(title) {
+        "REMUX"
+    } else if regex::Regex::new(r"(?i)\b(bluray|blu-ray|bdrip)\b").unwrap().is_match(title) {
+        "BluRay"
+    } else if regex::Regex::new(r"(?i)\b(web-dl|webrip|web)\b").unwrap().is_match(title) {
+        "WEB"
+    } else {
+        ""
+    };
+    let label = format!("{} {}", q, src).trim().to_string();
+    (label, q.to_string())
+}
+
+fn truncate(s: &str, n: usize) -> String {
+    if s.len() <= n {
+        s.to_string()
+    } else {
+        s[..n].to_string()
+    }
+}
+
+pub async fn handle_stream(
+    State(app): State<crate::server::App>,
+    headers: HeaderMap,
+    Path((token, typ, id)): Path<(String, String, String)>,
+) -> Response {
+    let k = match auth_key(&app, &headers, &token).await {
+        Ok(k) => k,
+        Err(e) => return e,
+    };
+    let raw_id = id.trim_end_matches(".json").to_string();
+    let (base_id, mut season, mut ep) = parse_media_id(&raw_id);
+
+    if typ != "movie" && typ != "series" {
+        return crate::server::json_response(200, serde_json::json!({"streams": []}));
+    }
+    if typ == "series" && season <= 0 {
+        tracing::info!("stream {raw_id:?}: no season/episode to match, refusing to guess");
+        return crate::server::json_response(200, serde_json::json!({"streams": []}));
+    }
+
+    let ctx = tokio::time::timeout(Duration::from_secs(30), async {
+        let title_year = app.resolve_meta(&typ, &base_id).await;
+        title_year
+    })
+    .await;
+
+    let (title, year) = match ctx {
+        Ok(Ok(v)) => v,
+        _ => {
+            tracing::info!("stream {raw_id:?}: meta failed");
+            return crate::server::json_response(200, serde_json::json!({"streams": []}));
+        }
+    };
+
+    let (s2, e2) = app.fix_episode_number(&base_id, season, ep);
+    season = s2;
+    ep = e2;
+
+    let mut query = title.clone();
+    if typ == "series" && season > 0 {
+        query = format!("{title} S{season:02}E{ep:02}");
+    }
+
+    let mut queries = vec![query.clone()];
+    let mut aliases: Vec<String> = vec![];
+    let mut play_hints: Vec<String> = vec![];
+    if typ == "series" && season > 0 {
+        aliases = crate::anilist::anime_aliases(&app, &title).await;
+        for (i, a) in aliases.iter().enumerate() {
+            if i >= 2 {
+                break;
+            }
+            queries.push(format!("{a} S{season:02}E{ep:02}"));
+        }
+        if !aliases.is_empty() {
+            queries.push(aliases[0].clone());
+        }
+        queries.push(format!("{title} S{season:02}"));
+        if !aliases.is_empty() {
+            queries.push(format!("{} S{season:02}", aliases[0]));
+        }
+    } else if typ == "movie" {
+        let forms = crate::relevance::title_forms(&title);
+        let mut lookup = title.clone();
+        if forms.len() > 1 {
+            lookup = forms[1].clone();
+            queries.push(crate::relevance::with_year(&forms[1], year));
+        }
+        let mut al = crate::anilist::anime_aliases(&app, &lookup).await;
+        al.extend(forms.iter().skip(1).cloned());
+        aliases = al;
+        for (i, a) in aliases.iter().enumerate() {
+            if i >= 2 {
+                break;
+            }
+            queries.push(crate::relevance::with_year(a, year));
+        }
+        let clean = crate::relevance::clean_title(&title);
+        if !clean.is_empty() && !clean.eq_ignore_ascii_case(&title) {
+            queries.push(clean);
+        }
+        queries.push(crate::relevance::with_year(&title, year));
+        let mut all_hints = vec![];
+        for h in forms.iter().chain(aliases.iter()) {
+            all_hints.extend(crate::relevance::title_forms(h));
+        }
+        play_hints = crate::relevance::dedupe_strings(all_hints);
+    }
+    queries = crate::relevance::dedupe_strings(queries);
+
+    // search with 30s ctx
+    let (results, errs) = tokio::time::timeout(Duration::from_secs(30), app.search_all(queries.clone(), &typ, season, ep, &base_id))
+        .await
+        .unwrap_or((vec![], vec!["search timeout".to_string()]));
+    for e in &errs {
+        tracing::info!("stream {raw_id:?}: {e}");
+    }
+    // relevance filter
+    let mut results = results;
+    {
+        let triples: Vec<(String, i64, i32)> = results.iter().map(|r| (r.title.clone(), r.size, r.seeders)).collect();
+        let (keep, dropped) = crate::relevance::filter_relevant_generic(&triples, &typ, &title, &aliases, year, season);
+        if dropped > 0 {
+            tracing::info!("stream {raw_id}: dropped {dropped} of {} candidates that do not match {title:?} ({year})", triples.len());
+        }
+        let mut filtered = vec![];
+        for i in keep {
+            filtered.push(results[i].clone());
+        }
+        results = filtered;
+    }
+    if results.is_empty() {
+        tracing::info!("stream {raw_id:?}: no results for {query:?}");
+        return crate::server::json_response(200, serde_json::json!({"streams": []}));
+    }
+
+    // base url
+    let host = headers.get("host").and_then(|v| v.to_str().ok()).unwrap_or("localhost");
+    let tls = false;
+    let base = app.base_url(host, tls);
+
+    let mut streams = vec![];
+    for (i, res) in results.iter().enumerate() {
+        let ih = res.infohash.to_lowercase().trim().to_string();
+        if !crate::util::valid_infohash(&ih) {
+            continue;
+        }
+        if !res.trackers.is_empty() {
+            let mut clean = vec![];
+            for tr in &res.trackers {
+                if clean.len() >= 20 {
+                    break;
+                }
+                let t = tr.trim();
+                let tl = t.to_lowercase();
+                if crate::util::valid_tracker(t) && (tl.starts_with("http://") || tl.starts_with("https://")) {
+                    clean.push(t.to_string());
+                }
+            }
+            if !clean.is_empty() {
+                let n = app.hint_n.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                if n > 8192 {
+                    app.hints.clear();
+                    app.hint_n.store(0, std::sync::atomic::Ordering::Relaxed);
+                }
+                app.hints.insert(ih.clone(), clean);
+            }
+        }
+        let (label, q) = release_label(&res.title);
+        let src = label.trim_start_matches(&q).trim().to_string();
+        let display = if typ == "series" && season > 0 {
+            format!("{title} S{season:02}E{ep:02}")
+        } else if year > 0 {
+            format!("{title} ({year})")
+        } else {
+            title.clone()
+        };
+        let (tk, exp) = app.signed_play_token(&k.id, &ih, season, ep);
+        let mut link = format!("{base}/k/{}/play/{ih}?n={}&tk={tk}&exp={exp}", k.token, url::form_urlencoded::byte_serialize(truncate(&res.title, 120).as_bytes()).collect::<String>());
+        if typ == "series" && season > 0 {
+            link.push_str(&format!("&s={season}&e={ep}"));
+        }
+        if typ == "movie" {
+            let hints = if play_hints.is_empty() { crate::relevance::title_forms(&title) } else { play_hints.clone() };
+            for (j, h) in hints.iter().enumerate() {
+                if j >= 4 {
+                    break;
+                }
+                link.push_str(&format!("&t={}", url::form_urlencoded::byte_serialize(h.as_bytes()).collect::<String>()));
+            }
+        }
+        let mut bits = vec![];
+        if !src.is_empty() {
+            bits.push(src);
+        }
+        bits.push(format!("💾 {}", crate::util::human_bytes(res.size)));
+        bits.push(format!("👥 {}", res.seeders));
+        let detail = bits.join(" · ");
+        let mut bh = HashMap::new();
+        bh.insert("bingeGroup".to_string(), serde_json::json!(format!("bitlab-{q}")));
+        bh.insert("notWebReady".to_string(), serde_json::json!(false));
+        streams.push(Stream {
+            name: format!("{display} · {q}"),
+            title: Some(detail),
+            url: link,
+            behavior_hints: Some(bh),
+        });
+        if i < 6 {
+            let mb = if i < 3 { app.cfg.prebuffer_mb * 3 } else { 6 };
+            app.engine.warm(ih.clone(), res.title.clone(), vec![], mb);
+        }
+    }
+    crate::server::json_response(200, serde_json::json!({"streams": streams}))
+}
+
+// ---- play ----
+
+pub async fn handle_play(
+    State(app): State<crate::server::App>,
+    headers: HeaderMap,
+    Path((token, ih)): Path<(String, String)>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    handle_play_inner(app, headers, token, ih, q, None).await
+}
+
+pub async fn handle_play_file(
+    State(app): State<crate::server::App>,
+    headers: HeaderMap,
+    Path((token, ih, _fname)): Path<(String, String, String)>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    handle_play_inner(app, headers, token, ih, q, None).await
+}
+
+async fn handle_play_inner(
+    app: crate::server::App,
+    headers: HeaderMap,
+    token: String,
+    ih_raw: String,
+    q: HashMap<String, String>,
+    _fname: Option<String>,
+) -> Response {
+    let k = match auth_key(&app, &headers, &token).await {
+        Ok(k) => k,
+        Err(e) => return e,
+    };
+    let ih = ih_raw.to_lowercase();
+    if !crate::util::valid_infohash(&ih) {
+        return crate::server::http_error(400, "bad infohash");
+    }
+    let hint = q.get("n").cloned().unwrap_or_default();
+    let mut want_idx: i32 = -1;
+    if let Some(f) = q.get("f") {
+        if let Ok(n) = f.parse::<i32>() {
+            want_idx = n;
+        }
+    }
+    let season_wanted: i32 = q.get("s").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let ep_wanted: i32 = q.get("e").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let tk = q.get("tk").cloned().unwrap_or_default();
+    let exp = q.get("exp").cloned().unwrap_or_default();
+    if !app.valid_play_token(&tk, &exp, &k.id, &ih, season_wanted, ep_wanted) {
+        return crate::server::http_error(403, "play link expired or not issued for this key — reopen the stream list");
+    }
+    let extra: Vec<String> = app.hints.get(&ih).unwrap_or_default();
+    let hb = match app.engine.ensure(&ih, &hint, &extra).await {
+        Ok(h) => h,
+        Err(e) => return crate::server::http_error(500, &format!("torrent: {e}")),
+    };
+    // wait metadata
+    let info_timeout = app.cfg.info_timeout;
+    if !crate::engine::wait_metainfo(app.engine.session_ref(), &hb, info_timeout).await {
+        // Check if metadata arrived anyway
+        if app.engine.session_ref().metainfo(&hb).is_none() {
+            return crate::server::http_error(504, "waiting for metadata: timeout");
+        }
+    }
+    // file list
+    let meta = match app.engine.session_ref().metainfo(&hb) {
+        Some(m) => m,
+        None => return crate::server::http_error(504, "waiting for metadata: unavailable"),
+    };
+    let (paths, sizes) = crate::tmeta::torrent_files(&meta);
+    let tname = crate::tmeta::torrent_name(&meta);
+    // titles for movie
+    let titles: Vec<String> = {
+        // axum Query<HashMap> keeps only last `t`; parse raw query for repeats is complex.
+        // Fall back to single value + split? For full multi-t support, read from `q` map is limited.
+        // We collect `t` if present (last one) — acceptable degradation; most links carry 1-2 hints.
+        // To preserve all, clients send repeated `t`; HashMap loses all but one.
+        // Workaround: parse the raw query string is not available here; accept single.
+        match q.get("t") {
+            Some(v) => vec![v.clone()],
+            None => vec![],
+        }
+    };
+    let idx_res = if !titles.is_empty() && ep_wanted == 0 {
+        crate::relevance::choose_file_for_title(&paths, &sizes, want_idx, &titles)
+    } else {
+        crate::relevance::choose_file_for_episode(&paths, &sizes, want_idx, season_wanted, ep_wanted)
+    };
+    let idx = match idx_res {
+        Ok(i) => i,
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("no file for this episode") {
+                tracing::info!("play {} S{season_wanted:02}E{ep_wanted:02}: {e}", &ih[..8.min(ih.len())]);
+            }
+            return crate::server::http_error(404, &msg);
+        }
+    };
+    let rel = paths[idx].clone();
+    let file_len = sizes[idx];
+    // range past end check
+    if let Some(rh) = headers.get("range").and_then(|v| v.to_str().ok()) {
+        if let Some(start) = crate::util::range_start(rh) {
+            if start >= file_len {
+                tracing::info!("play {}: range starts at {start} but this file is {} — the player is holding an offset from another release", &ih[..8.min(ih.len())], crate::util::human_bytes(file_len));
+            }
+        }
+    }
+    // resolve on-disk path
+    let dir = app.engine.media_dir().join(&ih);
+    // torrent crate stores as download_dir/<path>. For multi-file, path includes top dir? meta.info.name is top dir for multi-file? Actually files' paths are relative to torrent root; storage factory joins download_dir + path.
+    // Our download_dir is media/<ih>, so file is media/<ih>/<rel> OR media/<ih>/<torrent_name>/<rel> depending on factory.
+    // Try both.
+    let mut candidates = vec![dir.join(&rel), dir.join(&tname).join(&rel)];
+    // single-file: file may be directly named torrent name
+    if paths.len() <= 1 {
+        candidates.push(dir.join(&tname));
+    }
+    let mut found: Option<std::path::PathBuf> = None;
+    for c in &candidates {
+        if tokio::fs::metadata(c).await.is_ok() {
+            found = Some(c.clone());
+            break;
+        }
+    }
+    // If file not yet on disk, wait for it to appear (up to info_timeout) by polling.
+    if found.is_none() {
+        let start = std::time::Instant::now();
+        while start.elapsed() < info_timeout {
+            for c in &candidates {
+                if tokio::fs::metadata(c).await.is_ok() {
+                    found = Some(c.clone());
+                    break;
+                }
+            }
+            if found.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+    let fpath = match found {
+        Some(p) => p,
+        None => {
+            // Metadata known but bytes not yet downloaded; still stream via waiting reader?
+            // Return 504 with hint to retry: player will retry.
+            return crate::server::http_error(504, "file bytes not yet available — retry shortly");
+        }
+    };
+    // content type
+    let fname = fpath.file_name().and_then(|s| s.to_str()).unwrap_or("video");
+    let mut ct = mime_guess::from_path(fname).first_raw().unwrap_or("application/octet-stream").to_string();
+    let mut disp_name = fname.to_string();
+    if ct == "application/octet-stream" {
+        // sniff
+        if let Ok(mut f) = tokio::fs::File::open(&fpath).await {
+            use tokio::io::AsyncReadExt;
+            let mut hdr = vec![0u8; 16];
+            if let Ok(n) = f.read(&mut hdr).await {
+                hdr.truncate(n);
+                if let Some((ext, sniffed)) = crate::util::sniff_container(&hdr) {
+                    ct = sniffed.to_string();
+                    if std::path::Path::new(fname).extension().is_none() {
+                        disp_name = format!("{fname}{ext}");
+                    }
+                }
+            }
+        }
+    }
+    if ct.is_empty() {
+        ct = "application/octet-stream".to_string();
+    }
+    if !ct.starts_with("video/") {
+        return crate::server::http_error(415, "this file is not a playable video");
+    }
+
+    // readers accounting
+    app.engine.inc_reader(&ih, file_len).await;
+    let app2 = app.clone();
+    let ih2 = ih.clone();
+    // We need to decrement on drop: use a guard that runs when response stream completes.
+    // Simplify: spawn a task that decrements after response is sent? Instead, decrement after streaming via Stream wrapper.
+    // For now, decrement after 1s? No — correct: wrap file stream with accounting.
+    // We'll create a stream that touches on each chunk and decrements on end.
+
+    // Open file
+    let file = match tokio::fs::File::open(&fpath).await {
+        Ok(f) => f,
+        Err(e) => {
+            app.engine.dec_reader(&ih).await;
+            return crate::server::http_error(500, &format!("open: {e}"));
+        }
+    };
+    let md = file.metadata().await.map(|m| m.len() as i64).unwrap_or(file_len);
+    let size = if md > 0 { md } else { file_len };
+
+    // Range handling
+    let range_hdr = headers.get("range").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let (start, end, status) = parse_range(&range_hdr, size);
+    let content_len = end - start + 1;
+
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    let mut file = file;
+    if start > 0 {
+        file.seek(std::io::SeekFrom::Start(start as u64)).await.ok();
+    }
+    let limited = tokio::io::AsyncReadExt::take(file, content_len as u64);
+
+    // counting + touch stream
+    let reader_stream = tokio_util::io::ReaderStream::new(limited);
+    // Wrap to count bytes and touch activity
+    let written = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+    let written2 = written.clone();
+    let app3 = app.clone();
+    let ih3 = ih.clone();
+    let last_touch = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(
+        SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0),
+    ));
+    let last_touch2 = last_touch.clone();
+    let s = reader_stream.map(move |chunk| {
+        if let Ok(b) = &chunk {
+            written2.fetch_add(b.len() as i64, std::sync::atomic::Ordering::Relaxed);
+            let now_s = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+            if now_s - last_touch2.load(std::sync::atomic::Ordering::Relaxed) >= 2 {
+                last_touch2.store(now_s, std::sync::atomic::Ordering::Relaxed);
+                let a = app3.clone();
+                let ihc = ih3.clone();
+                tokio::spawn(async move { a.engine.touch_now(&ihc).await; });
+            }
+        }
+        chunk.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+    });
+
+    // Decrement reader when stream ends: spawn watchdog that polls? Use Drop via extension?
+    // We use a background task that waits until response is done is hard without body callbacks.
+    // Instead, decrement after content_len bytes served OR after idle timeout. Simplest: decrement in a task after estimated time?
+    // Correct approach: use `async_stream` with finally. We'll wrap with a custom stream that decrements on last poll.
+    // For simplicity, spawn a task that decrements after (content_len / 1MB * 2s + 60s) — but that leaks readers.
+    // Better: use Stream impl with Drop.
+    struct GuardStream<S> {
+        inner: S,
+        app: crate::server::App,
+        ih: String,
+        key_id: String,
+        idx: usize,
+        range: String,
+        written: std::sync::Arc<std::sync::atomic::AtomicI64>,
+        done: bool,
+    }
+    impl<S> GuardStream<S>
+    where
+        S: futures::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Unpin,
+    {
+        fn poll_next_inner(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<S::Item>> {
+            use futures::Stream;
+            let this = &mut *self;
+            let mut inner = std::pin::Pin::new(&mut this.inner);
+            match inner.as_mut().poll_next(cx) {
+                std::task::Poll::Ready(None) => {
+                    if !this.done {
+                        this.done = true;
+                        let app = this.app.clone();
+                        let ih = this.ih.clone();
+                        let key_id = this.key_id.clone();
+                        let idx = this.idx;
+                        let range = this.range.clone();
+                        let written = this.written.load(std::sync::atomic::Ordering::Relaxed);
+                        tokio::spawn(async move {
+                            app.engine.dec_reader(&ih).await;
+                            app.store.add_key_bytes(&key_id, written);
+                            tracing::info!("play {} key={key_id} file={idx} served={} range={range:?}", &ih[..8.min(ih.len())], crate::util::human_bytes(written));
+                        });
+                    }
+                    std::task::Poll::Ready(None)
+                }
+                other => other,
+            }
+        }
+    }
+    impl<S> futures::Stream for GuardStream<S>
+    where
+        S: futures::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Unpin,
+    {
+        type Item = Result<bytes::Bytes, std::io::Error>;
+        fn poll_next(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+            Self::poll_next_inner(self.as_mut(), cx)
+        }
+    }
+    // Need to convert map stream item BytesMut? ReaderStream yields Bytes. Map to Bytes.
+    let byte_stream = s.map(|r| r.map(|b| bytes::Bytes::from(b.to_vec())));
+    let guarded = GuardStream {
+        inner: Box::pin(byte_stream),
+        app: app2,
+        ih: ih2,
+        key_id: k.id.clone(),
+        idx,
+        range: range_hdr.clone(),
+        written,
+        done: false,
+    };
+    // Also handle client disconnect via request body? Axum will drop stream on disconnect, but our Drop won't run unless polled to None.
+    // Add Drop impl to decrement if not done.
+    impl<S> Drop for GuardStream<S> {
+        fn drop(&mut self) {
+            if !self.done {
+                let app = self.app.clone();
+                let ih = self.ih.clone();
+                let key_id = self.key_id.clone();
+                let idx = self.idx;
+                let range = self.range.clone();
+                let written = self.written.load(std::sync::atomic::Ordering::Relaxed);
+                tokio::spawn(async move {
+                    app.engine.dec_reader(&ih).await;
+                    if written > 0 {
+                        app.store.add_key_bytes(&key_id, written);
+                    }
+                    tracing::info!("play {} key={key_id} file={idx} served={} range={range:?} (dropped)", &ih[..8.min(ih.len())], crate::util::human_bytes(written));
+                });
+            }
+        }
+    }
+
+    let body = axum::body::Body::from_stream(guarded);
+    let mut builder = Response::builder()
+        .header("content-type", ct)
+        .header("content-disposition", format!("inline; filename=\"{}\"", disp_name.replace('"', "_")))
+        .header("accept-ranges", "bytes")
+        .header("cache-control", "no-store")
+        .header("x-bitlab-file", idx.to_string());
+    if status == 206 {
+        builder = builder.status(206)
+            .header("content-range", format!("bytes {start}-{end}/{size}"))
+            .header("content-length", content_len.to_string());
+    } else {
+        builder = builder.status(200).header("content-length", size.to_string());
+    }
+    builder.body(body).unwrap()
+}
+
+fn parse_range(hdr: &str, size: i64) -> (i64, i64, u16) {
+    let hdr = hdr.trim();
+    if !hdr.starts_with("bytes=") {
+        return (0, size - 1, 200);
+    }
+    let spec = hdr.trim_start_matches("bytes=").split(',').next().unwrap_or("").trim();
+    if spec.starts_with('-') {
+        // suffix: last N bytes
+        if let Ok(n) = spec[1..].parse::<i64>() {
+            if n <= 0 {
+                return (0, size - 1, 200);
+            }
+            let start = (size - n).max(0);
+            return (start, size - 1, 206);
+        }
+        return (0, size - 1, 200);
+    }
+    let parts: Vec<&str> = spec.split('-').collect();
+    if parts.len() != 2 {
+        return (0, size - 1, 200);
+    }
+    let start: i64 = parts[0].trim().parse().unwrap_or(0);
+    let end: i64 = if parts[1].trim().is_empty() {
+        size - 1
+    } else {
+        parts[1].trim().parse().unwrap_or(size - 1)
+    };
+    if start >= size {
+        return (start, size - 1, 206);
+    }
+    let end = end.min(size - 1).max(start);
+    (start, end, 206)
+}

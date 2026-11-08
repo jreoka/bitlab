@@ -1,17 +1,18 @@
 # syntax=docker/dockerfile:1
-FROM --platform=$BUILDPLATFORM golang:alpine AS build
+FROM rust:1-bookworm AS build
 WORKDIR /src
-ARG TARGETOS
-ARG TARGETARCH
-ENV CGO_ENABLED=0 GOFLAGS=-trimpath
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -ldflags="-s -w" -o /out/bitlab .
+# Cache dependency compilation: copy manifests first.
+COPY Cargo.toml Cargo.lock ./
+# Copy real sources.
+COPY src ./src
+COPY web ./web
+RUN cargo build --release --locked
 
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata && adduser -D -u 65532 bitlab
-COPY --from=build /out/bitlab /usr/local/bin/bitlab
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata \
+  && rm -rf /var/lib/apt/lists/* \
+  && useradd -u 65532 -m bitlab
+COPY --from=build /src/target/release/bitlab /usr/local/bin/bitlab
 USER 65532:65532
 ENV BITLAB_ADDR=:8090 BITLAB_DATA=/data
 VOLUME ["/data"]

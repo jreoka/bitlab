@@ -1,7 +1,9 @@
 /bitlab
+/bitlab.exe
 /data/
 /dist/
-/testdata/
+/target/
+testdata/
 *.db
 *.db-shm
 *.db-wal

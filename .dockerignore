@@ -1,5 +1,9 @@
 .git
 data
+target
 testdata
 *.db
+*.db-shm
+*.db-wal
 bitlab
+dist
