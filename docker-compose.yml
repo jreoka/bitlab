@@ -1,18 +1,15 @@
 services:
   bitlab:
-    image: ghcr.io/jreoka/bitlab:main
+    build: .
     container_name: bitlab
-    restart: unless-stopped
+    restart: always
     ports:
-      # Local-only by default; put a TLS proxy in front before exposing it.
       - "127.0.0.1:8090:8090"
     environment:
-      # Omit BITLAB_ADMIN_PASSWORD to let the container generate one into
-      # /data/ADMIN_PASSWORD. Never ship a default credential.
       BITLAB_ADMIN_PASSWORD: ${BITLAB_ADMIN_PASSWORD:-}
       BITLAB_BASE_URL: ${BITLAB_BASE_URL:-}
       BITLAB_CACHE_GB: ${BITLAB_CACHE_GB:-40}
-      BITLAB_IDLE_MINUTES: ${BITLAB_IDLE_MINUTES:-20}
+      BITLAB_IDLE_MINUTES: ${BITLAB_IDLE_MINUTES:-30}
       BITLAB_WG_CONF: ${BITLAB_WG_CONF:-}
     volumes:
       - ./data:/data
