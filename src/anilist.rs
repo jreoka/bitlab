@@ -66,12 +66,10 @@ pub async fn anime_aliases(app: &crate::server::App, title: &str) -> Vec<String>
     if title.len() < 2 {
         return vec![];
     }
-    let ck = format!("anilist:{}", title.to_lowercase());
+    let ck = format!("anilist:v2:{}", title.to_lowercase());
     if let Some(v) = app.store.get_cached_meta(&ck) {
         if let Ok(out) = serde_json::from_str::<Vec<String>>(&v) {
-            if !out.is_empty() {
-                return out;
-            }
+            return out;
         }
     }
     let ctx = std::time::Duration::from_secs(8);
@@ -96,17 +94,17 @@ async fn fetch_anilist_candidates(http: &reqwest::Client, title: &str, _timeout:
         if q.trim().is_empty() {
             continue;
         }
-        if let Some(c) = query_anilist(http, &q).await {
+        if let Some(c) = query_anilist(http, &q, title).await {
             if !c.is_empty() {
                 return c;
             }
         }
     }
     // also try original
-    query_anilist(http, title).await.unwrap_or_default()
+    query_anilist(http, title, title).await.unwrap_or_default()
 }
 
-async fn query_anilist(http: &reqwest::Client, query: &str) -> Option<Vec<String>> {
+async fn query_anilist(http: &reqwest::Client, query: &str, title: &str) -> Option<Vec<String>> {
     let payload = serde_json::json!({"query": ANILIST_QUERY, "variables": {"s": query}});
     let resp = http.post("https://graphql.anilist.co").json(&payload).header("Accept", "application/json").send().await.ok()?;
     if resp.status() != 200 {
@@ -116,7 +114,12 @@ async fn query_anilist(http: &reqwest::Client, query: &str) -> Option<Vec<String
     let m = ar.data.page.media.into_iter().next()?;
     let mut out = vec![m.title.romaji, m.title.english, m.title.native];
     out.extend(m.synonyms);
-    Some(out.into_iter().filter(|s| !s.trim().is_empty()).collect())
+    let out: Vec<String> = out.into_iter().filter(|s| !s.trim().is_empty()).collect();
+    if any_variant_matches(&out, title) || any_variant_matches(&out, query) {
+        Some(out)
+    } else {
+        None
+    }
 }
 
 async fn fetch_kitsu_candidates(http: &reqwest::Client, title: &str) -> Vec<String> {
@@ -131,7 +134,7 @@ async fn fetch_kitsu_candidates(http: &reqwest::Client, title: &str) -> Vec<Stri
         let mut c = vec![a.canonical, a.titles.en, a.titles.en_jp];
         c.extend(a.abbrev);
         let c: Vec<String> = c.into_iter().filter(|s| !s.trim().is_empty()).collect();
-        if !c.is_empty() {
+        if any_variant_matches(&c, title) {
             return c;
         }
     }
@@ -230,9 +233,64 @@ fn expand_macron_candidates(cands: &[String]) -> Vec<String> {
     out
 }
 
+fn clean_comparable(s: &str) -> String {
+    let s = s.replace('×', "x");
+    crate::relevance::norm_name(&crate::relevance::norm_romaji(&s))
+}
+
+fn titles_match(cand: &str, query: &str) -> bool {
+    let c = clean_comparable(cand);
+    let q = clean_comparable(query);
+    if c.is_empty() || q.is_empty() {
+        return false;
+    }
+    if c == q {
+        return true;
+    }
+    for (with_sub, other) in [(cand, query), (query, cand)] {
+        for sep in [":", " - "] {
+            if let Some((main_part, _)) = with_sub.split_once(sep) {
+                let main_part = main_part.trim();
+                if !main_part.is_empty() && clean_comparable(main_part) == clean_comparable(other) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn media_matches_title(candidates: &[String], query: &str) -> bool {
+    for c in candidates {
+        if c.trim().is_empty() {
+            continue;
+        }
+        if titles_match(c, query) {
+            return true;
+        }
+    }
+    false
+}
+
+fn any_variant_matches(candidates: &[String], title: &str) -> bool {
+    if media_matches_title(candidates, title) {
+        return true;
+    }
+    for v in romanization_variants(title) {
+        if media_matches_title(candidates, &v) {
+            return true;
+        }
+    }
+    false
+}
+
 fn pick_aliases(original: &str, candidates: &[String]) -> Vec<String> {
+    if !any_variant_matches(candidates, original) {
+        return vec![];
+    }
     let mut seen = std::collections::HashSet::new();
     seen.insert(original.trim().to_lowercase());
+    let orig_clean = clean_comparable(original);
     let mut out = vec![];
     for c in candidates {
         let c = c.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -246,6 +304,9 @@ fn pick_aliases(original: &str, candidates: &[String]) -> Vec<String> {
         if seen.contains(&k) {
             continue;
         }
+        if !orig_clean.is_empty() && clean_comparable(&c) == orig_clean {
+            continue;
+        }
         seen.insert(k);
         out.push(c);
         if out.len() == 3 {
@@ -255,19 +316,80 @@ fn pick_aliases(original: &str, candidates: &[String]) -> Vec<String> {
     out
 }
 
+fn is_latin_char(r: char) -> bool {
+    matches!(r as u32, 0x41..=0x5A | 0x61..=0x7A | 0xC0..=0xD6 | 0xD8..=0xF6 | 0xF8..=0x24F | 0x1E00..=0x1EFF)
+}
+
 fn is_latin(s: &str) -> bool {
     let mut letters = 0;
     for r in s.chars() {
-        if r.is_ascii_alphabetic() || (r as u32 >= 0xC0 && r.is_alphabetic()) {
+        if is_latin_char(r) {
             letters += 1;
-        } else if r.is_ascii_alphanumeric() || r.is_whitespace() || r.is_ascii_punctuation() || "‐‑‒–—―".contains(r) || (r as u32 >= 0x2000 && r as u32 <= 0x206F) {
+        } else if r.is_ascii_alphanumeric() || r.is_whitespace() || r.is_ascii_punctuation() || "‐‑‒–—―".contains(r) || (0x2000..=0x206F).contains(&(r as u32)) {
             continue;
         } else if r.is_alphabetic() {
-            // non-latin alphabet
+            // non-latin alphabet (Kanji, Kana, Hangul, Cyrillic, etc.)
             return false;
-        } else {
-            // symbols ok
         }
     }
     letters >= 2
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_titles_match_real_anime() {
+        assert!(titles_match("Attack on Titan", "Attack on Titan"));
+        assert!(titles_match("Shingeki no Kyojin", "Shingeki no Kyojin"));
+        assert!(titles_match("Demon Slayer: Kimetsu no Yaiba", "Demon Slayer"));
+        assert!(titles_match("Demon Slayer", "Demon Slayer: Kimetsu no Yaiba"));
+        assert!(titles_match("SPY×FAMILY", "Spy x Family"));
+        assert!(titles_match("Sousou no Frieren", "Sōsō no Frieren"));
+        assert!(titles_match("BOCCHI THE ROCK!", "Bocchi the Rock!"));
+    }
+
+    #[test]
+    fn test_titles_match_rejects_unrelated() {
+        assert!(!titles_match("Black Clover", "The Gilded Age"));
+        assert!(!titles_match("Appare-Ranman!", "The Sopranos"));
+        assert!(!titles_match("Ali Baba to 40-hiki no Touzoku", "Breaking Bad"));
+        assert!(!titles_match("B: The Beginning Succession", "Succession"));
+        assert!(!titles_match("Yuri Kuma Arashi", "Severance"));
+        assert!(!titles_match("Bear Bear Bear Kuma!", "The Bear"));
+    }
+
+    #[test]
+    fn test_pick_aliases_unrelated_returns_empty() {
+        let candidates = vec![
+            "Black Clover".to_string(),
+            "ブラッククローバー".to_string(),
+        ];
+        let aliases = pick_aliases("The Gilded Age", &candidates);
+        assert!(aliases.is_empty(), "Unrelated candidates must be rejected");
+    }
+
+    #[test]
+    fn test_is_latin() {
+        assert!(is_latin("Shingeki no Kyojin"));
+        assert!(is_latin("Sousou no Frieren"));
+        assert!(is_latin("Sōsō no Frieren"));
+        assert!(is_latin("Amélie"));
+        assert!(!is_latin("進撃の巨人"));
+        assert!(!is_latin("ブラッククローバー"));
+        assert!(!is_latin("Наруто"));
+        assert!(!is_latin("बौद्ध"));
+    }
+
+    #[test]
+    fn test_pick_aliases_real_anime() {
+        let candidates = vec![
+            "Shingeki no Kyojin".to_string(),
+            "Attack on Titan".to_string(),
+            "進撃の巨人".to_string(),
+        ];
+        let aliases = pick_aliases("Attack on Titan", &candidates);
+        assert_eq!(aliases, vec!["Shingeki no Kyojin"]);
+    }
 }
