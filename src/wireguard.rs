@@ -18,12 +18,14 @@ pub struct WireGuardPeer {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct WireGuardTunnel {
     pub local_ips: Vec<String>,
     pub config: WireGuardConfig,
 }
 
 impl WireGuardTunnel {
+    #[allow(dead_code)]
     pub fn close(&self) {}
 }
 

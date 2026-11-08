@@ -40,6 +40,7 @@ pub struct TorrentView {
 
 pub struct Engine {
     session: std::sync::Arc<torrent::session::Session>,
+    #[allow(dead_code)]
     data_dir: PathBuf,
     media_dir: PathBuf,
     trackers: Vec<String>,
@@ -227,13 +228,6 @@ impl Engine {
                 a.adding = true;
             }
         }
-        struct Guard<'a> {
-            act: &'a Arc<RwLock<HashMap<String, Activity>>>,
-            ih: String,
-        }
-        impl Drop for Guard<'_> {
-            fn drop(&mut self) {}
-        }
         let mut trs = self.trackers.clone();
         for t in extra {
             if !t.is_empty() && !trs.contains(t) {
@@ -313,6 +307,7 @@ impl Engine {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn stream_busy(&self) -> bool {
         let m = self.act.read().await;
         m.values().any(|a| a.readers > 0)
@@ -350,6 +345,7 @@ impl Engine {
         });
     }
 
+    #[allow(dead_code)]
     async fn prebuffer(&self, hb: &[u8; 20], mb: i64) {
         if mb <= 0 {
             return;
@@ -403,6 +399,7 @@ impl Engine {
         }
     }
 
+    #[allow(dead_code)]
     async fn record_media(&self, hb: &[u8; 20]) {
         let Some(meta) = self.session.metainfo(hb) else { return };
         let ih = infohash_hex(hb);
@@ -492,6 +489,7 @@ impl Engine {
     pub fn session_ref(&self) -> &torrent::session::Session {
         &self.session
     }
+    #[allow(dead_code)]
     pub fn session_arc(&self) -> std::sync::Arc<torrent::session::Session> {
         self.session.clone()
     }
@@ -519,6 +517,7 @@ impl Engine {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn peek_activity(&self, ih: &str) -> (i32, SystemTime) {
         let m = self.act.read().await;
         if let Some(a) = m.get(ih) {
@@ -554,6 +553,7 @@ impl Engine {
 
 // A cheap cloneable handle that reuses the same Arcs (Engine itself is not Clone due to Session? Session is Clone).
 #[derive(Clone)]
+#[allow(dead_code)]
 struct EngineHandle {
     session: std::sync::Arc<torrent::session::Session>,
     media_dir: PathBuf,
@@ -588,6 +588,7 @@ impl std::ops::Deref for EngineHandle {
 
 // Implement the subset of Engine methods on EngineHandle by duplicating bodies.
 impl EngineHandle {
+    #[allow(dead_code)]
     async fn stream_busy(&self) -> bool {
         let m = self.act.read().await;
         m.values().any(|a| a.readers > 0)

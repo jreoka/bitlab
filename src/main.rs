@@ -17,8 +17,7 @@ mod util;
 mod wireguard;
 
 use axum::extract::{ConnectInfo, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use axum::routing::{delete, get, post};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -307,7 +306,6 @@ async fn middleware_fn(
     if !host_allowed(&app, &path, &host) {
         return server::http_error(403, "this host is not served here");
     }
-    let mut resp = Response::builder();
     // Run next first to get response, then add headers? We need to add headers to response.
     // Instead, process request checks before calling next.
     let method = req.method().clone();

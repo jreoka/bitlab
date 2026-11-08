@@ -1,6 +1,6 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 static RE_EP_MARKER_SXXEXX: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bS\d{1,2}\s*E\d{1,3}\b").unwrap());
 static RE_EP_MARKER_X: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\b\d{1,2}x\d{2}\b").unwrap());
@@ -478,6 +478,7 @@ pub fn filter_relevant_generic(
     (keep, dropped)
 }
 
+#[allow(dead_code)]
 pub fn atoi_safe(s: &str) -> i32 {
     let mut n = 0;
     for c in s.chars() {
@@ -557,6 +558,7 @@ pub fn choose_file(paths: &[String], sizes: &[i64], want: i32) -> anyhow::Result
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub struct NoEpisode;
 
 impl std::fmt::Display for NoEpisode {

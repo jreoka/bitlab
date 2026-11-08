@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 pub const BT_PROTOCOL: &str = "BitTorrent protocol";
 
 pub const HTTP_METHODS: &[&str] = &[

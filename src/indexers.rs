@@ -173,6 +173,7 @@ struct TorznabEnclosure {
     #[serde(rename = "@url", default)]
     url: String,
     #[serde(rename = "@type", default)]
+    #[allow(dead_code)]
     typ: String,
 }
 
@@ -273,6 +274,7 @@ struct ApibayRow {
     #[serde(default)]
     seeders: String,
     #[serde(default)]
+    #[allow(dead_code)]
     leechers: String,
     #[serde(default)]
     size: String,
@@ -384,6 +386,7 @@ async fn knaben_request(client: &reqwest::Client, ix: &Indexer, q: &str) -> anyh
         #[serde(default, rename = "magnetUrl")]
         magnet: String,
         #[serde(default)]
+        #[allow(dead_code)]
         tracker: String,
     }
     let out: Resp = serde_json::from_slice(&body).map_err(|e| anyhow::anyhow!("bad json: {e}"))?;
@@ -424,6 +427,7 @@ struct NyaaItem {
     #[serde(default)]
     title: String,
     #[serde(default)]
+    #[allow(dead_code)]
     link: String,
     #[serde(default, rename = "infoHash")]
     infohash: String,
@@ -432,6 +436,7 @@ struct NyaaItem {
     #[serde(default)]
     size: String,
     #[serde(default)]
+    #[allow(dead_code)]
     category: String,
 }
 

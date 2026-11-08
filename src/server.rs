@@ -1,9 +1,5 @@
-use axum::extract::{ConnectInfo, Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use serde::Deserialize;
-use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -44,12 +40,14 @@ use std::collections::HashMap;
         pub fn get(&self, k: &str) -> Option<Vec<String>> {
             self.inner.read().unwrap().get(k).cloned()
         }
+        #[allow(dead_code)]
         pub fn remove(&self, k: &str) {
             self.inner.write().unwrap().remove(k);
         }
         pub fn clear(&self) {
             self.inner.write().unwrap().clear();
         }
+        #[allow(dead_code)]
         pub fn len(&self) -> usize {
             self.inner.read().unwrap().len()
         }
@@ -76,6 +74,7 @@ use std::collections::HashMap;
         pub fn remove(&self, k: &str) {
             self.inner.write().unwrap().remove(k);
         }
+        #[allow(dead_code)]
         pub fn clear(&self) {
             self.inner.write().unwrap().clear();
         }
@@ -134,6 +133,7 @@ impl App {
         format!("{scheme}://{host}")
     }
 
+    #[allow(dead_code)]
     pub fn readahead_bytes(&self) -> i64 {
         let v = self.readahead.load(std::sync::atomic::Ordering::Relaxed);
         if v > 0 {

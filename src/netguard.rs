@@ -78,6 +78,7 @@ pub fn build_client(allow_private: bool) -> reqwest::Client {
 
 /// Returns true if the URL's host resolves only to public addresses, or if
 /// allow_private is set. Used to guard custom indexer URLs (torznab) against SSRF.
+#[allow(dead_code)]
 pub async fn host_is_allowed(url_str: &str, allow_private: bool) -> bool {
     if allow_private {
         return true;

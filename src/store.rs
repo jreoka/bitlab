@@ -320,12 +320,11 @@ CREATE TABLE IF NOT EXISTS meta_cache (
             },
         );
         match row {
-            Ok(mut s) => {
+            Ok(s) => {
                 if s.expires_at < now_unix() {
                     let _ = self.delete_session(&s.id);
                     return None;
                 }
-                s.last_seen_at = s.last_seen_at; // keep
                 Some(s)
             }
             Err(_) => None,

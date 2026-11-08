@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct CacheEntry {
     pub name: String,
     pub path: PathBuf,
@@ -21,6 +22,7 @@ pub struct CacheUnit {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct CacheDecision {
     pub unit_index: usize,
     pub reason: String,
@@ -96,7 +98,7 @@ pub fn scan_cache(root: &Path) -> anyhow::Result<Vec<CacheEntry>> {
             continue;
         }
         // If top is a dir entry itself, mark dir
-        let a = m.entry(top.clone()).or_insert(Agg { bytes: 0, modified: UNIX_EPOCH_FIX(), is_dir: false, partial: false });
+        let a = m.entry(top.clone()).or_insert(Agg { bytes: 0, modified: unix_epoch_fix(), is_dir: false, partial: false });
         if entry.file_type().is_dir() {
             // only mark if this is the top dir itself
             if rel.components().count() == 1 {
@@ -135,7 +137,7 @@ pub fn scan_cache(root: &Path) -> anyhow::Result<Vec<CacheEntry>> {
     Ok(out)
 }
 
-fn UNIX_EPOCH_FIX() -> SystemTime {
+fn unix_epoch_fix() -> SystemTime {
     std::time::UNIX_EPOCH
 }
 

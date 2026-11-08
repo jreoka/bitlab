@@ -53,7 +53,6 @@ pub fn verify_totp_step(secret: &str, code: &str) -> Option<i64> {
 }
 
 pub fn new_totp_secret() -> String {
-    use rand::RngCore;
     let mut b = vec![0u8; 20];
     rand::RngCore::fill_bytes(&mut rand::rng(), &mut b);
     base32::encode(base32::Alphabet::RFC4648 { padding: false }, &b)

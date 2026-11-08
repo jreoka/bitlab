@@ -1,5 +1,3 @@
-use rand::RngCore;
-
 const B32_ALPHABET_LOWER: &[u8] = b"abcdefghijklmnopqrstuvwxyz234567";
 
 pub fn rand_token(nbytes: usize) -> String {

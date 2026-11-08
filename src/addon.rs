@@ -1,12 +1,12 @@
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use std::collections::HashMap;
 use futures::StreamExt;
 use std::time::{Duration, SystemTime};
 
 #[derive(Debug, serde::Serialize)]
-struct Manifest {
+pub(crate) struct Manifest {
     id: String,
     version: String,
     name: String,
@@ -30,12 +30,7 @@ struct Stream {
     behavior_hints: Option<HashMap<String, serde_json::Value>>,
 }
 
-#[derive(Debug, serde::Serialize)]
-struct StreamResponse {
-    streams: Vec<Stream>,
-}
-
-pub fn manifest_for(label: &str, key_id: &str) -> Manifest {
+pub(crate) fn manifest_for(label: &str, key_id: &str) -> Manifest {
     Manifest {
         id: format!("org.bitlab.{key_id}"),
         version: crate::config::VERSION.to_string(),
@@ -49,7 +44,7 @@ pub fn manifest_for(label: &str, key_id: &str) -> Manifest {
     }
 }
 
-async fn auth_key(app: &crate::server::App, headers: &HeaderMap, token: &str) -> Result<crate::store::Key, Response> {
+async fn auth_key(app: &crate::server::App, _headers: &HeaderMap, token: &str) -> Result<crate::store::Key, Response> {
     if token.is_empty() {
         return Err(crate::server::http_error(401, "missing manifest key"));
     }
@@ -523,7 +518,7 @@ async fn handle_play_inner(
     let (start, end, status) = parse_range(&range_hdr, size);
     let content_len = end - start + 1;
 
-    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    use tokio::io::AsyncSeekExt;
     let mut file = file;
     if start > 0 {
         file.seek(std::io::SeekFrom::Start(start as u64)).await.ok();
@@ -576,10 +571,9 @@ async fn handle_play_inner(
         S: futures::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Unpin,
     {
         fn poll_next_inner(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<S::Item>> {
-            use futures::Stream;
             let this = &mut *self;
             let mut inner = std::pin::Pin::new(&mut this.inner);
-            match inner.as_mut().poll_next(cx) {
+            match futures::Stream::poll_next(inner.as_mut(), cx) {
                 std::task::Poll::Ready(None) => {
                     if !this.done {
                         this.done = true;
