@@ -7,6 +7,7 @@ pub struct CacheEntry {
     pub name: String,
     pub path: PathBuf,
     pub bytes: i64,
+    pub apparent: i64,
     pub modified: SystemTime,
     pub is_dir: bool,
     pub partial: bool,
@@ -31,6 +32,7 @@ pub struct CacheDecision {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CacheStats {
     pub used_bytes: i64,
+    pub apparent_bytes: i64,
     pub budget_bytes: i64,
     pub reserve_bytes: i64,
     pub free_bytes: i64,
@@ -50,6 +52,7 @@ impl Default for CacheStats {
     fn default() -> Self {
         Self {
             used_bytes: 0,
+            apparent_bytes: 0,
             budget_bytes: 0,
             reserve_bytes: 0,
             free_bytes: -1,
@@ -78,6 +81,7 @@ pub fn scan_cache(root: &Path) -> anyhow::Result<Vec<CacheEntry>> {
     use std::collections::HashMap;
     struct Agg {
         bytes: i64,
+        apparent: i64,
         modified: SystemTime,
         is_dir: bool,
         partial: bool,
@@ -98,7 +102,7 @@ pub fn scan_cache(root: &Path) -> anyhow::Result<Vec<CacheEntry>> {
             continue;
         }
         // If top is a dir entry itself, mark dir
-        let a = m.entry(top.clone()).or_insert(Agg { bytes: 0, modified: unix_epoch_fix(), is_dir: false, partial: false });
+        let a = m.entry(top.clone()).or_insert(Agg { bytes: 0, apparent: 0, modified: unix_epoch_fix(), is_dir: false, partial: false });
         if entry.file_type().is_dir() {
             // only mark if this is the top dir itself
             if rel.components().count() == 1 {
@@ -111,6 +115,7 @@ pub fn scan_cache(root: &Path) -> anyhow::Result<Vec<CacheEntry>> {
             Err(_) => continue,
         };
         a.bytes += crate::platform::allocated_size(p, &md);
+        a.apparent += md.len() as i64;
         if let Ok(mt) = md.modified() {
             if mt > a.modified {
                 a.modified = mt;
@@ -128,6 +133,7 @@ pub fn scan_cache(root: &Path) -> anyhow::Result<Vec<CacheEntry>> {
             name: name.clone(),
             path: root.join(&name),
             bytes: a.bytes,
+            apparent: a.apparent,
             modified: a.modified,
             is_dir: a.is_dir,
             partial: a.partial,

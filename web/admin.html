@@ -657,7 +657,8 @@ function bytes(n){
   return v.toFixed(v < 10 && i > 0 ? 1 : 0) + ' ' + u[i];
 }
 function renderCache(c){
-  $('#c-used').textContent = bytes(c.used_bytes);
+  const used = bytes(c.used_bytes) + (c.apparent_bytes > c.used_bytes ? ' (' + bytes(c.apparent_bytes) + ' apparent)' : '');
+  $('#c-used').textContent = used;
   $('#c-budget').textContent = c.budget_bytes ? bytes(c.budget_bytes) : 'unlimited';
   $('#c-free').textContent = (c.free_bytes >= 0 && c.free_bytes !== undefined) ? bytes(c.free_bytes) : '—';
   $('#c-freed').textContent = bytes(c.evicted_bytes);

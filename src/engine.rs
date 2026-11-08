@@ -513,19 +513,20 @@ impl Engine {
     pub async fn cache_stats(&self) -> crate::cache::CacheStats {
         let entries = crate::cache::scan_cache(&self.media_dir).unwrap_or_default();
         let mut used = 0i64;
+        let mut apparent = 0i64;
         let mut partial = 0i64;
         for e in &entries {
             used += e.bytes;
+            apparent += e.apparent;
             if e.partial {
                 partial += e.bytes;
             }
         }
         let mut st = self.stats.read().await.clone();
         st.used_bytes = used;
-        if st.last_sweep_unix == 0 {
-            st.entries = entries.len();
-            st.partial_bytes = partial;
-        }
+        st.apparent_bytes = apparent;
+        st.entries = entries.len();
+        st.partial_bytes = partial;
         st.budget_bytes = self.max_cache_bytes.load(std::sync::atomic::Ordering::Relaxed);
         st.reserve_bytes = self.reserve_bytes;
         st.free_bytes = self.disk_free().await;
@@ -985,12 +986,14 @@ async fn sweep_cache_once(
 
     let mut units: Vec<crate::cache::CacheUnit> = vec![];
     let mut used = 0i64;
+    let mut apparent_total = 0i64;
     let mut partial_bytes = 0i64;
     let mut orphan_bytes = 0i64;
     let mut orphan_count = 0usize;
     let mut loaded = 0usize;
     for en in &entries {
         used += en.bytes;
+        apparent_total += en.apparent;
         if en.partial {
             partial_bytes += en.bytes;
         }
@@ -1021,6 +1024,7 @@ async fn sweep_cache_once(
     let free = crate::platform::free_disk_space(data_dir).unwrap_or(-1);
     let plan = crate::cache::plan_cache(&units, used, max_cache.load(std::sync::atomic::Ordering::Relaxed), reserve, free, now, grace, retain);
     let mut freed = 0i64;
+    let mut freed_apparent = 0i64;
     let mut freed_count = 0i64;
     let mut rem_orphans = 0i64;
     let mut rem_orphan_bytes = 0i64;
@@ -1048,6 +1052,7 @@ async fn sweep_cache_once(
         }
         store.forget_media(&u.infohash, "");
         freed += u.entry.bytes;
+        freed_apparent += u.entry.apparent;
         freed_count += 1;
         if reason != "retention" {
             tracing::info!("cache: evicted {} ({}, {reason})", u.entry.name, crate::util::human_bytes(u.entry.bytes));
@@ -1055,6 +1060,7 @@ async fn sweep_cache_once(
     }
     let mut st = crate::cache::CacheStats {
         used_bytes: used - freed,
+        apparent_bytes: apparent_total - freed_apparent,
         budget_bytes: max_cache.load(std::sync::atomic::Ordering::Relaxed),
         reserve_bytes: reserve,
         free_bytes: free,

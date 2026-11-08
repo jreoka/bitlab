@@ -1,6 +1,6 @@
 [package]
 name = "bitlab"
-version = "2.9.15"
+version = "2.9.16"
 edition = "2021"
 description = "Self-hosted Stremio streaming hub (Rust port)"
 license = "MIT"

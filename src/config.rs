@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-pub const VERSION: &str = "2.9.15";
+pub const VERSION: &str = "2.9.16";
 pub const HEALTH_FREE_FLOOR: i64 = 200 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
