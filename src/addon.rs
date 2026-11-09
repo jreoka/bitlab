@@ -245,7 +245,7 @@ pub async fn handle_stream(
     let base = app.base_url(host, tls);
 
     let mut streams = vec![];
-    for (i, res) in results.iter().enumerate() {
+    for res in &results {
         let ih = res.infohash.to_lowercase().trim().to_string();
         if !crate::util::valid_infohash(&ih) {
             continue;
@@ -312,10 +312,6 @@ pub async fn handle_stream(
             url: link,
             behavior_hints: Some(bh),
         });
-        if i < 6 {
-            let mb = if i < 3 { app.cfg.prebuffer_mb * 3 } else { 6 };
-            app.engine.warm(ih.clone(), res.title.clone(), res.trackers.clone(), mb);
-        }
     }
     crate::server::json_response(200, serde_json::json!({"streams": streams}))
 }

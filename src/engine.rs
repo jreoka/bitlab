@@ -79,7 +79,6 @@ pub struct Engine {
     info_timeout: Duration,
     act: Arc<RwLock<HashMap<String, Activity>>>,
     add_locks: Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
-    warm_sem: Arc<tokio::sync::Semaphore>,
     stats: Arc<RwLock<crate::cache::CacheStats>>,
     evicted_bytes: Arc<std::sync::atomic::AtomicI64>,
     evicted_count: Arc<std::sync::atomic::AtomicI64>,
@@ -170,7 +169,6 @@ impl Engine {
             info_timeout: cfg.info_timeout,
             act: Arc::new(RwLock::new(HashMap::new())),
             add_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-            warm_sem: Arc::new(tokio::sync::Semaphore::new(4)),
             stats: Arc::new(RwLock::new(crate::cache::CacheStats::default())),
             evicted_bytes: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             evicted_count: Arc::new(std::sync::atomic::AtomicI64::new(0)),
@@ -255,12 +253,6 @@ impl Engine {
         m.entry(ih.to_string()).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))).clone()
     }
 
-    /// Metadata-only path used by background warm(): stays paused so it only
-    /// fetches metadata, never downloads payload in the background.
-    pub async fn ensure(&self, ih: &str, name: &str, extra: &[String]) -> anyhow::Result<ManagedTorrentHandle> {
-        self.ensure_inner(ih, name, extra, true).await
-    }
-
     /// Play path: starts UNPAUSED so DHT/tracker announces and peer
     /// connections begin during metadata resolution instead of after it.
     pub async fn ensure_play(&self, ih: &str, name: &str, extra: &[String]) -> anyhow::Result<ManagedTorrentHandle> {
@@ -271,10 +263,10 @@ impl Engine {
         if (budget > 0 && used > budget) || (free >= 0 && free < effective_reserve) {
             self.sweep_cache().await;
         }
-        self.ensure_inner(ih, name, extra, false).await
+        self.ensure_inner(ih, name, extra).await
     }
 
-    async fn ensure_inner(&self, ih: &str, name: &str, extra: &[String], paused: bool) -> anyhow::Result<ManagedTorrentHandle> {
+    async fn ensure_inner(&self, ih: &str, name: &str, extra: &[String]) -> anyhow::Result<ManagedTorrentHandle> {
         if !crate::util::valid_infohash_strict_lower(&ih.to_lowercase()) && !crate::util::valid_infohash(ih) {
             anyhow::bail!("invalid infohash");
         }
@@ -323,7 +315,7 @@ impl Engine {
 
         let opts = librqbit::AddTorrentOptions {
             overwrite: true,
-            paused,
+            paused: false,
             output_folder: Some(dir.to_string_lossy().to_string()),
             ..Default::default()
         };
@@ -409,35 +401,6 @@ impl Engine {
                 return true;
             }
         }
-    }
-
-    pub async fn stream_busy(&self) -> bool {
-        let m = self.act.read().await;
-        m.values().any(|a| a.readers > 0)
-    }
-
-    pub fn warm(&self, ih: String, name: String, extra: Vec<String>, _mb: i64) {
-        if !crate::util::valid_infohash(&ih.to_lowercase()) {
-            return;
-        }
-        let this = self.clone();
-        tokio::spawn(async move {
-            let permit = match this.warm_sem.clone().try_acquire_owned() {
-                Ok(p) => p,
-                Err(_) => return,
-            };
-            let _ = permit;
-            if this.stream_busy().await {
-                tracing::info!("warm {} skipped: a stream is active (stream-first)", &ih[..8.min(ih.len())]);
-                return;
-            }
-            let handle = match this.ensure(&ih, &name, &extra).await {
-                Ok(h) => h,
-                Err(_) => return,
-            };
-            let _ = tokio::time::timeout(Duration::from_secs(30), handle.wait_until_initialized()).await;
-            this.record_media(&handle).await;
-        });
     }
 
     pub async fn record_media(&self, handle: &ManagedTorrentHandle) {
@@ -882,7 +845,6 @@ mod tests {
             idle_timeout: Duration::from_secs(60),
             info_timeout: Duration::from_secs(10),
             readahead_bytes: 1024 * 1024,
-            prebuffer_mb: 1,
             torrent_port: 0,
             max_torrents: 5,
             admin_password: "".to_string(),
@@ -912,7 +874,6 @@ mod tests {
             idle_timeout: Duration::from_secs(60),
             info_timeout: Duration::from_millis(50),
             readahead_bytes: 1024 * 1024,
-            prebuffer_mb: 1,
             torrent_port: 0,
             max_torrents: 5,
             admin_password: "".to_string(),
@@ -923,7 +884,7 @@ mod tests {
         
         // Ensure dead magnet times out cleanly
         let ih = "0123456789abcdef0123456789abcdef01234567";
-        let res = engine.ensure(ih, "Test Torrent", &[]).await;
+        let res = engine.ensure_play(ih, "Test Torrent", &[]).await;
         assert!(res.is_err(), "expected timeout or error for nonexistent magnet");
 
         // Add dummy torrent bytes
