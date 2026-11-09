@@ -108,13 +108,24 @@ pub async fn remove_all_async(path: &std::path::Path) -> std::io::Result<()> {
             }
         }
     }
-    tokio::fs::remove_dir_all(path).await.or_else(|e| {
-        if path.is_file() {
-            std::fs::remove_file(path).map_err(|_| e)
-        } else {
-            Err(e)
+    let mut last_err = None;
+    for attempt in 0..3 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-    })
+        match tokio::fs::remove_dir_all(path).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                if path.is_file() {
+                    if let Ok(()) = std::fs::remove_file(path) {
+                        return Ok(());
+                    }
+                }
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| std::io::Error::other("remove_all failed")))
 }
 
 #[cfg(test)]

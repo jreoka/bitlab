@@ -211,7 +211,6 @@ impl Engine {
         let closed = self.closed.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(30));
-            let mut sweeps = 0u64;
             loop {
                 tick.tick().await;
                 if closed.load(std::sync::atomic::Ordering::Relaxed) {
@@ -219,12 +218,27 @@ impl Engine {
                 }
                 let now = SystemTime::now();
                 reap_idle(&session, &act, &idle, now).await;
-                if sweeps.is_multiple_of(4) {
-                    sweep_cache_once(&session, &media_dir, &store, &act, &stats, &ev_b, &ev_c, &max_cache, reserve, now, grace, retain).await;
-                }
-                sweeps += 1;
+                sweep_cache_once(&session, &media_dir, &store, &act, &stats, &ev_b, &ev_c, &max_cache, reserve, now, grace, retain).await;
             }
         });
+    }
+
+    pub async fn sweep_cache(&self) {
+        let now = SystemTime::now();
+        sweep_cache_once(
+            &self.session,
+            &self.media_dir,
+            &self.store,
+            &self.act,
+            &self.stats,
+            &self.evicted_bytes,
+            &self.evicted_count,
+            &self.max_cache_bytes,
+            self.reserve_bytes,
+            now,
+            self.grace,
+            self.retain,
+        ).await;
     }
 
     pub async fn touch(&self, ih: &str, label: &str) {
@@ -250,6 +264,13 @@ impl Engine {
     /// Play path: starts UNPAUSED so DHT/tracker announces and peer
     /// connections begin during metadata resolution instead of after it.
     pub async fn ensure_play(&self, ih: &str, name: &str, extra: &[String]) -> anyhow::Result<ManagedTorrentHandle> {
+        let free = self.disk_free().await;
+        let used = self.stats.read().await.used_bytes;
+        let budget = self.max_cache_bytes.load(std::sync::atomic::Ordering::Relaxed);
+        let effective_reserve = if self.reserve_bytes > 0 { self.reserve_bytes } else { crate::config::HEALTH_FREE_FLOOR };
+        if (budget > 0 && used > budget) || (free >= 0 && free < effective_reserve) {
+            self.sweep_cache().await;
+        }
         self.ensure_inner(ih, name, extra, false).await
     }
 
@@ -784,11 +805,12 @@ async fn sweep_cache_once(
             tracing::info!("cache: evicted {} ({}, {reason})", u.entry.name, crate::util::human_bytes(u.entry.bytes));
         }
     }
+    let free_after = crate::platform::free_disk_space(data_dir).unwrap_or(if free >= 0 { free + freed } else { -1 });
     let mut st = crate::cache::CacheStats {
         used_bytes: used - freed,
         budget_bytes: max_cache.load(std::sync::atomic::Ordering::Relaxed),
         reserve_bytes: reserve,
-        free_bytes: free,
+        free_bytes: free_after,
         entries: entries.len() - freed_count as usize,
         partial_bytes: partial_bytes - rem_partial,
         orphan_bytes: orphan_bytes - rem_orphan_bytes,
@@ -807,7 +829,7 @@ async fn sweep_cache_once(
     *stats.write().await = st.clone();
     if freed_count > 0 {
         tracing::info!("cache: reclaimed {} in {freed_count} entries (used {} / budget {}, free {})",
-            crate::util::human_bytes(freed), crate::util::human_bytes(st.used_bytes), crate::util::human_bytes(max_cache.load(std::sync::atomic::Ordering::Relaxed)), crate::util::human_bytes(free));
+            crate::util::human_bytes(freed), crate::util::human_bytes(st.used_bytes), crate::util::human_bytes(max_cache.load(std::sync::atomic::Ordering::Relaxed)), crate::util::human_bytes(free_after));
     }
 }
 
