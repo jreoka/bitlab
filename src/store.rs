@@ -439,15 +439,35 @@ CREATE TABLE IF NOT EXISTS meta_cache (
             .ok()
     }
 
+    pub fn touch_media(&self, ih: &str) {
+        if ih.is_empty() {
+            return;
+        }
+        let now = now_unix();
+        let _ = self.conn.lock().unwrap().execute(
+            "UPDATE media_cache SET last_used=? WHERE infohash=?",
+            params![now, ih],
+        );
+    }
+
+    pub fn media_last_used(&self, ih: &str) -> Option<i64> {
+        if ih.is_empty() {
+            return None;
+        }
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT last_used FROM media_cache WHERE infohash=?", params![ih], |r| r.get(0))
+            .ok()
+    }
+
     pub fn forget_media(&self, ih: &str, name: &str) {
         if !ih.is_empty() {
             let _ = self.conn.lock().unwrap().execute("DELETE FROM media_cache WHERE infohash=?", params![ih]);
-            return;
         }
         let name = name.trim_end_matches(".part");
-        if name.is_empty() {
-            return;
+        if !name.is_empty() {
+            let _ = self.conn.lock().unwrap().execute("DELETE FROM media_cache WHERE name=?", params![name]);
         }
-        let _ = self.conn.lock().unwrap().execute("DELETE FROM media_cache WHERE name=?", params![name]);
     }
 }

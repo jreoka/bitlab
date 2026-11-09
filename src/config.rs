@@ -80,7 +80,7 @@ pub fn load_config() -> Config {
         trackers: vec![],
         cache_max_bytes: env_int_clamped("BITLAB_CACHE_GB", 40, 0, 1_000_000).saturating_mul(1_000_000_000),
         cache_reserve_bytes: env_int_clamped("BITLAB_CACHE_RESERVE_GB", 2, 0, 1_000_000).saturating_mul(1_000_000_000),
-        cache_retain: Duration::from_secs((env_int_clamped("BITLAB_CACHE_RETAIN_HOURS", 24, 0, 24 * 365) as u64) * 3600),
+        cache_retain: Duration::from_secs((env_int_clamped("BITLAB_CACHE_RETAIN_HOURS", 4, 0, 24 * 365) as u64) * 3600),
         cache_grace: Duration::from_secs((env_int_clamped("BITLAB_CACHE_GRACE_MINUTES", 10, 0, 24 * 60) as u64) * 60),
         idle_timeout: Duration::from_secs((env_int_clamped("BITLAB_IDLE_MINUTES", 20, 1, 7 * 24 * 60) as u64) * 60),
         info_timeout: Duration::from_secs(env_int_clamped("BITLAB_INFO_TIMEOUT", 45, 5, 600) as u64),

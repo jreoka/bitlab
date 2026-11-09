@@ -217,7 +217,7 @@ impl Engine {
                     return;
                 }
                 let now = SystemTime::now();
-                reap_idle(&session, &act, &idle, now).await;
+                reap_idle(&session, &store, &act, &idle, now).await;
                 sweep_cache_once(&session, &media_dir, &store, &act, &stats, &ev_b, &ev_c, &max_cache, reserve, now, grace, retain).await;
             }
         });
@@ -600,6 +600,7 @@ impl Engine {
     }
 
     pub async fn inc_reader(&self, ih: &str, size: i64) {
+        self.store.touch_media(ih);
         let mut m = self.act.write().await;
         let a = m.entry(ih.to_string()).or_insert_with(Activity::default);
         a.readers += 1;
@@ -608,6 +609,7 @@ impl Engine {
     }
 
     pub async fn dec_reader(&self, ih: &str) {
+        self.store.touch_media(ih);
         let (zero_readers, ih_owned) = {
             let mut m = self.act.write().await;
             if let Some(a) = m.get_mut(ih) {
@@ -624,6 +626,7 @@ impl Engine {
     }
 
     pub async fn touch_now(&self, ih: &str) {
+        self.store.touch_media(ih);
         let mut m = self.act.write().await;
         if let Some(a) = m.get_mut(ih) {
             a.last_access = SystemTime::now();
@@ -650,7 +653,13 @@ async fn migrate_cache_root(root: &Path, media: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn reap_idle(session: &librqbit::Session, act: &Arc<RwLock<HashMap<String, Activity>>>, idle: &Arc<std::sync::atomic::AtomicI64>, now: SystemTime) {
+async fn reap_idle(
+    session: &librqbit::Session,
+    store: &Arc<crate::store::Store>,
+    act: &Arc<RwLock<HashMap<String, Activity>>>,
+    idle: &Arc<std::sync::atomic::AtomicI64>,
+    now: SystemTime,
+) {
     let handles = session.with_torrents(|iter| {
         iter.map(|(_id, handle)| handle.clone()).collect::<Vec<_>>()
     });
@@ -692,6 +701,7 @@ async fn reap_idle(session: &librqbit::Session, act: &Arc<RwLock<HashMap<String,
         let idle_dur = Duration::from_nanos(idle.load(std::sync::atomic::Ordering::Relaxed) as u64);
         if readers == 0 && now.duration_since(last).unwrap_or_default() > idle_dur {
             tracing::info!("drop idle torrent {} ({:?} idle)", &ih[..8.min(ih.len())], now.duration_since(last).unwrap_or_default());
+            store.touch_media(&ih);
             let _ = session.delete(librqbit::api::TorrentIdOrHash::Hash(handle.info_hash()), false).await;
             let mut m = act.write().await;
             m.remove(&ih);
@@ -746,7 +756,24 @@ async fn sweep_cache_once(
         if en.partial {
             partial_bytes += en.bytes;
         }
-        let mut u = crate::cache::CacheUnit { entry: en.clone(), infohash: String::new(), loaded: false, readers: 0, last_use: en.modified };
+        let is_ih = en.name.len() == 40 && en.name.chars().all(|c| c.is_ascii_hexdigit());
+        let mut u = crate::cache::CacheUnit {
+            entry: en.clone(),
+            infohash: if is_ih { en.name.clone() } else { String::new() },
+            loaded: false,
+            readers: 0,
+            last_use: en.modified,
+        };
+        if is_ih {
+            if let Some(lu_unix) = store.media_last_used(&en.name) {
+                if lu_unix > 0 {
+                    let lu = std::time::UNIX_EPOCH + Duration::from_secs(lu_unix as u64);
+                    if lu > u.last_use {
+                        u.last_use = lu;
+                    }
+                }
+            }
+        }
         if owned.contains(&en.name) {
             u.loaded = true;
             u.infohash = en.name.clone();
@@ -798,11 +825,13 @@ async fn sweep_cache_once(
         if u.entry.partial {
             rem_partial += u.entry.bytes;
         }
-        store.forget_media(&u.infohash, "");
+        store.forget_media(&u.infohash, &u.entry.name);
         freed += u.entry.bytes;
         freed_count += 1;
         if reason != "retention" {
             tracing::info!("cache: evicted {} ({}, {reason})", u.entry.name, crate::util::human_bytes(u.entry.bytes));
+        } else {
+            tracing::info!("cache: retention sweep evicted {} ({})", u.entry.name, crate::util::human_bytes(u.entry.bytes));
         }
     }
     let free_after = crate::platform::free_disk_space(data_dir).unwrap_or(if free >= 0 { free + freed } else { -1 });
