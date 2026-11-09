@@ -245,17 +245,17 @@ mod tests {
         let retain = Duration::from_secs(24 * 3600);
 
         // 3 movies:
-        // Movie 1: 15 GiB, watched 6 minutes ago (within 10m grace), readers = 0
-        // Movie 2: 15 GiB, watched 3 minutes ago (within 10m grace), readers = 0
-        // Movie 3: 10 GiB, currently playing, readers = 1
+        // Movie 1: 15 GB, watched 6 minutes ago (within 10m grace), readers = 0
+        // Movie 2: 15 GB, watched 3 minutes ago (within 10m grace), readers = 0
+        // Movie 3: 10 GB, currently playing, readers = 1
         let u1 = make_unit("movie1", 15 * 1024 * 1024 * 1024, 6 * 60, 0, now);
         let u2 = make_unit("movie2", 15 * 1024 * 1024 * 1024, 3 * 60, 0, now);
         let u3 = make_unit("movie3", 10 * 1024 * 1024 * 1024, 10, 1, now);
         let units = vec![u1, u2, u3];
 
-        let used = 40 * 1024 * 1024 * 1024; // 40 GiB
-        let budget = 35 * 1024 * 1024 * 1024; // 35 GiB
-        let reserve = 2 * 1024 * 1024 * 1024; // 2 GiB
+        let used = 40 * 1024 * 1024 * 1024; // 40 GB
+        let budget = 35 * 1024 * 1024 * 1024; // 35 GB
+        let reserve = 2 * 1024 * 1024 * 1024; // 2 GB
         let free_space = 0; // 0 B free!
 
         let plan = plan_cache(&units, used, budget, reserve, free_space, now, grace, retain);
@@ -275,14 +275,14 @@ mod tests {
         let grace = Duration::from_secs(10 * 60);
         let retain = Duration::from_secs(24 * 3600);
 
-        // Orphan/old: 5 GiB, watched 20 minutes ago (outside grace)
-        // Movie 1: 5 GiB, watched 2 minutes ago (inside grace)
+        // Orphan/old: 5 GB, watched 20 minutes ago (outside grace)
+        // Movie 1: 5 GB, watched 2 minutes ago (inside grace)
         let u1 = make_unit("old_orphan", 5 * 1024 * 1024 * 1024, 20 * 60, 0, now);
         let u2 = make_unit("movie1", 5 * 1024 * 1024 * 1024, 2 * 60, 0, now);
         let units = vec![u1, u2];
 
         let used = 10 * 1024 * 1024 * 1024;
-        let budget = 6 * 1024 * 1024 * 1024; // 6 GiB budget
+        let budget = 6 * 1024 * 1024 * 1024; // 6 GB budget
         let reserve = 2 * 1024 * 1024 * 1024;
         let free_space = 10 * 1024 * 1024 * 1024;
 

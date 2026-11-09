@@ -81,10 +81,14 @@ pub fn parse_size(s: &str) -> i64 {
     }
     let mult = match fields[1].to_lowercase().as_str() {
         "b" => 1.0,
-        "kib" | "kb" => 1024.0,
-        "mib" | "mb" => (1024 * 1024) as f64,
-        "gib" | "gb" => (1024 * 1024 * 1024) as f64,
-        "tib" | "tb" => (1024_i64 * 1024 * 1024 * 1024) as f64,
+        "kib" => 1024.0,
+        "kb" => 1000.0,
+        "mib" => (1024 * 1024) as f64,
+        "mb" => 1_000_000.0,
+        "gib" => (1024 * 1024 * 1024) as f64,
+        "gb" => 1_000_000_000.0,
+        "tib" => (1024_i64 * 1024 * 1024 * 1024) as f64,
+        "tb" => 1_000_000_000_000.0,
         _ => return 0,
     };
     let bytes = num * mult;
@@ -903,4 +907,22 @@ pub async fn torrentio_search(client: &reqwest::Client, ix: &Indexer, typ: &str,
         out.push(r);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_size() {
+        assert_eq!(parse_size("500 B"), 500);
+        assert_eq!(parse_size("1 KB"), 1_000);
+        assert_eq!(parse_size("1 KiB"), 1_024);
+        assert_eq!(parse_size("1.5 MB"), 1_500_000);
+        assert_eq!(parse_size("1.5 MiB"), (1.5 * 1024.0 * 1024.0) as i64);
+        assert_eq!(parse_size("2.5 GB"), 2_500_000_000);
+        assert_eq!(parse_size("2.5 GiB"), (2.5 * 1024.0 * 1024.0 * 1024.0) as i64);
+        assert_eq!(parse_size("1 TB"), 1_000_000_000_000);
+        assert_eq!(parse_size("1 TiB"), 1024_i64 * 1024 * 1024 * 1024);
+    }
 }

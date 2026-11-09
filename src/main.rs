@@ -63,7 +63,7 @@ async fn main() {
     // DB settings override env defaults
     if let Ok(v) = store.get_setting("cache_gb", "").parse::<i64>() {
         if v >= 0 {
-            cfg.cache_max_bytes = v << 30;
+            cfg.cache_max_bytes = v.saturating_mul(1_000_000_000);
         }
     }
     if !store.get_setting("idle_minutes", "").is_empty() {

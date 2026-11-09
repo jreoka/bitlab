@@ -432,7 +432,7 @@ pub async fn handle_settings(State(app): State<crate::server::App>, headers: Hea
     };
     if let Some(v) = b.cache_gb {
         if (0..=1_000_000).contains(&v) {
-            app.engine.set_max_cache(v << 30);
+            app.engine.set_max_cache(v.saturating_mul(1_000_000_000));
             let _ = app.store.set_setting("cache_gb", &v.to_string());
         }
     }

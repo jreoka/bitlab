@@ -652,8 +652,8 @@ async function refresh(){
 
 function bytes(n){
   if (!n) return '0 B';
-  const u = ['B','KiB','MiB','GiB','TiB']; let i = 0; let v = n;
-  while (v >= 1024 && i < u.length-1){ v /= 1024; i++; }
+  const u = ['B','KB','MB','GB','TB']; let i = 0; let v = n;
+  while (v >= 1000 && i < u.length-1){ v /= 1000; i++; }
   return v.toFixed(v < 10 && i > 0 ? 1 : 0) + ' ' + u[i];
 }
 function renderCache(c){

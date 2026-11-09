@@ -36,16 +36,16 @@ pub fn valid_infohash_strict_lower(ih: &str) -> bool {
 }
 
 pub fn human_bytes(n: i64) -> String {
-    const UNIT: i64 = 1024;
+    const UNIT: i64 = 1000;
     if n < UNIT {
         return format!("{n} B");
     }
-    let units = ["KiB", "MiB", "GiB", "TiB"];
+    let units = ["KB", "MB", "GB", "TB"];
     let mut div = UNIT as f64;
     let mut exp = 0usize;
     let mut v = n as f64 / UNIT as f64;
-    while v >= 1024.0 && exp < units.len() - 1 {
-        div *= 1024.0;
+    while v >= 1000.0 && exp < units.len() - 1 {
+        div *= 1000.0;
         v = n as f64 / div;
         exp += 1;
     }
@@ -100,4 +100,22 @@ pub fn range_start(h: &str) -> Option<i64> {
         return None;
     }
     spec[..dash].trim().parse::<i64>().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_human_bytes() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(999), "999 B");
+        assert_eq!(human_bytes(1_000), "1.0 KB");
+        assert_eq!(human_bytes(1_500), "1.5 KB");
+        assert_eq!(human_bytes(1_000_000), "1.0 MB");
+        assert_eq!(human_bytes(1_000_000_000), "1.0 GB");
+        assert_eq!(human_bytes(1_500_000_000), "1.5 GB");
+        assert_eq!(human_bytes(25_000_000_000), "25.0 GB");
+        assert_eq!(human_bytes(1_000_000_000_000), "1.0 TB");
+    }
 }
