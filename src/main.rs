@@ -240,6 +240,7 @@ fn build_router(app: server::App) -> axum::Router {
         .route("/admin/api/keys/{id}", delete(admin::handle_delete_key))
         .route("/admin/api/search", get(admin::handle_search))
         .route("/admin/api/settings", post(admin::handle_settings))
+        .route("/admin/api/cache/purge", post(admin::handle_purge_cache))
         .route("/admin/api/security", get(security::handle_security))
         .route("/admin/api/2fa/begin", post(security::handle_2fa_begin))
         .route("/admin/api/2fa/enable", post(security::handle_2fa_enable))

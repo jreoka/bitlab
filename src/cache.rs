@@ -15,6 +15,7 @@ pub struct CacheUnit {
     pub entry: CacheEntry,
     pub infohash: String,
     pub loaded: bool,
+    pub orphan: bool,
     pub readers: i32,
     pub last_use: SystemTime,
 }
@@ -33,8 +34,6 @@ pub struct CacheStats {
     pub evicted_bytes: i64,
     pub evicted_entries: i64,
     pub last_sweep_unix: i64,
-    pub retain_minutes: i64,
-    pub grace_minutes: i64,
 }
 
 impl Default for CacheStats {
@@ -52,8 +51,6 @@ impl Default for CacheStats {
             evicted_bytes: 0,
             evicted_entries: 0,
             last_sweep_unix: 0,
-            retain_minutes: 0,
-            grace_minutes: 0,
         }
     }
 }
@@ -121,6 +118,9 @@ pub fn scan_cache(root: &Path) -> anyhow::Result<Vec<CacheEntry>> {
     Ok(out)
 }
 
+pub const CACHE_GRACE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+pub const UNREAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+
 pub fn plan_cache(
     units: &[CacheUnit],
     used: i64,
@@ -128,8 +128,7 @@ pub fn plan_cache(
     reserve: i64,
     free_space: i64,
     now: SystemTime,
-    grace: std::time::Duration,
-    retain: std::time::Duration,
+    force_purge_inactive: bool,
 ) -> Vec<(usize, String)> {
     let effective_reserve = if reserve > 0 {
         reserve
@@ -141,7 +140,10 @@ pub fn plan_cache(
         if u.readers > 0 {
             return true;
         }
-        now.duration_since(u.last_use).map(|d| d < grace).unwrap_or(false)
+        if force_purge_inactive {
+            return false;
+        }
+        now.duration_since(u.last_use).map(|d| d < CACHE_GRACE).unwrap_or(false)
     };
     let mut order: Vec<usize> = (0..units.len()).collect();
     order.sort_by(|&a, &b| units[a].last_use.cmp(&units[b].last_use));
@@ -150,47 +152,62 @@ pub fn plan_cache(
     let mut taken = vec![false; units.len()];
     let mut freed: i64 = 0;
 
-    // 1. Abandoned partial sweep:
-    // If a stream was stopped/abandoned (readers == 0), has partial files,
-    // and has exceeded grace plus an idle threshold (15m), evict it.
-    // There is no reason to hoard incomplete chunks for hours if no one is reading them.
-    let partial_threshold = grace.max(std::time::Duration::from_secs(15 * 60));
+    // 1. Force purge inactive:
+    // If explicitly requested, immediately evict all units with 0 readers (active streams are protected).
+    if force_purge_inactive {
+        for &i in &order {
+            let u = &units[i];
+            if u.readers == 0 {
+                plan.push((i, "manual_purge".to_string()));
+            }
+        }
+        return plan;
+    }
+
+    // 2. Orphan sweep:
+    // Evict untracked/orphaned files that are not being read and outside the grace window.
+    for &i in &order {
+        let u = &units[i];
+        if taken[i] || u.readers > 0 || !u.orphan {
+            continue;
+        }
+        if !is_protected_grace(u) {
+            plan.push((i, "orphan".to_string()));
+            taken[i] = true;
+            freed += u.entry.bytes;
+        }
+    }
+
+    // 3. Abandoned partial sweep:
+    // If a stream was stopped/abandoned (readers == 0) and is partial,
+    // evict it as soon as the grace window (5m) expires.
     for &i in &order {
         let u = &units[i];
         if taken[i] || u.readers > 0 || !u.entry.partial {
             continue;
         }
-        let age = now.duration_since(u.last_use).unwrap_or_default();
-        if age > partial_threshold {
+        if !is_protected_grace(u) {
             plan.push((i, "abandoned_partial".to_string()));
             taken[i] = true;
             freed += u.entry.bytes;
         }
     }
 
-    // 2. Adaptive retention sweep:
-    // Clean up items older than retention threshold as long as they are not currently being read
-    // or within grace. Dynamically adapts under cache and disk pressure, and supports ephemeral
-    // mode when retain is zero.
-    let effective_retain = if retain.is_zero() {
-        std::time::Duration::ZERO
+    // 4. Automatic non-reading media sweep:
+    // Clean up items that have not been read for UNREAD_TIMEOUT (20 min).
+    // Under disk or cache pressure, scale down to CACHE_GRACE (5 min).
+    let used_after_partials = (used - freed).max(0);
+    let ratio = if budget > 0 {
+        used_after_partials as f64 / budget as f64
     } else {
-        let used_after_partials = (used - freed).max(0);
-        let ratio = if budget > 0 {
-            used_after_partials as f64 / budget as f64
-        } else {
-            0.0
-        };
-        let free_curr = if free_space >= 0 { free_space + freed } else { -1 };
-        let disk_tight = free_curr >= 0 && free_curr < 2 * effective_reserve;
-
-        if ratio >= 0.90 || disk_tight {
-            grace.max(retain / 4)
-        } else if ratio >= 0.75 {
-            grace.max(retain / 2)
-        } else {
-            retain
-        }
+        0.0
+    };
+    let free_curr = if free_space >= 0 { free_space + freed } else { -1 };
+    let disk_tight = free_curr >= 0 && free_curr < 2 * effective_reserve;
+    let auto_unread_threshold = if ratio >= 0.75 || disk_tight {
+        CACHE_GRACE
+    } else {
+        UNREAD_TIMEOUT
     };
 
     for &i in &order {
@@ -202,8 +219,8 @@ pub fn plan_cache(
             continue;
         }
         let age = now.duration_since(u.last_use).unwrap_or_default();
-        if age > effective_retain {
-            plan.push((i, "retention".to_string()));
+        if age >= auto_unread_threshold {
+            plan.push((i, "idle".to_string()));
             taken[i] = true;
             freed += u.entry.bytes;
         }
@@ -275,6 +292,7 @@ mod tests {
             },
             infohash: name.to_string(),
             loaded: true,
+            orphan: false,
             readers,
             last_use,
         }
@@ -283,15 +301,13 @@ mod tests {
     #[test]
     fn test_plan_cache_over_budget_evicts_idle_even_within_grace() {
         let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
-        let grace = Duration::from_secs(10 * 60); // 10 minutes grace
-        let retain = Duration::from_secs(24 * 3600);
 
         // 3 movies:
-        // Movie 1: 15 GB, watched 6 minutes ago (within 10m grace), readers = 0
-        // Movie 2: 15 GB, watched 3 minutes ago (within 10m grace), readers = 0
+        // Movie 1: 15 GB, watched 4 minutes ago (within 5m grace), readers = 0
+        // Movie 2: 15 GB, watched 2 minutes ago (within 5m grace), readers = 0
         // Movie 3: 10 GB, currently playing, readers = 1
-        let u1 = make_unit("movie1", 15 * 1024 * 1024 * 1024, 6 * 60, 0, now);
-        let u2 = make_unit("movie2", 15 * 1024 * 1024 * 1024, 3 * 60, 0, now);
+        let u1 = make_unit("movie1", 15 * 1024 * 1024 * 1024, 4 * 60, 0, now);
+        let u2 = make_unit("movie2", 15 * 1024 * 1024 * 1024, 2 * 60, 0, now);
         let u3 = make_unit("movie3", 10 * 1024 * 1024 * 1024, 10, 1, now);
         let units = vec![u1, u2, u3];
 
@@ -300,7 +316,7 @@ mod tests {
         let reserve = 2 * 1024 * 1024 * 1024; // 2 GB
         let free_space = 0; // 0 B free!
 
-        let plan = plan_cache(&units, used, budget, reserve, free_space, now, grace, retain);
+        let plan = plan_cache(&units, used, budget, reserve, free_space, now, false);
 
         // It should evict movie1 (oldest idle unit)
         assert_eq!(plan.len(), 1);
@@ -314,13 +330,11 @@ mod tests {
     #[test]
     fn test_plan_cache_prefers_outside_grace_first() {
         let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
-        let grace = Duration::from_secs(10 * 60);
-        let retain = Duration::from_secs(24 * 3600);
 
-        // Orphan/old: 5 GB, watched 20 minutes ago (outside grace)
-        // Movie 1: 5 GB, watched 2 minutes ago (inside grace)
-        let u1 = make_unit("old_orphan", 5 * 1024 * 1024 * 1024, 20 * 60, 0, now);
-        let u2 = make_unit("movie1", 5 * 1024 * 1024 * 1024, 2 * 60, 0, now);
+        // Movie 1: 5 GB, watched 10 minutes ago (outside 5m grace)
+        // Movie 2: 5 GB, watched 2 minutes ago (inside 5m grace)
+        let u1 = make_unit("movie1", 5 * 1024 * 1024 * 1024, 10 * 60, 0, now);
+        let u2 = make_unit("movie2", 5 * 1024 * 1024 * 1024, 2 * 60, 0, now);
         let units = vec![u1, u2];
 
         let used = 10 * 1024 * 1024 * 1024;
@@ -328,9 +342,9 @@ mod tests {
         let reserve = 2 * 1024 * 1024 * 1024;
         let free_space = 10 * 1024 * 1024 * 1024;
 
-        let plan = plan_cache(&units, used, budget, reserve, free_space, now, grace, retain);
+        let plan = plan_cache(&units, used, budget, reserve, free_space, now, false);
 
-        // Only old_orphan should be evicted because it's outside grace and enough to satisfy budget
+        // Only movie1 should be evicted because it's outside grace and enough to satisfy budget
         assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].0, 0);
     }
@@ -338,8 +352,6 @@ mod tests {
     #[test]
     fn test_plan_cache_active_stream_never_evicted() {
         let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
-        let grace = Duration::from_secs(10 * 60);
-        let retain = Duration::from_secs(24 * 3600);
 
         let u1 = make_unit("active1", 20 * 1024 * 1024 * 1024, 60, 1, now);
         let units = vec![u1];
@@ -349,22 +361,20 @@ mod tests {
         let reserve = 5 * 1024 * 1024 * 1024;
         let free_space = 0;
 
-        let plan = plan_cache(&units, used, budget, reserve, free_space, now, grace, retain);
+        let plan = plan_cache(&units, used, budget, reserve, free_space, now, false);
         assert!(plan.is_empty());
     }
 
     #[test]
-    fn test_plan_cache_cleans_abandoned_partials_after_threshold() {
+    fn test_plan_cache_cleans_abandoned_partials_after_grace() {
         let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
-        let grace = Duration::from_secs(10 * 60);
-        let retain = Duration::from_secs(4 * 3600);
 
-        // A partial download with 0 readers, stopped 20 minutes ago (past grace and 15m threshold)
-        let mut u1 = make_unit("abandoned_part", 3 * 1024 * 1024 * 1024, 20 * 60, 0, now);
+        // A partial download with 0 readers, stopped 6 minutes ago (past 5m grace)
+        let mut u1 = make_unit("abandoned_part", 3 * 1024 * 1024 * 1024, 6 * 60, 0, now);
         u1.entry.partial = true;
 
-        // A full download with 0 readers, watched 20 minutes ago (within retain 4h)
-        let u2 = make_unit("watched_full", 5 * 1024 * 1024 * 1024, 20 * 60, 0, now);
+        // A full download with 0 readers, watched 6 minutes ago
+        let u2 = make_unit("watched_full", 5 * 1024 * 1024 * 1024, 6 * 60, 0, now);
         let units = vec![u1, u2];
 
         // Total used 8GB, budget 40GB, plenty of disk space
@@ -373,24 +383,22 @@ mod tests {
         let reserve = 2 * 1024 * 1024 * 1024;
         let free_space = 50 * 1024 * 1024 * 1024;
 
-        let plan = plan_cache(&units, used, budget, reserve, free_space, now, grace, retain);
+        let plan = plan_cache(&units, used, budget, reserve, free_space, now, false);
 
-        // Only the abandoned partial should be evicted! Full download is preserved.
+        // Incomplete/abandoned partial download is automatically evicted past grace!
         assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].0, 0);
         assert_eq!(plan[0].1, "abandoned_partial");
     }
 
     #[test]
-    fn test_plan_cache_ephemeral_mode_when_retain_zero() {
+    fn test_plan_cache_auto_purges_unread_media_after_timeout() {
         let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
-        let grace = Duration::from_secs(10 * 60);
-        let retain = Duration::ZERO; // Ephemeral mode
 
-        // Watched 15 minutes ago (outside 10m grace)
-        let u1 = make_unit("movie_idle", 10 * 1024 * 1024 * 1024, 15 * 60, 0, now);
-        // Watched 5 minutes ago (inside 10m grace)
-        let u2 = make_unit("movie_in_grace", 10 * 1024 * 1024 * 1024, 5 * 60, 0, now);
+        // Watched 25 minutes ago (past UNREAD_TIMEOUT of 20m)
+        let u1 = make_unit("movie_idle", 10 * 1024 * 1024 * 1024, 25 * 60, 0, now);
+        // Watched 10 minutes ago (within 20m)
+        let u2 = make_unit("movie_recent", 10 * 1024 * 1024 * 1024, 10 * 60, 0, now);
         let units = vec![u1, u2];
 
         let used = 20 * 1024 * 1024 * 1024;
@@ -398,38 +406,44 @@ mod tests {
         let reserve = 2 * 1024 * 1024 * 1024;
         let free_space = 50 * 1024 * 1024 * 1024;
 
-        let plan = plan_cache(&units, used, budget, reserve, free_space, now, grace, retain);
+        let plan = plan_cache(&units, used, budget, reserve, free_space, now, false);
 
-        // In ephemeral mode, idle entry outside grace is cleaned up immediately
+        // Automatically purges movie_idle because it hasn't been read for > 20 minutes!
         assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].0, 0);
-        assert_eq!(plan[0].1, "retention");
+        assert_eq!(plan[0].1, "idle");
     }
 
     #[test]
-    fn test_plan_cache_adaptive_retention_under_pressure() {
+    fn test_plan_cache_evicts_orphans_outside_grace() {
         let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
-        let grace = Duration::from_secs(10 * 60);
-        let retain = Duration::from_secs(4 * 3600); // 4 hours retain
 
-        // Watched 1.5 hours ago (90 minutes):
-        // Normally inside 4h retention, but under 92% cache pressure effective retain is scaled to 1h (4h/4).
-        let u1 = make_unit("movie_old", 10 * 1024 * 1024 * 1024, 90 * 60, 0, now);
-        // Watched 30 minutes ago (under 1h effective retain)
-        let u2 = make_unit("movie_recent", 10 * 1024 * 1024 * 1024, 30 * 60, 0, now);
+        let mut u1 = make_unit("orphan_old", 5 * 1024 * 1024 * 1024, 10 * 60, 0, now);
+        u1.orphan = true;
+        let mut u2 = make_unit("orphan_recent", 5 * 1024 * 1024 * 1024, 2 * 60, 0, now);
+        u2.orphan = true;
         let units = vec![u1, u2];
 
-        // 37GB used of 40GB budget = 92.5% usage ratio (high pressure)
-        let used = 37 * 1024 * 1024 * 1024;
-        let budget = 40 * 1024 * 1024 * 1024;
-        let reserve = 2 * 1024 * 1024 * 1024;
-        let free_space = 20 * 1024 * 1024 * 1024;
-
-        let plan = plan_cache(&units, used, budget, reserve, free_space, now, grace, retain);
-
-        // movie_old (90 min > 60 min effective retain) should be cleaned by adaptive retention
+        let plan = plan_cache(&units, 10 * 1024 * 1024 * 1024, 50 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024, 50 * 1024 * 1024 * 1024, now, false);
+        // Only orphan_old should be evicted because orphan_recent is within 5m grace
         assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].0, 0);
-        assert_eq!(plan[0].1, "retention");
+        assert_eq!(plan[0].1, "orphan");
+    }
+
+    #[test]
+    fn test_plan_cache_force_purge_inactive() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        // Idle unit watched 1 minute ago
+        let u1 = make_unit("idle_movie", 6 * 1024 * 1024 * 1024, 60, 0, now);
+        // Active stream currently playing
+        let u2 = make_unit("active_movie", 4 * 1024 * 1024 * 1024, 10, 1, now);
+        let units = vec![u1, u2];
+
+        let plan = plan_cache(&units, 10 * 1024 * 1024 * 1024, 40 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024, 50 * 1024 * 1024 * 1024, now, true);
+        // Must evict idle_movie, but NEVER active_movie!
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].0, 0);
+        assert_eq!(plan[0].1, "manual_purge");
     }
 }

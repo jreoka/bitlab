@@ -65,8 +65,6 @@ pub struct Engine {
     max_cache_bytes: Arc<std::sync::atomic::AtomicI64>,
     reserve_bytes: i64,
     idle_timeout: Arc<std::sync::atomic::AtomicI64>, // nanos
-    grace: Duration,
-    retain: Duration,
     max_torrents: usize,
     info_timeout: Duration,
     act: Arc<RwLock<HashMap<String, Activity>>>,
@@ -154,8 +152,6 @@ impl Engine {
             max_cache_bytes: Arc::new(std::sync::atomic::AtomicI64::new(cfg.cache_max_bytes)),
             reserve_bytes: cfg.cache_reserve_bytes,
             idle_timeout: Arc::new(std::sync::atomic::AtomicI64::new(cfg.idle_timeout.as_nanos() as i64)),
-            grace: cfg.cache_grace,
-            retain: cfg.cache_retain,
             max_torrents: cfg.max_torrents,
             info_timeout: cfg.info_timeout,
             act: Arc::new(RwLock::new(HashMap::new())),
@@ -193,16 +189,14 @@ impl Engine {
         let ev_c = self.evicted_count.clone();
         let max_cache = self.max_cache_bytes.clone();
         let reserve = self.reserve_bytes;
-        let grace = self.grace;
-        let retain = self.retain;
         let idle = self.idle_timeout.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(30));
             loop {
                 tick.tick().await;
                 let now = SystemTime::now();
-                reap_idle(&session, &store, &act, &idle, now).await;
-                sweep_cache_once(&session, &media_dir, &store, &act, &stats, &ev_b, &ev_c, &max_cache, reserve, now, grace, retain).await;
+                reap_idle(&session, &act, &idle, now).await;
+                sweep_cache_once(&session, &media_dir, &store, &act, &stats, &ev_b, &ev_c, &max_cache, reserve, now, false).await;
             }
         });
     }
@@ -220,9 +214,25 @@ impl Engine {
             &self.max_cache_bytes,
             self.reserve_bytes,
             now,
-            self.grace,
-            self.retain,
+            false,
         ).await;
+    }
+
+    pub async fn purge_inactive_cache(&self) -> (i64, i64) {
+        let now = SystemTime::now();
+        sweep_cache_once(
+            &self.session,
+            &self.media_dir,
+            &self.store,
+            &self.act,
+            &self.stats,
+            &self.evicted_bytes,
+            &self.evicted_count,
+            &self.max_cache_bytes,
+            self.reserve_bytes,
+            now,
+            true, // force purge inactive (0 readers)
+        ).await
     }
 
     pub async fn touch(&self, ih: &str, label: &str) {
@@ -467,7 +477,15 @@ impl Engine {
         let mut partial = 0i64;
         for e in &entries {
             used += e.bytes;
-            if e.partial {
+            let mut is_part = e.partial;
+            if !is_part {
+                if let Some(sz) = self.store.media_size(&e.name) {
+                    if sz > 0 && e.bytes < sz {
+                        is_part = true;
+                    }
+                }
+            }
+            if is_part {
                 partial += e.bytes;
             }
         }
@@ -478,8 +496,6 @@ impl Engine {
         st.budget_bytes = self.max_cache_bytes.load(std::sync::atomic::Ordering::Relaxed);
         st.reserve_bytes = self.reserve_bytes;
         st.free_bytes = self.disk_free().await;
-        st.retain_minutes = self.retain.as_secs() as i64 / 60;
-        st.grace_minutes = self.grace.as_secs() as i64 / 60;
         st
     }
 
@@ -603,7 +619,6 @@ async fn migrate_cache_root(root: &Path, media: &Path) -> anyhow::Result<()> {
 
 async fn reap_idle(
     session: &librqbit::Session,
-    store: &Arc<crate::store::Store>,
     act: &Arc<RwLock<HashMap<String, Activity>>>,
     idle: &Arc<std::sync::atomic::AtomicI64>,
     now: SystemTime,
@@ -635,7 +650,6 @@ async fn reap_idle(
         let idle_dur = Duration::from_nanos(idle.load(std::sync::atomic::Ordering::Relaxed) as u64);
         if readers == 0 && now.duration_since(last).unwrap_or_default() > idle_dur {
             tracing::info!("drop idle torrent {} ({:?} idle)", &ih[..8.min(ih.len())], now.duration_since(last).unwrap_or_default());
-            store.touch_media(&ih);
             let _ = session.delete(librqbit::api::TorrentIdOrHash::Hash(handle.info_hash()), false).await;
             let mut m = act.write().await;
             m.remove(&ih);
@@ -655,28 +669,30 @@ async fn sweep_cache_once(
     max_cache: &Arc<std::sync::atomic::AtomicI64>,
     reserve: i64,
     now: SystemTime,
-    grace: Duration,
-    retain: Duration,
-) {
+    force_purge_inactive: bool,
+) -> (i64, i64) {
     let entries = match crate::cache::scan_cache(data_dir) {
         Ok(e) => e,
         Err(e) => {
             tracing::warn!("cache: scan {}: {e}", data_dir.display());
-            return;
+            return (0, 0);
         }
     };
-    let (owned, pending) = session.with_torrents(|iter| {
+    let (owned, pending, stats_map) = session.with_torrents(|iter| {
         let mut owned = std::collections::HashSet::new();
         let mut pending = std::collections::HashSet::new();
+        let mut stats_map = std::collections::HashMap::new();
         for (_id, handle) in iter {
             let ih = handle.info_hash().as_string();
             if handle.with_metadata(|_| true).is_ok() {
-                owned.insert(ih);
+                owned.insert(ih.clone());
+                let st = handle.stats();
+                stats_map.insert(ih, (st.finished, st.progress_bytes as i64, st.total_bytes as i64));
             } else if store.media_name(&ih).is_some() {
                 pending.insert(ih);
             }
         }
-        (owned, pending)
+        (owned, pending, stats_map)
     });
 
     let mut units: Vec<crate::cache::CacheUnit> = vec![];
@@ -687,14 +703,33 @@ async fn sweep_cache_once(
     let mut loaded = 0usize;
     for en in &entries {
         used += en.bytes;
-        if en.partial {
+        let is_ih = en.name.len() == 40 && en.name.chars().all(|c| c.is_ascii_hexdigit());
+        let mut is_partial = en.partial;
+        if is_ih {
+            if let Some((finished, prog, total)) = stats_map.get(&en.name) {
+                if !*finished || (*total > 0 && *prog < *total) {
+                    is_partial = true;
+                }
+            } else if let Some(expected_size) = store.media_size(&en.name) {
+                if expected_size > 0 && en.bytes < expected_size {
+                    is_partial = true;
+                }
+            }
+        }
+        if is_partial {
             partial_bytes += en.bytes;
         }
-        let is_ih = en.name.len() == 40 && en.name.chars().all(|c| c.is_ascii_hexdigit());
         let mut u = crate::cache::CacheUnit {
-            entry: en.clone(),
+            entry: crate::cache::CacheEntry {
+                name: en.name.clone(),
+                path: en.path.clone(),
+                bytes: en.bytes,
+                modified: en.modified,
+                partial: is_partial,
+            },
             infohash: if is_ih { en.name.clone() } else { String::new() },
             loaded: false,
+            orphan: false,
             readers: 0,
             last_use: en.modified,
         };
@@ -726,13 +761,18 @@ async fn sweep_cache_once(
         } else if pending.contains(&en.name) {
             continue;
         } else {
-            orphan_count += 1;
-            orphan_bytes += en.bytes;
+            if is_ih && store.media_name(&en.name).is_some() {
+                // Known media entry in catalog
+            } else {
+                u.orphan = true;
+                orphan_count += 1;
+                orphan_bytes += en.bytes;
+            }
         }
         units.push(u);
     }
     let free = crate::platform::free_disk_space(data_dir).unwrap_or(-1);
-    let plan = crate::cache::plan_cache(&units, used, max_cache.load(std::sync::atomic::Ordering::Relaxed), reserve, free, now, grace, retain);
+    let plan = crate::cache::plan_cache(&units, used, max_cache.load(std::sync::atomic::Ordering::Relaxed), reserve, free, now, force_purge_inactive);
     let mut freed = 0i64;
     let mut freed_count = 0i64;
     let mut rem_orphans = 0i64;
@@ -749,12 +789,13 @@ async fn sweep_cache_once(
             tracing::warn!("cache: remove {}", u.entry.name);
             continue;
         }
+        if u.orphan {
+            rem_orphans += 1;
+            rem_orphan_bytes += u.entry.bytes;
+        }
         if !u.infohash.is_empty() {
             let mut m = act.write().await;
             m.remove(&u.infohash);
-        } else {
-            rem_orphans += 1;
-            rem_orphan_bytes += u.entry.bytes;
         }
         if u.entry.partial {
             rem_partial += u.entry.bytes;
@@ -762,10 +803,10 @@ async fn sweep_cache_once(
         store.forget_media(&u.infohash, &u.entry.name);
         freed += u.entry.bytes;
         freed_count += 1;
-        if reason != "retention" {
+        if reason != "retention" && reason != "idle" {
             tracing::info!("cache: evicted {} ({}, {reason})", u.entry.name, crate::util::human_bytes(u.entry.bytes));
         } else {
-            tracing::info!("cache: retention sweep evicted {} ({})", u.entry.name, crate::util::human_bytes(u.entry.bytes));
+            tracing::info!("cache: auto-evicted idle {} ({})", u.entry.name, crate::util::human_bytes(u.entry.bytes));
         }
     }
     let free_after = crate::platform::free_disk_space(data_dir).unwrap_or(if free >= 0 { free + freed } else { -1 });
@@ -780,8 +821,6 @@ async fn sweep_cache_once(
         orphan_entries: orphan_count - rem_orphans as usize,
         loaded_entries: loaded,
         last_sweep_unix: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0),
-        retain_minutes: retain.as_secs() as i64 / 60,
-        grace_minutes: grace.as_secs() as i64 / 60,
         evicted_bytes: 0,
         evicted_entries: 0,
     };
@@ -794,6 +833,7 @@ async fn sweep_cache_once(
         tracing::info!("cache: reclaimed {} in {freed_count} entries (used {} / budget {}, free {})",
             crate::util::human_bytes(freed), crate::util::human_bytes(st.used_bytes), crate::util::human_bytes(max_cache.load(std::sync::atomic::Ordering::Relaxed)), crate::util::human_bytes(free_after));
     }
+    (freed, freed_count)
 }
 
 #[cfg(test)]
@@ -811,8 +851,6 @@ mod tests {
             trackers: vec![],
             cache_max_bytes: 10 * 1024 * 1024,
             cache_reserve_bytes: 1024 * 1024,
-            cache_retain: Duration::from_secs(60),
-            cache_grace: Duration::from_secs(60),
             idle_timeout: Duration::from_secs(60),
             info_timeout: Duration::from_secs(10),
             readahead_bytes: 1024 * 1024,
@@ -840,8 +878,6 @@ mod tests {
             trackers: vec![],
             cache_max_bytes: 10 * 1024 * 1024,
             cache_reserve_bytes: 1024 * 1024,
-            cache_retain: Duration::from_secs(60),
-            cache_grace: Duration::from_secs(60),
             idle_timeout: Duration::from_secs(60),
             info_timeout: Duration::from_millis(50),
             readahead_bytes: 1024 * 1024,

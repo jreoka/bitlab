@@ -439,6 +439,17 @@ CREATE TABLE IF NOT EXISTS meta_cache (
             .ok()
     }
 
+    pub fn media_size(&self, ih: &str) -> Option<i64> {
+        if ih.is_empty() {
+            return None;
+        }
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT size FROM media_cache WHERE infohash=?", params![ih], |r| r.get(0))
+            .ok()
+    }
+
     pub fn touch_media(&self, ih: &str) {
         if ih.is_empty() {
             return;

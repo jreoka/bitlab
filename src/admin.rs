@@ -4,7 +4,7 @@ use axum::response::Response;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 struct FailWindow {
     inner: Mutex<HashMap<String, Vec<Instant>>>,
@@ -281,6 +281,7 @@ pub async fn handle_overview(State(app): State<crate::server::App>, headers: Hea
             "active_keys": app.store.active_key_count(),
             "media_rows": app.store.media_cache_count(),
             "idle_minutes": idle_min,
+            "readahead_mb": (app.readahead.load(std::sync::atomic::Ordering::Relaxed) >> 20),
         }),
     )
 }
@@ -451,4 +452,16 @@ pub async fn handle_settings(State(app): State<crate::server::App>, headers: Hea
     handle_overview(State(app), headers).await
 }
 
-use std::time::SystemTime;
+pub async fn handle_purge_cache(State(app): State<crate::server::App>, headers: HeaderMap) -> Response {
+    if let Some(e) = require_admin_state(&app, &headers).await {
+        return e;
+    }
+    let (freed_bytes, freed_count) = app.engine.purge_inactive_cache().await;
+    tracing::info!("cache: admin purge reclaimed {} across {freed_count} entries", crate::util::human_bytes(freed_bytes));
+    crate::server::json_response(200, serde_json::json!({
+        "ok": true,
+        "freed_bytes": freed_bytes,
+        "freed_count": freed_count,
+        "cache": app.engine.cache_stats().await,
+    }))
+}
