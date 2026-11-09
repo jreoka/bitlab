@@ -1,19 +1,39 @@
 services:
+  gluetun:
+    image: qmcgaw/gluetun:latest
+    container_name: gluetun
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - VPN_SERVICE_PROVIDER=custom
+      - VPN_TYPE=wireguard
+      - DOT=on
+    volumes:
+      - ./wg0.conf:/gluetun/wireguard/wg0.conf:ro
+    ports:
+      - "127.0.0.1:8090:8090"
+    restart: always
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
   bitlab:
     image: jreoka/bitlab:latest
     container_name: bitlab
-    restart: always
-    ports:
-      - "127.0.0.1:8090:8090"
-      - "51413:51413/tcp"
-      - "51413:51413/udp"
+    network_mode: service:gluetun
+    depends_on:
+      gluetun:
+        condition: service_started
     environment:
       BITLAB_ADMIN_PASSWORD: ${BITLAB_ADMIN_PASSWORD:-}
       BITLAB_BASE_URL: "https://bitlab.dill.moe"
       BITLAB_CACHE_GB: 25
       BITLAB_IDLE_MINUTES: 30
-      BITLAB_WG_CONF: ${BITLAB_WG_CONF:-}
-      BITLAB_TORRENT_PORT: "51413"
     volumes:
       - ./data:/data
     read_only: true
@@ -23,3 +43,4 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    restart: always

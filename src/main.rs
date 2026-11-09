@@ -12,7 +12,6 @@ mod security;
 mod server;
 mod store;
 mod util;
-mod wireguard;
 
 use axum::extract::{ConnectInfo, State};
 use axum::response::Response;
@@ -170,9 +169,6 @@ async fn main() {
     }
 
     tracing::info!("bitlab {} listening on {} (data={}, cache={})", config::VERSION, listen_addr, cfg.data_dir, util::human_bytes(cfg.cache_max_bytes));
-    if eng.has_wireguard() {
-        tracing::info!("wireguard: active, routing bittorrent traffic through wireguard tunnel");
-    }
 
     let listener = match tokio::net::TcpListener::bind(listen_addr).await {
         Ok(l) => l,

@@ -21,7 +21,6 @@ pub struct Config {
     pub max_torrents: usize,
     pub admin_password: String,
     pub trust_proxy: bool,
-    pub wireguard_conf: String,
 }
 
 pub fn default_trackers() -> Vec<String> {
@@ -72,25 +71,6 @@ fn env_int_clamped(k: &str, def: i64, lo: i64, hi: i64) -> i64 {
     n.clamp(lo, hi)
 }
 
-pub fn parse_flags(args: &[String]) -> String {
-    let mut i = 0;
-    while i < args.len() {
-        let arg = &args[i];
-        if arg == "-wg-conf" || arg == "--wg-conf" || arg == "-wireguard-conf" || arg == "--wireguard-conf" {
-            if i + 1 < args.len() {
-                return args[i + 1].clone();
-            }
-        }
-        for prefix in ["-wg-conf=", "--wg-conf=", "-wireguard-conf=", "--wireguard-conf="] {
-            if let Some(v) = arg.strip_prefix(prefix) {
-                return v.to_string();
-            }
-        }
-        i += 1;
-    }
-    String::new()
-}
-
 pub fn load_config() -> Config {
     let data_dir = env_str("BITLAB_DATA", "./data");
     let mut cfg = Config {
@@ -110,7 +90,6 @@ pub fn load_config() -> Config {
         max_torrents: env_int_clamped("BITLAB_MAX_TORRENTS", 40, 1, 500) as usize,
         admin_password: env_str("BITLAB_ADMIN_PASSWORD", ""),
         trust_proxy: std::env::var("BITLAB_TRUST_PROXY").ok().as_deref() == Some("1"),
-        wireguard_conf: String::new(),
     };
     if let Ok(t) = std::env::var("BITLAB_TRACKERS") {
         if !t.trim().is_empty() {
@@ -124,15 +103,6 @@ pub fn load_config() -> Config {
     }
     if cfg.trackers.is_empty() {
         cfg.trackers = default_trackers();
-    }
-    let args: Vec<String> = std::env::args().collect();
-    let mut raw_wg = parse_flags(&args[1..]);
-    if raw_wg.is_empty() {
-        raw_wg = env_str("BITLAB_WG_CONF", &env_str("BITLAB_WIREGUARD_CONF", ""));
-    }
-    match crate::wireguard::load_wireguard_conf(&raw_wg, &data_dir) {
-        Ok(s) => cfg.wireguard_conf = s,
-        Err(e) => eprintln!("wireguard conf: {e}"),
     }
     cfg
 }

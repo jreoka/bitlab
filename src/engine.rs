@@ -84,18 +84,10 @@ pub struct Engine {
     evicted_bytes: Arc<std::sync::atomic::AtomicI64>,
     evicted_count: Arc<std::sync::atomic::AtomicI64>,
     closed: Arc<std::sync::atomic::AtomicBool>,
-    has_wg: bool,
 }
 
 impl Engine {
     pub async fn new(cfg: &crate::config::Config, store: Arc<crate::store::Store>) -> anyhow::Result<Self> {
-        let has_wg = !cfg.wireguard_conf.is_empty();
-        if has_wg {
-            match crate::wireguard::start_wireguard(&cfg.wireguard_conf) {
-                Ok(t) => tracing::info!("wireguard tunnel active (local IPs: {:?})", t.local_ips),
-                Err(e) => anyhow::bail!("wireguard: {e}"),
-            }
-        }
 
         let media_dir = Path::new(&cfg.data_dir).join("media");
         tokio::fs::create_dir_all(&media_dir).await?;
@@ -183,14 +175,9 @@ impl Engine {
             evicted_bytes: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             evicted_count: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            has_wg,
         };
         e.spawn_janitor();
         Ok(e)
-    }
-
-    pub fn has_wireguard(&self) -> bool {
-        self.has_wg
     }
 
     pub fn set_max_cache(&self, v: i64) {
@@ -853,7 +840,6 @@ mod tests {
             max_torrents: 5,
             admin_password: "".to_string(),
             trust_proxy: false,
-            wireguard_conf: "".to_string(),
         };
         let store = Arc::new(crate::store::Store::open(&temp_dir.join("store.db")).unwrap());
         let engine = Engine::new(&cfg, store).await.unwrap();
@@ -884,7 +870,6 @@ mod tests {
             max_torrents: 5,
             admin_password: "".to_string(),
             trust_proxy: false,
-            wireguard_conf: "".to_string(),
         };
         let store = Arc::new(crate::store::Store::open(&temp_dir.join("store.db")).unwrap());
         let engine = Engine::new(&cfg, store).await.unwrap();

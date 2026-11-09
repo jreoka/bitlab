@@ -8,3 +8,5 @@ testdata/
 *.db-shm
 *.db-wal
 .venv/
+# WireGuard private keys — never commit
+wg0.conf
