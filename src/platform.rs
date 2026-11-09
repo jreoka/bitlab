@@ -51,8 +51,7 @@ pub fn free_disk_space(path: &std::path::Path) -> anyhow::Result<i64> {
     #[cfg(windows)]
     {
         // Use sysinfo crate for cross-platform disk query.
-        use sysinfo::{Disks, System};
-        let _ = System::new;
+        use sysinfo::Disks;
         let disks = Disks::new_with_refreshed_list();
         let target = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         let mut best: Option<i64> = None;
@@ -62,7 +61,7 @@ pub fn free_disk_space(path: &std::path::Path) -> anyhow::Result<i64> {
                 let avail = d.available_space() as i64;
                 match best {
                     None => best = Some(avail),
-                    Some(b) if mp.as_os_str().len() > 0 && avail < b => best = Some(avail),
+                    Some(b) if !mp.as_os_str().is_empty() && avail < b => best = Some(avail),
                     _ => {}
                 }
             }
@@ -91,7 +90,7 @@ pub async fn remove_all_async(path: &std::path::Path) -> std::io::Result<()> {
         if root.is_dir() {
             for entry in walkdir::WalkDir::new(&root).into_iter().filter_map(|e| e.ok()) {
                 if entry.file_type().is_file() {
-                    let mut perms = match entry.metadata().and_then(|m| Ok(m.permissions())) {
+                    let mut perms = match entry.metadata().map(|m| m.permissions()) {
                         Ok(p) => p,
                         Err(_) => continue,
                     };
@@ -103,6 +102,7 @@ pub async fn remove_all_async(path: &std::path::Path) -> std::io::Result<()> {
         } else if root.is_file() {
             if let Ok(md) = tokio::fs::metadata(&root).await {
                 let mut p = md.permissions();
+                #[allow(clippy::permissions_set_readonly_false)]
                 p.set_readonly(false);
                 let _ = tokio::fs::set_permissions(&root, p).await;
             }

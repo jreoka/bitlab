@@ -389,8 +389,6 @@ pub fn score_candidate(c: &ScoredCandidate, typ: &str, season: i32, ep: i32) -> 
         }
     }
     if c.size > 0 {
-        const GB: i64 = 6;
-        let _ = GB;
         if c.size > 6 * 1024 * 1024 * 1024 && c.size < 60 * 1024 * 1024 * 1024 {
             score += 200.0;
         } else if c.size > 1024 * 1024 * 1024 {
@@ -599,13 +597,11 @@ pub fn choose_file_for_title(paths: &[String], sizes: &[i64], want: i32, hints: 
     for w in &words {
         let mut in_all = true;
         let mut any = false;
-        for s in &sets {
-            if let Some(set) = s {
-                any = true;
-                if !set.contains(w) {
-                    in_all = false;
-                    break;
-                }
+        for set in sets.iter().flatten() {
+            any = true;
+            if !set.contains(w) {
+                in_all = false;
+                break;
             }
         }
         if any && !in_all {

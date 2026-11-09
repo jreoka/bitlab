@@ -395,7 +395,7 @@ pub fn parse_ttl(v: &str) -> anyhow::Result<i64> {
         anyhow::bail!("use a duration like 3d, 2w, 3m, 1y or a date like 2027-06-01");
     }
     let n: f64 = num.parse().map_err(|_| anyhow::anyhow!("invalid amount {num:?}"))?;
-    if !(n > 0.0) {
+    if n <= 0.0 {
         anyhow::bail!("invalid amount {num:?}");
     }
     let mult: f64 = match unit {

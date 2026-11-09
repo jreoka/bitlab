@@ -57,7 +57,7 @@ pub fn client_ip(app: &crate::server::App, headers: &HeaderMap, remote: Option<S
         }
         if ip.is_empty() {
             if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-                if let Some(last) = xff.split(',').last() {
+                if let Some(last) = xff.split(',').next_back() {
                     ip = last.trim().to_string();
                 }
             }
@@ -82,7 +82,7 @@ pub async fn handle_favicon() -> Response {
 }
 
 fn clean_next_path(p: &str) -> String {
-    match p.trim_end_matches('/').trim_end_matches('/') {
+    match p.trim_end_matches('/') {
         "/admin/activity" => "/admin/activity".to_string(),
         "/admin/security" => "/admin/security".to_string(),
         _ => "/admin/keys".to_string(),
@@ -91,10 +91,6 @@ fn clean_next_path(p: &str) -> String {
 
 pub async fn handle_admin_page(State(app): State<crate::server::App>, headers: HeaderMap, req: axum::extract::Request) -> Response {
     let path = req.uri().path().to_string();
-    match path.trim_end_matches('/').trim_end_matches('/').to_string().as_str() {
-        "" => {}
-        _ => {}
-    }
     // path check
     let p = path.as_str();
     let ok = matches!(p.trim_end_matches('/'), "/admin" | "/admin/keys" | "/admin/activity" | "/admin/security");

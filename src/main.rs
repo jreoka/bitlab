@@ -66,14 +66,6 @@ async fn main() {
             cfg.cache_max_bytes = v << 30;
         }
     }
-    // careful: get_setting returns def when missing; parse "" fails so ignored
-    if !store.get_setting("cache_gb", "").is_empty() {
-        if let Ok(n) = store.get_setting("cache_gb", "").parse::<i64>() {
-            if n >= 0 {
-                cfg.cache_max_bytes = n << 30;
-            }
-        }
-    }
     if !store.get_setting("idle_minutes", "").is_empty() {
         if let Ok(n) = store.get_setting("idle_minutes", "").parse::<i64>() {
             if n > 0 {
@@ -223,7 +215,7 @@ fn bootstrap_admin_password(data_dir: &str) -> String {
 
 fn build_router(app: server::App) -> axum::Router {
     use axum::middleware;
-    let r = axum::Router::new()
+    axum::Router::new()
         .route("/k/{token}/manifest.json", get(addon::handle_manifest))
         .route("/k/{token}/stream/{type}/{id}", get(addon::handle_stream))
         .route("/k/{token}/play/{infohash}", get(addon::handle_play))
@@ -255,19 +247,18 @@ fn build_router(app: server::App) -> axum::Router {
         .route("/admin/api/sessions/{id}", delete(security::handle_delete_session))
         .route("/admin/api/sessions/revoke-others", post(security::handle_revoke_others))
         .layer(middleware::from_fn_with_state(app.clone(), middleware_fn))
-        .with_state(app);
-    r
+        .with_state(app)
 }
 
 async fn handle_healthz(State(app): State<server::App>) -> Response {
     let free = app.engine.disk_free().await;
-    let degraded = free >= 0 && free < config::HEALTH_FREE_FLOOR;
+    let degraded = (0..config::HEALTH_FREE_FLOOR).contains(&free);
     server::json_response(200, serde_json::json!({"ok": true, "degraded": degraded}))
 }
 
 async fn handle_readyz(State(app): State<server::App>) -> Response {
     let free = app.engine.disk_free().await;
-    let degraded = free >= 0 && free < config::HEALTH_FREE_FLOOR;
+    let degraded = (0..config::HEALTH_FREE_FLOOR).contains(&free);
     let status = if degraded { 503 } else { 200 };
     server::json_response(status, serde_json::json!({"ready": !degraded}))
 }
@@ -282,7 +273,7 @@ async fn handle_root() -> Response {
 
 async fn middleware_fn(
     State(app): State<server::App>,
-    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    ConnectInfo(_remote): ConnectInfo<SocketAddr>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
@@ -326,8 +317,6 @@ async fn middleware_fn(
     }
     let mut res = next.run(req).await;
     apply_security_headers(&app, &mut res, is_addon);
-    // ensure CORS exposed headers for addon
-    let _ = (remote, host);
     res
 }
 
@@ -383,16 +372,6 @@ fn same_origin(app: &server::App, req: &axum::extract::Request, origin: &str) ->
     } else {
         req.headers().get("host").and_then(|v| v.to_str().ok()).unwrap_or("").to_string()
     };
-    // compare host ignoring default port
-    let strip = |h: &str| {
-        if h.ends_with(":443") || h.ends_with(":80") {
-            // strip only if scheme default? simplify: compare with hosts_equal
-            h.to_string()
-        } else {
-            h.to_string()
-        }
-    };
-    let _ = strip;
     let want_scheme = if !app.cfg.base_url.is_empty() {
         url::Url::parse(&app.cfg.base_url).map(|u| u.scheme().to_string()).unwrap_or_else(|_| "http".to_string())
     } else {

@@ -219,7 +219,7 @@ impl Engine {
                 }
                 let now = SystemTime::now();
                 reap_idle(&session, &act, &idle, now).await;
-                if sweeps == 0 || sweeps % 4 == 0 {
+                if sweeps.is_multiple_of(4) {
                     sweep_cache_once(&session, &media_dir, &store, &act, &stats, &ev_b, &ev_c, &max_cache, reserve, now, grace, retain).await;
                 }
                 sweeps += 1;
@@ -243,7 +243,6 @@ impl Engine {
 
     /// Metadata-only path used by background warm(): stays paused so it only
     /// fetches metadata, never downloads payload in the background.
-    #[allow(dead_code)]
     pub async fn ensure(&self, ih: &str, name: &str, extra: &[String]) -> anyhow::Result<ManagedTorrentHandle> {
         self.ensure_inner(ih, name, extra, true).await
     }
@@ -288,14 +287,12 @@ impl Engine {
         }
 
         let current_count = self.session.with_torrents(|iter| iter.count());
-        if self.max_torrents > 0 && current_count >= self.max_torrents {
-            if !self.evict_oldest().await {
-                let mut m = self.act.write().await;
-                if let Some(a) = m.get_mut(&ih) {
-                    a.adding = false;
-                }
-                anyhow::bail!("too many active torrents; try again shortly");
+        if self.max_torrents > 0 && current_count >= self.max_torrents && !self.evict_oldest().await {
+            let mut m = self.act.write().await;
+            if let Some(a) = m.get_mut(&ih) {
+                a.adding = false;
             }
+            anyhow::bail!("too many active torrents; try again shortly");
         }
 
         let magnet = crate::indexers::magnet_uri(&ih, name, &trs);
@@ -333,7 +330,7 @@ impl Engine {
         Ok(handle)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub async fn add_torrent_bytes(&self, bytes: bytes::Bytes) -> anyhow::Result<ManagedTorrentHandle> {
         let add = librqbit::AddTorrent::TorrentFileBytes(bytes);
         let opts = librqbit::AddTorrentOptions {
@@ -393,7 +390,6 @@ impl Engine {
         }
     }
 
-    #[allow(dead_code)]
     pub async fn stream_busy(&self) -> bool {
         let m = self.act.read().await;
         m.values().any(|a| a.readers > 0)
@@ -491,7 +487,7 @@ impl Engine {
                 idle_seconds: idle_s,
             });
         }
-        out.sort_by(|a, b| a.idle_seconds.cmp(&b.idle_seconds));
+        out.sort_by_key(|a| a.idle_seconds);
         out
     }
 

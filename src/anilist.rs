@@ -72,8 +72,7 @@ pub async fn anime_aliases(app: &crate::server::App, title: &str) -> Vec<String>
             return out;
         }
     }
-    let ctx = std::time::Duration::from_secs(8);
-    let candidates = fetch_anilist_candidates(&app.http, title, ctx).await;
+    let candidates = fetch_anilist_candidates(&app.http, title).await;
     let candidates = if candidates.is_empty() {
         fetch_kitsu_candidates(&app.http, title).await
     } else {
@@ -89,7 +88,7 @@ pub async fn anime_aliases(app: &crate::server::App, title: &str) -> Vec<String>
     aliases
 }
 
-async fn fetch_anilist_candidates(http: &reqwest::Client, title: &str, _timeout: std::time::Duration) -> Vec<String> {
+async fn fetch_anilist_candidates(http: &reqwest::Client, title: &str) -> Vec<String> {
     for q in romanization_variants(title) {
         if q.trim().is_empty() {
             continue;
@@ -198,7 +197,9 @@ fn replace_preserving(s: &str, re: &regex::Regex, to: &str) -> String {
         let m = &caps[0];
         if m.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
             let mut t = to.to_string();
-            t.get_mut(..1).map(|f| f.make_ascii_uppercase());
+            if let Some(f) = t.get_mut(..1) {
+                f.make_ascii_uppercase();
+            }
             t
         } else {
             to.to_string()

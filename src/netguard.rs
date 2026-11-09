@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr};
 
 fn reserved_nets_v4() -> Vec<(Ipv4Addr, u8)> {
     vec![
@@ -61,7 +61,6 @@ pub fn is_private_address_ip(ip: &IpAddr) -> bool {
                 // v4-mapped: check embedded v4?
                 return false;
             }
-            let _ = Ipv6Addr::LOCALHOST;
             false
         }
     }

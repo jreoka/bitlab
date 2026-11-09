@@ -164,11 +164,9 @@ impl App {
     }
 
     pub fn store_episode_list(&self, imdb: &str, eps: Vec<(i32, i32)>) {
-        if self.ep_cache.get(imdb).is_none() {
-            if self.ep_n.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1 > 4096 {
-                self.ep_cache.clear();
-                self.ep_n.store(1, std::sync::atomic::Ordering::Relaxed);
-            }
+        if self.ep_cache.get(imdb).is_none() && self.ep_n.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1 > 4096 {
+            self.ep_cache.clear();
+            self.ep_n.store(1, std::sync::atomic::Ordering::Relaxed);
         }
         self.ep_cache.insert(imdb.to_string(), eps);
     }
@@ -303,9 +301,8 @@ use std::collections::HashMap;
         }
         all.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
         // dropDead
-        let live: Vec<_> = all.iter().cloned().filter(|r| r.seeders > 0).collect();
-        if !live.is_empty() {
-            all = live;
+        if all.iter().any(|r| r.seeders > 0) {
+            all.retain(|r| r.seeders > 0);
         }
         if all.len() > 40 {
             all.truncate(40);

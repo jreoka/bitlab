@@ -87,7 +87,7 @@ pub fn scan_cache(root: &Path) -> anyhow::Result<Vec<CacheEntry>> {
         if cache_skip(&top) {
             continue;
         }
-        let a = m.entry(top.clone()).or_insert(Agg { bytes: 0, modified: unix_epoch_fix(), partial: false });
+        let a = m.entry(top.clone()).or_insert(Agg { bytes: 0, modified: std::time::UNIX_EPOCH, partial: false });
         if entry.file_type().is_dir() {
             continue;
         }
@@ -119,10 +119,6 @@ pub fn scan_cache(root: &Path) -> anyhow::Result<Vec<CacheEntry>> {
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
-}
-
-fn unix_epoch_fix() -> SystemTime {
-    std::time::UNIX_EPOCH
 }
 
 pub fn plan_cache(

@@ -44,7 +44,7 @@ pub(crate) fn manifest_for(label: &str, key_id: &str) -> Manifest {
     }
 }
 
-async fn auth_key(app: &crate::server::App, _headers: &HeaderMap, token: &str) -> Result<crate::store::Key, Response> {
+async fn auth_key(app: &crate::server::App, token: &str) -> Result<crate::store::Key, Response> {
     if token.is_empty() {
         return Err(crate::server::http_error(401, "missing manifest key"));
     }
@@ -61,10 +61,10 @@ async fn auth_key(app: &crate::server::App, _headers: &HeaderMap, token: &str) -
 
 pub async fn handle_manifest(
     State(app): State<crate::server::App>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     Path(token): Path<String>,
 ) -> Response {
-    let k = match auth_key(&app, &headers, &token).await {
+    let k = match auth_key(&app, &token).await {
         Ok(k) => k,
         Err(e) => return e,
     };
@@ -128,7 +128,7 @@ pub async fn handle_stream(
     headers: HeaderMap,
     Path((token, typ, id)): Path<(String, String, String)>,
 ) -> Response {
-    let k = match auth_key(&app, &headers, &token).await {
+    let k = match auth_key(&app, &token).await {
         Ok(k) => k,
         Err(e) => return e,
     };
@@ -328,7 +328,7 @@ pub async fn handle_play(
     Path((token, ih)): Path<(String, String)>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    handle_play_inner(app, headers, token, ih, q, None).await
+    handle_play_inner(app, headers, token, ih, q).await
 }
 
 pub async fn handle_play_file(
@@ -337,7 +337,7 @@ pub async fn handle_play_file(
     Path((token, ih, _fname)): Path<(String, String, String)>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    handle_play_inner(app, headers, token, ih, q, None).await
+    handle_play_inner(app, headers, token, ih, q).await
 }
 
 async fn handle_play_inner(
@@ -346,9 +346,8 @@ async fn handle_play_inner(
     token: String,
     ih_raw: String,
     q: HashMap<String, String>,
-    _fname: Option<String>,
 ) -> Response {
-    let k = match auth_key(&app, &headers, &token).await {
+    let k = match auth_key(&app, &token).await {
         Ok(k) => k,
         Err(e) => return e,
     };
@@ -383,17 +382,15 @@ async fn handle_play_inner(
         return crate::server::http_error(504, "waiting for metadata: timeout");
     }
     // file list
-    let (paths, sizes, tname) = match handle.with_metadata(|meta| {
+    let (paths, sizes) = match handle.with_metadata(|meta| {
         let paths: Vec<String> = meta.file_infos.iter().map(|f| f.relative_filename.to_string_lossy().to_string()).collect();
         let sizes: Vec<i64> = meta.file_infos.iter().map(|f| f.len as i64).collect();
-        let name = meta.info.name().map(|n| n.to_string()).unwrap_or_default();
-        (paths, sizes, name)
+        (paths, sizes)
     }) {
         Ok(m) => m,
         Err(_) => return crate::server::http_error(504, "waiting for metadata: unavailable"),
     };
     app.engine.record_media(&handle).await;
-    let _ = tname;
     // titles for movie
     let titles: Vec<String> = match q.get("t") {
         Some(v) => vec![v.clone()],
@@ -489,7 +486,7 @@ async fn handle_play_inner(
                 tokio::spawn(async move { a.engine.touch_now(&ihc).await; });
             }
         }
-        chunk.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+        chunk.map_err(std::io::Error::other)
     });
 
     // Decrement reader when stream ends: spawn watchdog that polls? Use Drop via extension?
@@ -546,10 +543,8 @@ async fn handle_play_inner(
             Self::poll_next_inner(self.as_mut(), cx)
         }
     }
-    // Need to convert map stream item BytesMut? ReaderStream yields Bytes. Map to Bytes.
-    let byte_stream = s.map(|r| r.map(|b| bytes::Bytes::from(b.to_vec())));
     let guarded = GuardStream {
-        inner: Box::pin(byte_stream),
+        inner: Box::pin(s),
         app: app2,
         ih: ih2,
         key_id: k.id.clone(),
@@ -603,9 +598,9 @@ fn parse_range(hdr: &str, size: i64) -> (i64, i64, u16) {
         return (0, size - 1, 200);
     }
     let spec = hdr.trim_start_matches("bytes=").split(',').next().unwrap_or("").trim();
-    if spec.starts_with('-') {
+    if let Some(stripped) = spec.strip_prefix('-') {
         // suffix: last N bytes
-        if let Ok(n) = spec[1..].parse::<i64>() {
+        if let Ok(n) = stripped.parse::<i64>() {
             if n <= 0 {
                 return (0, size - 1, 200);
             }

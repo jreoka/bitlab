@@ -57,7 +57,7 @@ static IH_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| Regex
 pub fn magnet_uri(ih: &str, name: &str, trackers: &[String]) -> String {
     let mut b = format!("magnet:?xt=urn:btih:{ih}");
     if !name.is_empty() {
-        b.push_str(&format!("&dn={}", urlencoding(&name)));
+        b.push_str(&format!("&dn={}", urlencoding(name)));
     }
     for t in trackers {
         b.push_str(&format!("&tr={}", urlencoding(t)));

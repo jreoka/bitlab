@@ -28,19 +28,7 @@ pub fn rand_hex(nbytes: usize) -> String {
 }
 
 pub fn valid_infohash(ih: &str) -> bool {
-    if ih.len() != 40 {
-        return false;
-    }
-    ih.bytes().all(|c| c.is_ascii_hexdigit() && (c.is_ascii_digit() || c.is_ascii_lowercase() || (c >= b'A' && c <= b'F') || (c >= b'a' && c <= b'f')))
-        && ih.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F'))
-        && ih.to_lowercase() == ih.to_lowercase() // keep case-insensitive check simple
-        && is_lower_hex_or_digit(ih)
-}
-
-fn is_lower_hex_or_digit(s: &str) -> bool {
-    // Accept any hex; the canonical form is lowercase. Uppercase is tolerated
-    // by lowercasing at call sites, but raw validation requires hex only.
-    s.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F'))
+    ih.len() == 40 && ih.bytes().all(|c| c.is_ascii_hexdigit())
 }
 
 pub fn valid_infohash_strict_lower(ih: &str) -> bool {
