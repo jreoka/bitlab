@@ -61,7 +61,6 @@ async fn auth_key(app: &crate::server::App, token: &str) -> Result<crate::store:
 
 pub async fn handle_manifest(
     State(app): State<crate::server::App>,
-    _headers: HeaderMap,
     Path(token): Path<String>,
 ) -> Response {
     let k = match auth_key(&app, &token).await {
@@ -426,7 +425,7 @@ async fn handle_play_inner(
     }
 
     // readers accounting
-    app.engine.inc_reader(&ih, file_len).await;
+    app.engine.inc_reader(&ih).await;
     let app2 = app.clone();
     let ih2 = ih.clone();
 

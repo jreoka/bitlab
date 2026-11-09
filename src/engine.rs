@@ -13,10 +13,6 @@ struct Activity {
     adding: bool,
     last_access: SystemTime,
     label: String,
-    size: i64,
-    rate: f64,
-    prev_bytes: u64,
-    prev_at: SystemTime,
     warned_no_peers: bool,
 }
 
@@ -28,10 +24,6 @@ impl Default for Activity {
             adding: false,
             last_access: now,
             label: String::new(),
-            size: 0,
-            rate: 0.0,
-            prev_bytes: 0,
-            prev_at: now,
             warned_no_peers: false,
         }
     }
@@ -82,7 +74,6 @@ pub struct Engine {
     stats: Arc<RwLock<crate::cache::CacheStats>>,
     evicted_bytes: Arc<std::sync::atomic::AtomicI64>,
     evicted_count: Arc<std::sync::atomic::AtomicI64>,
-    closed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Engine {
@@ -172,7 +163,6 @@ impl Engine {
             stats: Arc::new(RwLock::new(crate::cache::CacheStats::default())),
             evicted_bytes: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             evicted_count: Arc::new(std::sync::atomic::AtomicI64::new(0)),
-            closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         e.spawn_janitor();
         Ok(e)
@@ -206,14 +196,10 @@ impl Engine {
         let grace = self.grace;
         let retain = self.retain;
         let idle = self.idle_timeout.clone();
-        let closed = self.closed.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(30));
             loop {
                 tick.tick().await;
-                if closed.load(std::sync::atomic::Ordering::Relaxed) {
-                    return;
-                }
                 let now = SystemTime::now();
                 reap_idle(&session, &store, &act, &idle, now).await;
                 sweep_cache_once(&session, &media_dir, &store, &act, &stats, &ev_b, &ev_c, &max_cache, reserve, now, grace, retain).await;
@@ -267,7 +253,7 @@ impl Engine {
     }
 
     async fn ensure_inner(&self, ih: &str, name: &str, extra: &[String]) -> anyhow::Result<ManagedTorrentHandle> {
-        if !crate::util::valid_infohash_strict_lower(&ih.to_lowercase()) && !crate::util::valid_infohash(ih) {
+        if !crate::util::valid_infohash(ih) {
             anyhow::bail!("invalid infohash");
         }
         let ih = ih.to_lowercase();
@@ -562,13 +548,12 @@ impl Engine {
         });
     }
 
-    pub async fn inc_reader(&self, ih: &str, size: i64) {
+    pub async fn inc_reader(&self, ih: &str) {
         self.store.touch_media(ih);
         let mut m = self.act.write().await;
         let a = m.entry(ih.to_string()).or_insert_with(Activity::default);
         a.readers += 1;
         a.last_access = SystemTime::now();
-        a.size = size;
     }
 
     pub async fn dec_reader(&self, ih: &str) {
@@ -630,20 +615,6 @@ async fn reap_idle(
         let ih = handle.info_hash().as_string();
         let stats = handle.stats();
         let size = stats.total_bytes;
-        let completed = stats.progress_bytes;
-        {
-            let mut m = act.write().await;
-            let a = m.entry(ih.clone()).or_insert_with(Activity::default);
-            if size > 0 {
-                a.size = size as i64;
-            }
-            let dt = now.duration_since(a.prev_at).map(|d| d.as_secs_f64()).unwrap_or(0.0);
-            if dt > 0.0 {
-                a.rate = (completed.saturating_sub(a.prev_bytes)) as f64 / dt;
-                a.prev_bytes = completed;
-            }
-            a.prev_at = now;
-        }
         let (readers, last, warned) = {
             let m = act.read().await;
             match m.get(&ih) {

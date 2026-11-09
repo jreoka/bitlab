@@ -176,9 +176,6 @@ struct TorznabItem {
 struct TorznabEnclosure {
     #[serde(rename = "@url", default)]
     url: String,
-    #[serde(rename = "@type", default)]
-    #[allow(dead_code)]
-    typ: String,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -277,9 +274,6 @@ struct ApibayRow {
     info_hash: String,
     #[serde(default)]
     seeders: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    leechers: String,
     #[serde(default)]
     size: String,
     #[serde(default)]
@@ -389,9 +383,6 @@ async fn knaben_request(client: &reqwest::Client, ix: &Indexer, q: &str) -> anyh
         category: String,
         #[serde(default, rename = "magnetUrl")]
         magnet: String,
-        #[serde(default)]
-        #[allow(dead_code)]
-        tracker: String,
     }
     let out: Resp = serde_json::from_slice(&body).map_err(|e| anyhow::anyhow!("bad json: {e}"))?;
     let skip: std::collections::HashSet<&str> = ["audio", "applications", "apps", "pc", "games", "books", "ebook", "ebooks", "software", "android", "mac", "windows", "xxx", "other"].into_iter().collect();
@@ -430,18 +421,12 @@ struct NyaaChannel {
 struct NyaaItem {
     #[serde(default)]
     title: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    link: String,
     #[serde(default, rename = "infoHash")]
     infohash: String,
     #[serde(default)]
     seeders: i32,
     #[serde(default)]
     size: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    category: String,
 }
 
 pub async fn nyaa_search(client: &reqwest::Client, ix: &Indexer, q: &str) -> anyhow::Result<Vec<ResultRow>> {

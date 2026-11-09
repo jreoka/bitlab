@@ -13,7 +13,7 @@ mod server;
 mod store;
 mod util;
 
-use axum::extract::{ConnectInfo, State};
+use axum::extract::State;
 use axum::response::Response;
 use axum::routing::{delete, get, post};
 use std::net::SocketAddr;
@@ -273,7 +273,6 @@ async fn handle_root() -> Response {
 
 async fn middleware_fn(
     State(app): State<server::App>,
-    ConnectInfo(_remote): ConnectInfo<SocketAddr>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {

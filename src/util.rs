@@ -31,10 +31,6 @@ pub fn valid_infohash(ih: &str) -> bool {
     ih.len() == 40 && ih.bytes().all(|c| c.is_ascii_hexdigit())
 }
 
-pub fn valid_infohash_strict_lower(ih: &str) -> bool {
-    ih.len() == 40 && ih.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
-}
-
 pub fn human_bytes(n: i64) -> String {
     const UNIT: i64 = 1000;
     if n < UNIT {
