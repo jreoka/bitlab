@@ -5,8 +5,8 @@ use std::collections::HashSet;
 static RE_EP_MARKER_SXXEXX: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bS\d{1,2}\s*E\d{1,3}\b").unwrap());
 static RE_EP_MARKER_X: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\b\d{1,2}x\d{2}\b").unwrap());
 static RE_EP_MARKER_EP: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bepisode[.\s_-]*\d{1,4}\b").unwrap());
-static RE_EP_MARKER_SEASON: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bseason[.\s_-]*\d{1,2}\b").unwrap());
-static RE_EP_MARKER_COMPLETE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bcomplete[.\s_-]+(series|season)\b").unwrap());
+static RE_EP_MARKER_SEASON: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bseasons?[.\s_-]*\d{1,2}\b").unwrap());
+static RE_EP_MARKER_COMPLETE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bcomplete[.\s_-]+(series|season|collection)\b|\b(the[\s._-]+)?complete[\s._-]+(series|season|collection)\b|\b(all|entire|full)[\s._-]+(series|seasons?)\b").unwrap());
 static RE_EP_MARKER_DASH: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s-\s\d{2,4}(\s|$)").unwrap());
 static RE_YEAR: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(19|20)\d{2}\b").unwrap());
 static RE_NON_ALNUM: Lazy<Regex> = Lazy::new(|| Regex::new(r"[^a-z0-9]+").unwrap());
@@ -21,9 +21,11 @@ static RE_EP_ONLY: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bep(?:isode)?[\s
 static RE_SEASON: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bs(\d{1,2})\b").unwrap());
 static RE_RECUT: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)director'?s[\s._-]*cut|\bshin[\s._-]*henshuu-?ban\b|新編集版").unwrap());
 
-static RE_SEASON_RANGE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bS(\d{1,2})\s*[-–—]\s*(?:S)?(\d{1,2})\b").unwrap());
+static RE_SEASON_RANGE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)(?:\bS|\bseasons?[\s._-]*)(\d{1,2})\s*(?:[-–—]|to)\s*(?:S|seasons?[\s._-]*)?(\d{1,2})\b").unwrap()
+});
 static RE_SEASON_ORDINAL: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\b(\d{1,2})(?:st|nd|rd|th)[\s._-]+season\b").unwrap());
-static RE_SEASON_LONG: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bseason[\s._-]*(\d{1,2})\b").unwrap());
+static RE_SEASON_LONG: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bseasons?[\s._-]*(\d{1,2})\b").unwrap());
 static RE_SEASON_SHORT: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bS(\d{1,2})(?:[\s._-]*E\d{1,3})?\b").unwrap());
 
 static RE_TITLE_SEP: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s*:\s*|\s+-+\s*|\s*-+\s+").unwrap());
@@ -33,7 +35,7 @@ static RE_BRACKETED: Lazy<Regex> = Lazy::new(|| Regex::new(r"\[[^\]]*\]|\([^)]*\
 static RE_VIDEO_EXT: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\.(mkv|mp4|avi|mov|m4v|webm|ts|wmv|mpg|mpeg|flv)$").unwrap());
 static RE_TRAILING_GROUP: Lazy<Regex> = Lazy::new(|| Regex::new(r"-[A-Za-z0-9]+$").unwrap());
 static RE_DASH_NUM_MARKER: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s-\s\d{2,4}(?:\s|$)").unwrap());
-static RE_X_EP_MARKER: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\b\d{1,2}x\d{2}\b").unwrap());
+static RE_X_EP_MARKER: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\b(\d{1,2})x(\d{2,3})\b").unwrap());
 
 static QUALITY_PATTERNS: Lazy<Vec<(Regex, f64)>> = Lazy::new(|| {
     vec![
@@ -108,24 +110,42 @@ fn match_normalized(name: &str, title: &str) -> bool {
     if want.is_empty() {
         return true;
     }
-    let have = norm_name(name);
-    if have.contains(&want) {
-        return true;
-    }
+    let clean = RE_BRACKETED.replace_all(name, " ");
+    let have = norm_name(&clean);
     let words = significant_words(title);
     if words.is_empty() {
-        return true;
+        return have.contains(&want);
     }
     for w in &words {
         if !have.contains(w) {
             return false;
         }
     }
-    let first: Vec<String> = RE_NON_ALNUM.split(&name.to_lowercase()).filter(|w| !w.is_empty()).map(|s| s.to_string()).collect();
-    if first.is_empty() {
+    let name_words: Vec<String> = RE_NON_ALNUM
+        .split(&clean.to_lowercase())
+        .filter(|w| !w.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    if name_words.is_empty() {
         return false;
     }
-    first[0] == words[0]
+    let mut start_idx = None;
+    for (i, nw) in name_words.iter().enumerate() {
+        if nw == &words[0] {
+            start_idx = Some(i);
+            break;
+        }
+    }
+    let start_idx = match start_idx {
+        Some(i) => i,
+        None => return false,
+    };
+    for w in &name_words[..start_idx] {
+        if w != "the" && w != "a" && w != "an" && !w.chars().all(|c| c.is_ascii_digit()) {
+            return false;
+        }
+    }
+    true
 }
 
 pub fn title_matches(name: &str, title: &str) -> bool {
@@ -178,9 +198,6 @@ pub fn identified_for_season(name: &str, season: i32) -> bool {
     if looks_like_episode(name) {
         return true;
     }
-    if release_season(name, season) != 0 {
-        return true;
-    }
     if let Some(m) = RE_SEASON_RANGE.captures(name) {
         let lo: i32 = m.get(1).map(|v| v.as_str().parse().unwrap_or(0)).unwrap_or(0);
         let hi: i32 = m.get(2).map(|v| v.as_str().parse().unwrap_or(0)).unwrap_or(0);
@@ -190,6 +207,9 @@ pub fn identified_for_season(name: &str, season: i32) -> bool {
         }
         return season >= lo && season <= hi;
     }
+    if release_season(name, season) == season {
+        return true;
+    }
     false
 }
 
@@ -197,8 +217,11 @@ static RELEASE_FURNITURE: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
         "bluray", "bdrip", "brrip", "webrip", "hdtv", "web", "dl", "rip", "xvid", "divx", "hevc", "avc",
         "remux", "proper", "repack", "internal", "limited", "extended", "uncut", "remastered", "dual",
-        "audio", "multi", "subs", "subbed", "dubbed", "hardcoded", "complete", "series", "batch", "pack",
-        "collection", "tv", "www", "com", "org", "net", "nf", "amzn", "dsnp", "hmax", "atvp", "cr",
+        "audio", "multi", "subs", "subbed", "dubbed", "hardcoded", "complete", "series", "season", "seasons",
+        "batch", "pack", "collection", "tv", "www", "com", "org", "net", "nf", "amzn", "dsnp", "hmax",
+        "atvp", "cr", "specials", "special", "bonus", "tvrip", "satrip", "dvdrip", "us", "uk", "au", "ca",
+        "eng", "english", "ita", "esp", "ger", "fra", "jap", "spanish", "french", "german", "italian", "japanese",
+        "webdl", "x264", "x265", "h264", "h265",
     ]
     .into_iter()
     .collect()
@@ -248,13 +271,13 @@ pub fn extra_title_words_before_marker(name: &str, titles: &[String]) -> usize {
     ];
     for re in patterns {
         if let Some(m) = re.find(name) {
-            if m.start() < cut {
+            if m.start() > 0 && m.start() < cut {
                 cut = m.start();
             }
         }
     }
     if cut == name.len() {
-        return 0;
+        return extra_title_words(name, titles);
     }
     extra_title_words(&name[..cut], titles)
 }
@@ -325,6 +348,17 @@ pub fn episode_signal(title: &str, season: i32, ep: i32) -> i32 {
         return -1;
     }
     if let Some(m) = RE_SXXEXX.captures(title) {
+        let s: i32 = m.get(1).map(|v| v.as_str().parse().unwrap_or(0)).unwrap_or(0);
+        let e: i32 = m.get(2).map(|v| v.as_str().parse().unwrap_or(0)).unwrap_or(0);
+        if season > 0 && s != season {
+            return -1;
+        }
+        if e == ep {
+            return 1;
+        }
+        return -1;
+    }
+    if let Some(m) = RE_X_EP_MARKER.captures(title) {
         let s: i32 = m.get(1).map(|v| v.as_str().parse().unwrap_or(0)).unwrap_or(0);
         let e: i32 = m.get(2).map(|v| v.as_str().parse().unwrap_or(0)).unwrap_or(0);
         if season > 0 && s != season {
@@ -447,6 +481,10 @@ pub fn filter_relevant_generic(
                 dropped += 1;
                 continue;
             }
+            if extra_title_words_before_marker(name, &titles) > 0 {
+                dropped += 1;
+                continue;
+            }
         } else if season > 0 {
             if looks_like_movie(name) {
                 dropped += 1;
@@ -456,16 +494,20 @@ pub fn filter_relevant_generic(
                 dropped += 1;
                 continue;
             }
-            if extra_title_words_before_marker(name, &titles) >= 2 {
+            if extra_title_words_before_marker(name, &titles) > 0 {
                 dropped += 1;
                 continue;
             }
             if !identified_for_season(name, season) {
-                if !year_agrees(name, year, slack + (season - 1) * 3) {
+                if season > 1 {
                     dropped += 1;
                     continue;
                 }
-                if extra_title_words(name, &titles) >= 2 {
+                if !year_agrees(name, year, slack) {
+                    dropped += 1;
+                    continue;
+                }
+                if extra_title_words(name, &titles) > 0 {
                     dropped += 1;
                     continue;
                 }
@@ -490,10 +532,20 @@ pub fn file_signal(path: &str, season: i32, ep: i32) -> i32 {
     if ep <= 0 {
         return 0;
     }
+    if season > 0 {
+        let s = release_season(path, season);
+        if s > 0 && s != season {
+            return -1;
+        }
+    }
     let base = FsPath::new(path).file_name().and_then(|s| s.to_str()).unwrap_or(path);
     let sig = episode_signal(base, season, ep);
     if sig != 0 {
         return sig;
+    }
+    let sig_path = episode_signal(path, season, ep);
+    if sig_path != 0 {
+        return sig_path;
     }
     if let Some(m) = RE_FILE_EP_NUM.captures(base) {
         let n: i32 = m.get(1).map(|v| v.as_str().parse().unwrap_or(-1)).unwrap_or(-1);
@@ -564,8 +616,26 @@ pub fn choose_file_for_episode(paths: &[String], sizes: &[i64], want: i32, seaso
         if numbered > 0 {
             anyhow::bail!("release has no file for this episode");
         }
-        if videos > 3 {
+        if videos > 1 {
             anyhow::bail!("release has no file for this episode");
+        }
+        if videos == 1 {
+            for p in paths {
+                if is_video_path(p) {
+                    if looks_like_movie(p) || (RE_YEAR.is_match(p) && !looks_like_episode(p)) {
+                        anyhow::bail!("release has no file for this episode");
+                    }
+                    if season > 0 {
+                        let s = release_season(p, season);
+                        if s > 0 && s != season {
+                            anyhow::bail!("release has no file for this episode");
+                        }
+                    }
+                    if season > 1 && !looks_like_episode(p) {
+                        anyhow::bail!("release has no file for this episode");
+                    }
+                }
+            }
         }
     }
     choose_file(paths, sizes, want)
@@ -654,4 +724,73 @@ pub fn remap_episode(eps: &[(i32, i32)], season: i32, ep: i32) -> (i32, i32) {
         return eps[(ep - 1) as usize];
     }
     (season, ep)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_title_matches() {
+        assert!(title_matches("Arthur.S25E03.1080p.WEBRip", "Arthur"));
+        assert!(title_matches("Arthur 1996 Seasons 21 to 25 Complete + Specials TVRip x264 [i_c]", "Arthur"));
+        assert!(title_matches("[SubsPlease] Sousou no Frieren - 01 (1080p)", "Sousou no Frieren"));
+        assert!(title_matches("The Office US S01E01", "The Office"));
+
+        assert!(!title_matches("The.In.Laws.1979.(Arthur.Hiller).1080p.BRRip.x264-Classics", "Arthur"));
+        assert!(!title_matches("King Arthur and the Knights of Justice", "Arthur"));
+        assert!(!title_matches("MacArthur (1977)", "Arthur"));
+        assert!(!title_matches("2002 Ben & Arthur (USA)", "Arthur"));
+    }
+
+    #[test]
+    fn test_filter_relevant_generic_series() {
+        let candidates = vec![
+            ("Arthur 1996 Seasons 21 to 25 Complete + Specials TVRip x264 [i_c]".to_string(), 1000, 10),
+            ("Arthur.S25E03.720p.HDTV.x264".to_string(), 1000, 10),
+            ("Arthur the King (2024) [1080p] [WEBRip] [5.1]".to_string(), 1000, 10),
+            ("Arthur Christmas 2011 1080p BluRay x265".to_string(), 1000, 10),
+            ("Arthur (1981) dvdrip".to_string(), 1000, 10),
+            ("King Arthur and the Knights of Justice complete series".to_string(), 1000, 10),
+            ("The.In.Laws.1979.(Arthur.Hiller).1080p.BRRip".to_string(), 1000, 10),
+            ("Arthur S01 (1996)".to_string(), 1000, 10),
+        ];
+
+        let (keep, dropped) = filter_relevant_generic(&candidates, "series", "Arthur", &[], 1996, 25);
+        assert_eq!(keep.len(), 2, "Only seasons 21-25 pack and S25E03 should be kept");
+        assert_eq!(dropped, 6);
+        assert_eq!(candidates[keep[0]].0, "Arthur 1996 Seasons 21 to 25 Complete + Specials TVRip x264 [i_c]");
+        assert_eq!(candidates[keep[1]].0, "Arthur.S25E03.720p.HDTV.x264");
+    }
+
+    #[test]
+    fn test_file_signal_multi_season_pack() {
+        assert!(file_signal("Arthur/Season 21/03.mp4", 25, 3) < 0);
+        assert!(file_signal("Arthur/Season 21/Arthur - 21x03.mp4", 25, 3) < 0);
+        assert!(file_signal("Arthur/Season 25/03.mp4", 25, 3) > 0);
+        assert!(file_signal("Arthur/Season 25/Arthur.25x03.mp4", 25, 3) > 0);
+        assert!(file_signal("Arthur/Season 25/Arthur.25x01.mp4", 25, 3) < 0);
+    }
+
+    #[test]
+    fn test_choose_file_for_episode_multi_season() {
+        let paths = vec![
+            "Arthur/Season 21/01.mp4".to_string(),
+            "Arthur/Season 21/02.mp4".to_string(),
+            "Arthur/Season 21/03.mp4".to_string(),
+            "Arthur/Season 25/01.mp4".to_string(),
+            "Arthur/Season 25/02.mp4".to_string(),
+            "Arthur/Season 25/03.mp4".to_string(),
+        ];
+        let sizes = vec![100; 6];
+        let idx = choose_file_for_episode(&paths, &sizes, -1, 25, 3).expect("should find episode");
+        assert_eq!(idx, 5, "Must select Arthur/Season 25/03.mp4, not Season 21!");
+    }
+
+    #[test]
+    fn test_choose_file_for_episode_rejects_unrelated_single_movie() {
+        let paths = vec!["Arthur.The.King.2024.1080p.WEBRip.mp4".to_string()];
+        let sizes = vec![1000];
+        assert!(choose_file_for_episode(&paths, &sizes, -1, 25, 3).is_err());
+    }
 }
