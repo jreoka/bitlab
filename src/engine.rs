@@ -191,12 +191,17 @@ impl Engine {
         let reserve = self.reserve_bytes;
         let idle = self.idle_timeout.clone();
         tokio::spawn(async move {
-            let mut tick = tokio::time::interval(Duration::from_secs(30));
+            let mut tick = tokio::time::interval(Duration::from_secs(10));
+            let mut sweep_counter = 0;
             loop {
                 tick.tick().await;
                 let now = SystemTime::now();
                 reap_idle(&session, &act, &idle, now).await;
-                sweep_cache_once(&session, &media_dir, &store, &act, &stats, &ev_b, &ev_c, &max_cache, reserve, now, false).await;
+                sweep_counter += 1;
+                if sweep_counter >= 3 {
+                    sweep_counter = 0;
+                    sweep_cache_once(&session, &media_dir, &store, &act, &stats, &ev_b, &ev_c, &max_cache, reserve, now, false).await;
+                }
             }
         });
     }
@@ -523,12 +528,41 @@ impl Engine {
     }
 
     pub async fn pause_others(&self, current_ih: &str) {
-        let act = self.act.read().await;
-        let idle_hashes: Vec<String> = act.iter()
-            .filter(|(ih, a)| ih.as_str() != current_ih && a.readers == 0)
-            .map(|(ih, _)| ih.clone())
-            .collect();
-        drop(act);
+        let now = SystemTime::now();
+        let mut stale_to_clear = Vec::new();
+        let idle_hashes: Vec<String> = {
+            let act = self.act.read().await;
+            act.iter()
+                .filter_map(|(ih, a)| {
+                    if ih.as_str() == current_ih {
+                        return None;
+                    }
+                    if a.readers == 0 {
+                        return Some(ih.clone());
+                    }
+                    // If readers > 0, check if this stream is inactive (no reads in >= 8s).
+                    // When a user switches to a new stream, any old stream that isn't actively transferring
+                    // chunks right now is an abandoned reader and should be paused immediately.
+                    let inactive = now.duration_since(a.last_access).unwrap_or_default() >= Duration::from_secs(8);
+                    if inactive {
+                        stale_to_clear.push(ih.clone());
+                        Some(ih.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        if !stale_to_clear.is_empty() {
+            let mut act = self.act.write().await;
+            for ih in &stale_to_clear {
+                if let Some(a) = act.get_mut(ih) {
+                    tracing::info!("stream switch: clearing stale reader for other torrent {}", &ih[..8.min(ih.len())]);
+                    a.readers = 0;
+                }
+            }
+        }
 
         for ih in idle_hashes {
             if let Some(id20) = hex_to_id20(&ih) {
@@ -594,6 +628,16 @@ impl Engine {
         let mut m = self.act.write().await;
         if let Some(a) = m.get_mut(ih) {
             a.last_access = SystemTime::now();
+            if a.readers == 0 {
+                a.readers = 1;
+            }
+        }
+        if let Some(id20) = hex_to_id20(ih) {
+            if let Some(handle) = self.session.get(librqbit::api::TorrentIdOrHash::Hash(id20)) {
+                if handle.is_paused() {
+                    let _ = self.session.unpause(&handle).await;
+                }
+            }
         }
     }
 }
@@ -630,17 +674,29 @@ async fn reap_idle(
         let ih = handle.info_hash().as_string();
         let stats = handle.stats();
         let size = stats.total_bytes;
-        let (readers, last, warned) = {
+        let (mut readers, last, warned) = {
             let m = act.read().await;
             match m.get(&ih) {
                 Some(a) => (a.readers, a.last_access, a.warned_no_peers),
                 None => (0, now, false),
             }
         };
+        let inactive_dur = now.duration_since(last).unwrap_or_default();
+        if readers > 0 && inactive_dur >= Duration::from_secs(30) {
+            tracing::info!("clearing {readers} stale reader(s) for {} (inactive for {inactive_dur:?})", &ih[..8.min(ih.len())]);
+            let mut m = act.write().await;
+            if let Some(a) = m.get_mut(&ih) {
+                a.readers = 0;
+            }
+            readers = 0;
+            if !handle.is_paused() {
+                let _ = session.pause(&handle).await;
+            }
+        }
         if readers > 0 {
             let peers = stats.live.as_ref().map(|l| l.snapshot.peer_stats.live as usize).unwrap_or(0);
-            if size > 0 && peers == 0 && now.duration_since(last).unwrap_or_default() > Duration::from_secs(15) && !warned {
-                tracing::warn!("no peers for {} after {:?}", &ih[..8.min(ih.len())], now.duration_since(last).unwrap_or_default());
+            if size > 0 && peers == 0 && inactive_dur > Duration::from_secs(15) && !warned {
+                tracing::warn!("no peers for {} after {:?}", &ih[..8.min(ih.len())], inactive_dur);
                 let mut m = act.write().await;
                 if let Some(a) = m.get_mut(&ih) {
                     a.warned_no_peers = true;
@@ -648,8 +704,8 @@ async fn reap_idle(
             }
         }
         let idle_dur = Duration::from_nanos(idle.load(std::sync::atomic::Ordering::Relaxed) as u64);
-        if readers == 0 && now.duration_since(last).unwrap_or_default() > idle_dur {
-            tracing::info!("drop idle torrent {} ({:?} idle)", &ih[..8.min(ih.len())], now.duration_since(last).unwrap_or_default());
+        if readers == 0 && inactive_dur > idle_dur {
+            tracing::info!("drop idle torrent {} ({:?} idle)", &ih[..8.min(ih.len())], inactive_dur);
             let _ = session.delete(librqbit::api::TorrentIdOrHash::Hash(handle.info_hash()), false).await;
             let mut m = act.write().await;
             m.remove(&ih);

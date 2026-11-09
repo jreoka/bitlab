@@ -170,6 +170,16 @@ async fn main() {
         }
     };
 
+    use axum::serve::ListenerExt;
+    let listener = listener.tap_io(|stream| {
+        let _ = stream.set_nodelay(true);
+        let sock = socket2::SockRef::from(&*stream);
+        let ka = socket2::TcpKeepalive::new()
+            .with_time(Duration::from_secs(15))
+            .with_interval(Duration::from_secs(5));
+        let _ = sock.set_tcp_keepalive(&ka);
+    });
+
     // graceful shutdown (ctrl_c + SIGTERM on unix)
     let srv = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>());
     let shutdown_signal = async {

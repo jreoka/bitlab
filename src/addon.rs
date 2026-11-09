@@ -553,6 +553,7 @@ async fn handle_play_inner(
     impl<S> Drop for GuardStream<S> {
         fn drop(&mut self) {
             if !self.done {
+                self.done = true;
                 let app = self.app.clone();
                 let ih = self.ih.clone();
                 let key_id = self.key_id.clone();

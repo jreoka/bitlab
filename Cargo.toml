@@ -43,6 +43,7 @@ once_cell = "1"
 anyhow = "1"
 librqbit = "9.1.0"
 librqbit-core = "9.1.0"
+socket2 = "0.6"
 
 [profile.release]
 lto = "thin"
