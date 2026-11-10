@@ -279,7 +279,6 @@ pub async fn handle_overview(State(app): State<crate::server::App>, headers: Hea
             "version": crate::config::VERSION,
             "base_url": app.cfg.base_url,
             "active_keys": app.store.active_key_count(),
-            "media_rows": app.store.media_cache_count(),
             "idle_minutes": idle_min,
             "readahead_mb": (app.readahead.load(std::sync::atomic::Ordering::Relaxed) >> 20),
         }),

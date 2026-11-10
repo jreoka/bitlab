@@ -427,10 +427,6 @@ CREATE TABLE IF NOT EXISTS meta_cache (
         Ok(())
     }
 
-    pub fn media_cache_count(&self) -> i64 {
-        self.conn.lock().unwrap().query_row("SELECT count(*) FROM media_cache", [], |r| r.get(0)).unwrap_or(0)
-    }
-
     pub fn media_name(&self, ih: &str) -> Option<String> {
         self.conn
             .lock()
