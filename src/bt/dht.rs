@@ -17,9 +17,9 @@ use super::metainfo::Id20;
 use super::wire;
 
 const K_BUCKET_SIZE: usize = 16;
-const ALPHA: usize = 8;
-const MAX_LOOKUP_ROUNDS: usize = 12;
-const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_millis(750);
+const ALPHA: usize = 16;
+const MAX_LOOKUP_QUERIES: usize = 64;
+const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_millis(500);
 const DEFAULT_LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
 const TOKEN_ROTATE_INTERVAL: Duration = Duration::from_secs(300);
 const PEER_TTL: Duration = Duration::from_secs(1800);
@@ -395,8 +395,13 @@ impl DhtNode {
         }
         impl Ord for Candidate {
             fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-                // BinaryHeap is max-heap; reverse distance so closest node pops first.
-                other.dist.cmp(&self.dist).then_with(|| self.addr.cmp(&other.addr))
+                // BinaryHeap is max-heap; reverse distance so closest node pops first,
+                // preferring IPv4 over IPv6 on equal distance (e.g. cold bootstrap seeds).
+                other
+                    .dist
+                    .cmp(&self.dist)
+                    .then_with(|| other.addr.is_ipv6().cmp(&self.addr.is_ipv6()))
+                    .then_with(|| self.addr.cmp(&other.addr))
             }
         }
         impl PartialOrd for Candidate {
@@ -424,22 +429,24 @@ impl DhtNode {
         let (res_tx, mut res_rx) =
             mpsc::unbounded_channel::<(SocketAddr, Result<DhtResponse>)>();
         let mut in_flight = 0usize;
-        let mut rounds = 0usize;
 
-        while (!frontier.is_empty() || in_flight > 0) && rounds < MAX_LOOKUP_ROUNDS {
+        while (!frontier.is_empty() && queried_addrs.len() < MAX_LOOKUP_QUERIES) || in_flight > 0 {
             if *cancel.borrow() || tokio::time::Instant::now() >= deadline {
                 break;
             }
 
-            let mut launched_any = false;
-            while in_flight < ALPHA {
+            while in_flight < ALPHA && queried_addrs.len() < MAX_LOOKUP_QUERIES {
                 let Some(cand) = frontier.pop() else {
                     break;
                 };
+                if !inner.is_addr_allowed(&cand.addr)
+                    || (cand.addr.is_ipv6() && inner.v6_sock.is_none())
+                {
+                    continue;
+                }
                 if !queried_addrs.insert(cand.addr) {
                     continue;
                 }
-                launched_any = true;
                 in_flight += 1;
                 let inner_c = inner.clone();
                 let res_tx_c = res_tx.clone();
@@ -447,9 +454,6 @@ impl DhtNode {
                     let res = inner_c.rpc_get_peers(cand.addr, info_hash).await;
                     let _ = res_tx_c.send((cand.addr, res));
                 });
-            }
-            if launched_any {
-                rounds += 1;
             }
             if in_flight == 0 {
                 break;
@@ -705,12 +709,20 @@ impl DhtInner {
         if !self.cfg.use_default_bootstrap {
             return existing;
         }
-        let mut out = existing;
+        let mut handles = Vec::with_capacity(BOOTSTRAP_HOSTS.len());
         for &(host, port) in BOOTSTRAP_HOSTS {
-            if let Ok(Ok(addrs)) =
+            handles.push(tokio::spawn(async move {
                 tokio::time::timeout(Duration::from_secs(2), tokio::net::lookup_host((host, port)))
                     .await
-            {
+                    .ok()
+                    .and_then(|r| r.ok())
+                    .map(|iter| iter.collect::<Vec<_>>())
+                    .unwrap_or_default()
+            }));
+        }
+        let mut out = existing;
+        for h in handles {
+            if let Ok(addrs) = h.await {
                 for addr in addrs {
                     if self.is_addr_allowed(&addr)
                         && (addr.is_ipv4() || self.v6_sock.is_some())
@@ -721,6 +733,7 @@ impl DhtInner {
                 }
             }
         }
+        out.sort_by_key(|a| a.is_ipv6());
         *self.bootstrap_cache.write().unwrap() = out.clone();
         out
     }
@@ -731,7 +744,7 @@ impl DhtInner {
             .into_iter()
             .map(|(id, addr)| (Some(id), addr))
             .collect();
-        if out.len() < 4 {
+        if out.len() < 8 {
             let boot = self.resolve_bootstrap_addrs().await;
             for addr in boot {
                 if !out.iter().any(|(_, a)| *a == addr) {
@@ -756,23 +769,31 @@ impl DhtInner {
         }
 
         let mut queried = HashSet::new();
-        let mut to_query: Vec<SocketAddr> = seeds;
-        for _ in 0..3 {
-            let batch: Vec<SocketAddr> = to_query
-                .drain(..)
-                .filter(|a| self.is_addr_allowed(a) && queried.insert(*a))
-                .take(ALPHA)
-                .collect();
+        let mut to_query: std::collections::VecDeque<SocketAddr> = seeds.into_iter().collect();
+        for wave in 0..4 {
+            let mut batch = Vec::with_capacity(ALPHA);
+            while batch.len() < ALPHA {
+                let Some(a) = to_query.pop_front() else {
+                    break;
+                };
+                if self.is_addr_allowed(&a)
+                    && (a.is_ipv4() || self.v6_sock.is_some())
+                    && queried.insert(a)
+                {
+                    batch.push(a);
+                }
+            }
             if batch.is_empty() {
                 break;
             }
+            let target = if wave < 2 { self.self_id } else { random_id20() };
             let (tx, mut rx) = mpsc::unbounded_channel();
             for addr in &batch {
                 let inner_c = self.clone();
                 let tx_c = tx.clone();
                 let addr_c = *addr;
                 tokio::spawn(async move {
-                    let res = inner_c.rpc_find_node(addr_c, inner_c.self_id).await;
+                    let res = inner_c.rpc_find_node(addr_c, target).await;
                     let _ = tx_c.send((addr_c, res));
                 });
             }
@@ -781,7 +802,11 @@ impl DhtInner {
                 if let Ok(resp) = res {
                     for (_, naddr) in resp.nodes {
                         if !queried.contains(&naddr) {
-                            to_query.push(naddr);
+                            if naddr.is_ipv4() {
+                                to_query.push_front(naddr);
+                            } else {
+                                to_query.push_back(naddr);
+                            }
                         }
                     }
                 }

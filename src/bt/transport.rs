@@ -15,9 +15,9 @@ use tokio_util::sync::CancellationToken;
 use super::metainfo::Id20;
 use super::wire::{self, Handshake};
 
-const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_millis(3500);
-const DEFAULT_UTP_STAGGER: Duration = Duration::from_millis(120);
-const INBOUND_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
+const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_millis(2200);
+const DEFAULT_UTP_STAGGER: Duration = Duration::from_millis(100);
+const INBOUND_HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(2200);
 const MAX_CONCURRENT_INBOUND_HANDSHAKES: usize = 64;
 
 pub enum PeerStream {
@@ -229,7 +229,12 @@ impl TransportManager {
 
     async fn race_connect(&self, addr: SocketAddr) -> Result<PeerStream> {
         let timeout = self.inner.cfg.connect_timeout;
-        let Some(utp) = self.inner.utp_sock.clone() else {
+        let utp = if addr.is_ipv4() {
+            self.inner.utp_sock.clone()
+        } else {
+            None
+        };
+        let Some(utp) = utp else {
             let tcp = tokio::time::timeout(timeout, TcpStream::connect(addr))
                 .await
                 .context("tcp connect timeout")?

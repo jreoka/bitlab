@@ -15,9 +15,9 @@ use super::wire;
 const PROTOCOL_ID: i64 = 0x41727101980;
 const DNS_CACHE_TTL: Duration = Duration::from_secs(300);
 const UDP_CONN_ID_TTL: Duration = Duration::from_secs(55);
-const UDP_RETRIES_NORMAL: [Duration; 2] = [Duration::from_millis(450), Duration::from_millis(1200)];
+const UDP_RETRIES_NORMAL: [Duration; 2] = [Duration::from_millis(300), Duration::from_millis(800)];
 const UDP_RETRIES_STOPPED: [Duration; 1] = [Duration::from_millis(350)];
-const HTTP_TRACKER_TIMEOUT: Duration = Duration::from_secs(4);
+const HTTP_TRACKER_TIMEOUT: Duration = Duration::from_millis(2500);
 const MAX_HTTP_BODY_BYTES: usize = 512 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -151,7 +151,12 @@ impl TrackerClient {
             }
         }
 
-        let sem = Arc::new(tokio::sync::Semaphore::new(12));
+        unique.sort_by_key(|u| {
+            !u.get(..6)
+                .is_some_and(|p| p.eq_ignore_ascii_case("udp://"))
+        });
+
+        let sem = Arc::new(tokio::sync::Semaphore::new(48));
         let mut handles = Vec::with_capacity(unique.len());
         let seen_peers = Arc::new(Mutex::new(HashSet::new()));
 
@@ -207,10 +212,59 @@ impl TrackerClient {
     async fn announce_udp(&self, url: &url::Url, req: &AnnounceRequest) -> Result<TrackerResponse> {
         let host = url.host_str().context("udp tracker missing host")?;
         let port = url.port().unwrap_or(80);
-        let addrs = self.resolve_udp_addrs(host, port).await?;
+        let addrs: Vec<SocketAddr> = self
+            .resolve_udp_addrs(host, port)
+            .await?
+            .into_iter()
+            .filter(|a| a.is_ipv4() || self.inner.v6_sock.is_some())
+            .collect();
+        if addrs.is_empty() {
+            bail!("no reachable udp tracker address");
+        }
+        let first_v4 = addrs.iter().copied().find(|a| a.is_ipv4());
+        let first_v6 = addrs.iter().copied().find(|a| a.is_ipv6());
         let mut last_err = anyhow::anyhow!("no reachable udp tracker address");
+
+        if let (Some(v4), Some(v6)) = (first_v4, first_v6) {
+            let v4_failed = Arc::new(Notify::new());
+            let v4_failed_c = v4_failed.clone();
+            let v4_fut = async {
+                let res = self.announce_udp_addr(v4, req).await;
+                if res.is_err() {
+                    v4_failed_c.notify_one();
+                }
+                res
+            };
+            let v6_fut = async {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(150)) => {}
+                    _ = v4_failed.notified() => {}
+                }
+                self.announce_udp_addr(v6, req).await
+            };
+            tokio::pin!(v4_fut);
+            tokio::pin!(v6_fut);
+            let res = tokio::select! {
+                r = &mut v4_fut => match r {
+                    Ok(ok) => Ok(ok),
+                    Err(e4) => v6_fut.await.map_err(|_| e4),
+                },
+                r = &mut v6_fut => match r {
+                    Ok(ok) => Ok(ok),
+                    Err(e6) => v4_fut.await.map_err(|_| e6),
+                },
+            };
+            match res {
+                Ok(ok) => return Ok(ok),
+                Err(e) => last_err = e,
+            }
+        }
+
         for addr in addrs {
-            if addr.is_ipv6() && self.inner.v6_sock.is_none() {
+            if Some(addr) == first_v4 && first_v6.is_some() {
+                continue;
+            }
+            if Some(addr) == first_v6 && first_v4.is_some() {
                 continue;
             }
             match self.announce_udp_addr(addr, req).await {
@@ -243,7 +297,7 @@ impl TrackerClient {
             }
         }
 
-        let resolved: Vec<SocketAddr> = tokio::time::timeout(
+        let mut resolved: Vec<SocketAddr> = tokio::time::timeout(
             Duration::from_secs(2),
             tokio::net::lookup_host((host, port)),
         )
@@ -257,6 +311,8 @@ impl TrackerClient {
         if resolved.is_empty() {
             bail!("no permitted addresses resolved for {host}");
         }
+        // Prefer IPv4 first to avoid dual-stack stalls when IPv6 egress is unreachable.
+        resolved.sort_by_key(|a| a.is_ipv6());
         self.inner.dns_cache.write().unwrap().insert(
             key,
             CachedDns {
@@ -697,5 +753,94 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r2.peers, vec![advertised_peer]);
+    }
+
+    #[tokio::test]
+    async fn test_announce_many_udp_not_blocked_by_http_or_dead_v6() {
+        let udp_srv = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let udp_addr = udp_srv.local_addr().unwrap();
+        let expected_peer = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)), 40001);
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            while let Ok((n, from)) = udp_srv.recv_from(&mut buf).await {
+                if n < 16 {
+                    continue;
+                }
+                let action = u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]);
+                let tx_id = &buf[12..16];
+                if action == 0 {
+                    let mut reply = [0u8; 16];
+                    reply[4..8].copy_from_slice(tx_id);
+                    reply[8..16].copy_from_slice(&0x5566778811223344i64.to_be_bytes());
+                    let _ = udp_srv.send_to(&reply, from).await;
+                } else if action == 1 && n >= 98 {
+                    let mut reply = vec![0u8; 26];
+                    reply[0..4].copy_from_slice(&1u32.to_be_bytes());
+                    reply[4..8].copy_from_slice(tx_id);
+                    reply[8..12].copy_from_slice(&60u32.to_be_bytes());
+                    reply[12..16].copy_from_slice(&1u32.to_be_bytes());
+                    reply[16..20].copy_from_slice(&3u32.to_be_bytes());
+                    reply[20..24].copy_from_slice(&Ipv4Addr::new(203, 0, 113, 9).octets());
+                    reply[24..26].copy_from_slice(&40001u16.to_be_bytes());
+                    let _ = udp_srv.send_to(&reply, from).await;
+                }
+            }
+        });
+
+        let client = reqwest::Client::new();
+        let tracker = TrackerClient::new(client, true).await.unwrap();
+        let req = AnnounceRequest {
+            info_hash: Id20::from_hex("0123456789abcdef0123456789abcdef01234567").unwrap(),
+            peer_id: *b"-BL0001-998877665544",
+            port: 6881,
+            downloaded: 0,
+            uploaded: 0,
+            left: 4096,
+            event: TrackerEvent::Started,
+            key: 7,
+        };
+
+        // Populate DNS cache with an unreachable IPv6 entry ahead of live IPv4 and verify fast completion.
+        let blackhole_v6: SocketAddr = ([0u16, 0, 0, 0, 0, 0, 0, 1], 1).into();
+        tracker.inner.dns_cache.write().unwrap().insert(
+            ("dualstack.example".to_string(), udp_addr.port()),
+            CachedDns {
+                addrs: vec![blackhole_v6, udp_addr],
+                cached_at: Instant::now(),
+            },
+        );
+        let resp = tokio::time::timeout(
+            Duration::from_millis(600),
+            tracker.announce(&format!("udp://dualstack.example:{}/announce", udp_addr.port()), &req),
+        )
+        .await
+        .expect("udp announce stalled behind dead IPv6")
+        .unwrap();
+        assert_eq!(resp.peers, vec![expected_peer]);
+
+        // Place 14 slow/stalling HTTP trackers before a UDP tracker and ensure the UDP peer arrives immediately.
+        let mut urls = Vec::new();
+        for i in 0..14 {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let a = l.local_addr().unwrap();
+            tokio::spawn(async move {
+                while let Ok((_s, _)) = l.accept().await {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+            });
+            urls.push(format!("http://{a}/announce?n={i}"));
+        }
+        urls.push(format!("udp://{udp_addr}/announce"));
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let tracker_c = tracker.clone();
+        let req_c = req.clone();
+        let handle = tokio::spawn(async move { tracker_c.announce_many(&urls, req_c, tx).await });
+        let first_peer = tokio::time::timeout(Duration::from_millis(600), rx.recv())
+            .await
+            .expect("udp tracker delayed behind slow http trackers")
+            .expect("missing peer");
+        assert_eq!(first_peer, expected_peer);
+        handle.abort();
     }
 }

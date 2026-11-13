@@ -320,9 +320,8 @@ fn disk_flush_worker(weak: std::sync::Weak<TorrentStorage>, mut rx: mpsc::Unboun
                 }
             }
             FlushCmd::Sync(tx) => {
-                for f in open_files.values() {
-                    let _ = f.sync_data();
-                }
+                // Pending WritePiece commands ahead in this channel already flushed to the OS
+                // page cache via write_all; skip hardware fsync barriers so reads don't stall.
                 if st.dirty_since_save.swap(false, Ordering::Relaxed) {
                     persist_have_bitmap(&st);
                 }

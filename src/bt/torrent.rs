@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context as TaskContext, Poll};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch, Notify};
@@ -22,17 +22,18 @@ use super::wire::{
     self, Handshake, PeerExtInfo, PeerReader, UtMetadataMsg, WireMsg, MY_EXT_UT_METADATA,
 };
 
-const MAX_ACTIVE_PEERS: usize = 55;
-const MAX_CONNECT_IN_FLIGHT: usize = 16;
-const MAX_ACTIVE_PIECES: usize = 24;
+const MAX_ACTIVE_PEERS: usize = 64;
+const MAX_CONNECT_IN_FLIGHT: usize = 64;
+const MAX_ACTIVE_PIECES: usize = 32;
 const META_PIECE_SIZE: usize = 16_384;
 const MAX_META_SIZE: usize = 16 * 1024 * 1024;
-const HEDGE_DELAY: Duration = Duration::from_millis(250);
-const STALE_REQUEST_TIMEOUT: Duration = Duration::from_secs(4);
-const META_HEDGE_DELAY: Duration = Duration::from_millis(450);
-const CHOKE_CHURN_AFTER: Duration = Duration::from_secs(12);
-const INITIAL_QUEUE_TARGET: usize = 16;
+const HEDGE_DELAY: Duration = Duration::from_millis(150);
+const STALE_REQUEST_TIMEOUT: Duration = Duration::from_millis(2000);
+const META_HEDGE_DELAY: Duration = Duration::from_millis(250);
+const CHOKE_CHURN_AFTER: Duration = Duration::from_secs(10);
+const INITIAL_QUEUE_TARGET: usize = 64;
 const MAX_QUEUE_TARGET: usize = 256;
+const FAST_TICK_INTERVAL: Duration = Duration::from_millis(200);
 
 #[derive(Clone, Debug, Default)]
 pub struct TorrentStats {
@@ -69,7 +70,6 @@ enum ActorCmd {
     SelectFile(usize),
     Pause,
     Unpause,
-    Reprioritize,
     Shutdown,
 }
 
@@ -105,6 +105,7 @@ struct TorrentShared {
     storage: RwLock<Option<Arc<TorrentStorage>>>,
     stats: RwLock<TorrentStats>,
     cursor_piece: AtomicUsize,
+    wait_pieces: Mutex<HashMap<usize, usize>>,
     active_readers: AtomicUsize,
     work_notify: Notify,
     shutdown_tx: watch::Sender<bool>,
@@ -162,6 +163,7 @@ impl TorrentHandle {
                 paused,
             }),
             cursor_piece: AtomicUsize::new(0),
+            wait_pieces: Mutex::new(HashMap::new()),
             active_readers: AtomicUsize::new(0),
             work_notify: Notify::new(),
             shutdown_tx,
@@ -294,7 +296,6 @@ impl TorrentHandle {
             self.shared.cursor_piece.store(start_piece, Ordering::Relaxed);
         }
         let _ = self.cmd_tx.send(ActorCmd::SelectFile(file_idx));
-        let _ = self.cmd_tx.send(ActorCmd::Reprioritize);
         self.shared.work_notify.notify_one();
 
         Ok(BtByteStream::new(
@@ -337,6 +338,33 @@ pub struct BtByteStream {
     cancel_rx: watch::Receiver<bool>,
     state: StreamState,
     _guard: ReaderGuard,
+}
+
+struct WaitPieceGuard {
+    shared: Arc<TorrentShared>,
+    piece: usize,
+}
+
+impl WaitPieceGuard {
+    fn new(shared: Arc<TorrentShared>, piece: usize) -> Self {
+        {
+            let mut w = shared.wait_pieces.lock().unwrap();
+            *w.entry(piece).or_insert(0) += 1;
+        }
+        Self { shared, piece }
+    }
+}
+
+impl Drop for WaitPieceGuard {
+    fn drop(&mut self) {
+        let mut w = self.shared.wait_pieces.lock().unwrap();
+        if let Some(c) = w.get_mut(&self.piece) {
+            *c = c.saturating_sub(1);
+            if *c == 0 {
+                w.remove(&self.piece);
+            }
+        }
+    }
 }
 
 impl BtByteStream {
@@ -388,6 +416,7 @@ impl futures::Stream for BtByteStream {
                 return Poll::Ready(None);
             }
 
+            let _wait_guard = WaitPieceGuard::new(self.shared.clone(), piece);
             self.shared.cursor_piece.store(piece, Ordering::Relaxed);
             self.shared.work_notify.notify_one();
 
@@ -396,6 +425,7 @@ impl futures::Stream for BtByteStream {
 
             let mut cancel = self.cancel_rx.clone();
             self.state = StreamState::Fetching(Box::pin(async move {
+                let _wg = _wait_guard;
                 if !storage.wait_piece(piece, &mut cancel).await {
                     return (
                         storage,
@@ -449,6 +479,7 @@ struct PeerConn {
     suggested: Vec<u32>,
     in_flight: HashMap<(u32, u32), Instant>,
     target_queue: usize,
+    peer_reqq: usize,
     bytes_this_tick: u64,
     ewma_bps: u64,
     choked_since: Instant,
@@ -525,6 +556,12 @@ impl MetaAssembler {
     }
 }
 
+#[derive(Clone, Copy)]
+enum DispatchScope<'a> {
+    Set { set: &'a HashSet<usize>, hedge: bool },
+    Future,
+}
+
 struct PieceSelectionRanges {
     ranges: Vec<std::ops::RangeInclusive<usize>>,
     tails: Vec<usize>,
@@ -547,6 +584,7 @@ struct TorrentActor {
     peers: HashMap<u64, PeerConn>,
     known_peers: HashSet<SocketAddr>,
     peer_queue: VecDeque<SocketAddr>,
+    peer_queue_v6: VecDeque<SocketAddr>,
     connect_in_flight: HashSet<SocketAddr>,
     peer_backoff: HashMap<SocketAddr, Instant>,
     active_pieces: HashMap<usize, PieceBuf>,
@@ -559,6 +597,7 @@ struct TorrentActor {
     last_dht_lookup: Option<Instant>,
     total_session_downloaded: Arc<AtomicU64>,
     last_rate_bytes: u64,
+    last_rate_tick: Instant,
 }
 
 impl TorrentActor {
@@ -588,9 +627,14 @@ impl TorrentActor {
 
         let mut known_peers = HashSet::new();
         let mut peer_queue = VecDeque::new();
+        let mut peer_queue_v6 = VecDeque::new();
         for p in initial_peers {
             if known_peers.insert(p) {
-                peer_queue.push_back(p);
+                if p.is_ipv4() {
+                    peer_queue.push_back(p);
+                } else {
+                    peer_queue_v6.push_back(p);
+                }
             }
         }
 
@@ -611,6 +655,7 @@ impl TorrentActor {
             peers: HashMap::new(),
             known_peers,
             peer_queue,
+            peer_queue_v6,
             connect_in_flight: HashSet::new(),
             peer_backoff: HashMap::new(),
             active_pieces: HashMap::new(),
@@ -623,6 +668,7 @@ impl TorrentActor {
             last_dht_lookup: None,
             total_session_downloaded: Arc::new(AtomicU64::new(0)),
             last_rate_bytes: 0,
+            last_rate_tick: Instant::now(),
         }
     }
 
@@ -638,7 +684,7 @@ impl TorrentActor {
             self.dial_peers();
         }
 
-        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        let mut tick = tokio::time::interval(FAST_TICK_INTERVAL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
@@ -710,6 +756,7 @@ impl TorrentActor {
                 if let Some(st) = self.shared.storage.read().unwrap().clone() {
                     let _ = st.select_file(idx);
                 }
+                self.prune_out_of_selection_pieces();
                 self.schedule_all();
             }
             ActorCmd::Pause => {
@@ -722,19 +769,18 @@ impl TorrentActor {
                     self.active_pieces.clear();
                     self.send_tracker_event(TrackerEvent::Stopped);
                     self.discovery_started = false;
+                    self.last_rate_tick = Instant::now();
                     self.update_stats(0);
                 }
             }
             ActorCmd::Unpause => {
                 if self.paused {
                     self.paused = false;
+                    self.last_rate_tick = Instant::now();
                     self.start_discovery(false);
                     self.dial_peers();
                     self.update_stats(0);
                 }
-            }
-            ActorCmd::Reprioritize => {
-                self.schedule_all();
             }
             ActorCmd::Shutdown => return false,
         }
@@ -752,7 +798,11 @@ impl TorrentActor {
             return;
         }
         if self.known_peers.insert(addr) {
-            self.peer_queue.push_back(addr);
+            if addr.is_ipv4() {
+                self.peer_queue.push_back(addr);
+            } else {
+                self.peer_queue_v6.push_back(addr);
+            }
         }
     }
 
@@ -764,7 +814,11 @@ impl TorrentActor {
         while self.peers.len() + self.connect_in_flight.len() < MAX_ACTIVE_PEERS
             && self.connect_in_flight.len() < MAX_CONNECT_IN_FLIGHT
         {
-            let Some(addr) = self.peer_queue.pop_front() else {
+            let Some(addr) = self
+                .peer_queue
+                .pop_front()
+                .or_else(|| self.peer_queue_v6.pop_front())
+            else {
                 break;
             };
             if self.peers.values().any(|p| p.addr == addr) || self.connect_in_flight.contains(&addr)
@@ -884,6 +938,7 @@ impl TorrentActor {
             suggested: Vec::new(),
             in_flight: HashMap::new(),
             target_queue: INITIAL_QUEUE_TARGET,
+            peer_reqq: MAX_QUEUE_TARGET,
             bytes_this_tick: 0,
             ewma_bps: 0,
             choked_since: now,
@@ -897,7 +952,7 @@ impl TorrentActor {
             send_our_bitfield(&mut peer, st);
         }
         self.peers.insert(conn_id, peer);
-        self.update_stats(0);
+        self.refresh_stats();
     }
 
     fn drop_peer(&mut self, conn_id: u64) {
@@ -918,7 +973,7 @@ impl TorrentActor {
                 }
             }
         }
-        self.update_stats(0);
+        self.refresh_stats();
     }
 
     fn handle_peer_event(&mut self, evt: PeerEvent) {
@@ -935,6 +990,7 @@ impl TorrentActor {
                 }
                 self.register_connected_peer(conn_id, addr, supports_fast, write_tx);
                 self.schedule_all();
+                self.dial_peers();
             }
             PeerEvent::ConnectFailed { addr } => {
                 self.connect_in_flight.remove(&addr);
@@ -949,8 +1005,13 @@ impl TorrentActor {
                     p.ext_handshake_received = true;
                     p.ut_metadata_id = ext.ut_metadata_id;
                     if let Some(reqq) = ext.reqq {
-                        p.target_queue =
-                            p.target_queue.min((reqq as usize).clamp(8, MAX_QUEUE_TARGET));
+                        let cap = (reqq as usize).clamp(8, MAX_QUEUE_TARGET);
+                        p.peer_reqq = cap;
+                        p.target_queue = if p.ewma_bps == 0 {
+                            INITIAL_QUEUE_TARGET.min(cap)
+                        } else {
+                            p.target_queue.min(cap)
+                        };
                     }
                 }
                 if self.shared.meta_slot.read().unwrap().is_none() {
@@ -1292,7 +1353,7 @@ impl TorrentActor {
         }
 
         self.shared.meta_notify.notify_waiters();
-        self.update_stats(0);
+        self.refresh_stats();
         self.schedule_all();
         true
     }
@@ -1384,7 +1445,7 @@ impl TorrentActor {
                 tracing::warn!("piece {piece} failed hash verification: {e}");
             }
         }
-        self.update_stats(0);
+        self.refresh_stats();
         self.schedule_pieces();
     }
 
@@ -1458,6 +1519,91 @@ impl TorrentActor {
         }
     }
 
+    fn cancel_piece_inflight(&mut self, meta: &TorrentMeta, p_idx: usize, pb: PieceBuf) {
+        for (c_idx, list) in pb.chunk_inflight.into_iter().enumerate() {
+            if pb.chunks[c_idx].is_some() || list.is_empty() {
+                continue;
+            }
+            let begin = (c_idx as u32) * CHUNK_SIZE;
+            let length = meta.chunk_len(p_idx, c_idx);
+            for (cid, _) in list {
+                if let Some(peer) = self.peers.get_mut(&cid) {
+                    if peer.in_flight.remove(&(p_idx as u32, begin)).is_some() {
+                        let _ = peer.write_tx.send(WireMsg::Cancel {
+                            index: p_idx as u32,
+                            begin,
+                            length,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    fn prune_out_of_selection_pieces(&mut self) {
+        let Some(meta) = self.shared.meta_slot.read().unwrap().clone() else {
+            return;
+        };
+        let selection = self.build_piece_selection(&meta);
+        if selection.ranges.is_empty() {
+            return;
+        }
+        let stale_keys: Vec<usize> = self
+            .active_pieces
+            .iter()
+            .filter(|(p_idx, pb)| {
+                !pb.verifying && !selection.ranges.iter().any(|r| r.contains(p_idx))
+            })
+            .map(|(&p_idx, _)| p_idx)
+            .collect();
+        for p_idx in stale_keys {
+            if let Some(pb) = self.active_pieces.remove(&p_idx) {
+                self.cancel_piece_inflight(&meta, p_idx, pb);
+            }
+        }
+    }
+
+    fn ensure_active_piece_slot(
+        &mut self,
+        meta: &TorrentMeta,
+        p_idx: usize,
+        priority: &[usize],
+        imminent: &HashSet<usize>,
+    ) -> bool {
+        if self.active_pieces.contains_key(&p_idx) {
+            return true;
+        }
+        if self.active_pieces.len() < MAX_ACTIVE_PIECES {
+            self.active_pieces.insert(p_idx, PieceBuf::new(meta, p_idx));
+            return true;
+        }
+        let target_pos = priority.iter().position(|&p| p == p_idx).unwrap_or(usize::MAX);
+        let evict_candidate = self
+            .active_pieces
+            .iter()
+            .filter(|(k, pb)| !pb.verifying && !imminent.contains(k))
+            .filter_map(|(&k, pb)| {
+                let completed = pb.chunks.iter().filter(|c| c.is_some()).count();
+                match priority.iter().position(|&p| p == k) {
+                    None => Some((usize::MAX, std::cmp::Reverse(completed), k)),
+                    Some(epos) if epos > target_pos => {
+                        Some((epos, std::cmp::Reverse(completed), k))
+                    }
+                    _ => None,
+                }
+            })
+            .max_by_key(|&(pos_key, rev_completed, _)| (pos_key, rev_completed))
+            .map(|(_, _, k)| k);
+        if let Some(evict_idx) = evict_candidate {
+            if let Some(pb) = self.active_pieces.remove(&evict_idx) {
+                self.cancel_piece_inflight(meta, evict_idx, pb);
+            }
+            self.active_pieces.insert(p_idx, PieceBuf::new(meta, p_idx));
+            return true;
+        }
+        false
+    }
+
     fn schedule_pieces(&mut self) {
         if self.paused {
             return;
@@ -1476,10 +1622,23 @@ impl TorrentActor {
         let cursor = self.shared.cursor_piece.load(Ordering::Relaxed);
         let ra_bytes = self.shared.readahead.load(Ordering::Relaxed).max(8 << 20) as u64;
         let ahead_pieces = (ra_bytes / meta.piece_length.max(1)).clamp(8, 256) as usize;
+        let waited: Vec<usize> = {
+            let mut v: Vec<usize> = self
+                .shared
+                .wait_pieces
+                .lock()
+                .unwrap()
+                .keys()
+                .copied()
+                .collect();
+            v.sort_unstable();
+            v
+        };
         let priority = build_priority_list(
             &storage,
             &selection,
             cursor,
+            &waited,
             ahead_pieces,
             meta.num_pieces(),
         );
@@ -1503,38 +1662,56 @@ impl TorrentActor {
             return;
         }
 
-        // First pass: sequential priority & multi-peer chunk striping without duplicates.
-        self.dispatch_requests(&meta, &priority, cursor, false);
-        // Second pass: hedged / endgame duplicate requests for imminent pieces or small tail.
-        self.dispatch_requests(&meta, &priority, cursor, true);
+        let mut urgent: HashSet<usize> = HashSet::with_capacity(waited.len() + 2);
+        if priority.len() <= 4 {
+            urgent.extend(priority.iter().copied());
+        } else {
+            urgent.extend(waited.iter().copied());
+            urgent.insert(cursor);
+        }
+        let mut next_tier: HashSet<usize> = HashSet::new();
+        let next_p = cursor.saturating_add(1);
+        if !urgent.contains(&next_p) {
+            next_tier.insert(next_p);
+        }
+        let mut protected = urgent.clone();
+        protected.extend(next_tier.iter().copied());
+
+        // Tiered scheduling: complete & hedge active waited/cursor pieces FIRST so a slow peer
+        // never blocks playback while faster peers fetch cursor+1 or future readahead.
+        for scope in [
+            DispatchScope::Set { set: &urgent, hedge: false },
+            DispatchScope::Set { set: &urgent, hedge: true },
+            DispatchScope::Set { set: &next_tier, hedge: false },
+            DispatchScope::Set { set: &next_tier, hedge: true },
+            DispatchScope::Future,
+        ] {
+            self.dispatch_requests(&meta, &priority, &protected, scope);
+        }
     }
 
     fn dispatch_requests(
         &mut self,
         meta: &TorrentMeta,
         priority: &[usize],
-        cursor: usize,
-        hedge_pass: bool,
+        protected: &HashSet<usize>,
+        scope: DispatchScope<'_>,
     ) {
         let now = Instant::now();
-        let remaining_missing_pieces = priority.len();
+        let hedge_pass = matches!(scope, DispatchScope::Set { hedge: true, .. });
 
         for &p_idx in priority {
-            if !self.active_pieces.contains_key(&p_idx) {
-                if self.active_pieces.len() >= MAX_ACTIVE_PIECES {
-                    break;
-                }
-                self.active_pieces
-                    .insert(p_idx, PieceBuf::new(meta, p_idx));
-            }
-            if self.active_pieces[&p_idx].verifying {
+            let in_scope = match scope {
+                DispatchScope::Set { set, .. } => set.contains(&p_idx),
+                DispatchScope::Future => !protected.contains(&p_idx),
+            };
+            if !in_scope {
                 continue;
             }
-
-            let is_imminent = p_idx == cursor
-                || p_idx == cursor.saturating_add(1)
-                || remaining_missing_pieces <= 4;
-            if hedge_pass && !is_imminent {
+            if !self.ensure_active_piece_slot(meta, p_idx, priority, protected) {
+                break;
+            }
+            if self.active_pieces[&p_idx].verifying {
                 continue;
             }
 
@@ -1644,28 +1821,43 @@ impl TorrentActor {
         }
 
         let now = Instant::now();
-        let cur_total = self.total_session_downloaded.load(Ordering::Relaxed);
-        let inst_bps = cur_total.saturating_sub(self.last_rate_bytes);
-        self.last_rate_bytes = cur_total;
         let prev_bps = self.shared.stats.read().unwrap().rate_bps;
-        let smoothed_bps = if prev_bps == 0 {
-            inst_bps
-        } else {
-            (prev_bps * 3 + inst_bps) / 4
+        let smoothed_bps = {
+            let elapsed = now.duration_since(self.last_rate_tick);
+            if elapsed >= Duration::from_secs(1) {
+                let cur_total = self.total_session_downloaded.load(Ordering::Relaxed);
+                let delta = cur_total.saturating_sub(self.last_rate_bytes);
+                let inst_bps = delta.saturating_mul(1000) / (elapsed.as_millis().max(1) as u64);
+                self.last_rate_bytes = cur_total;
+                self.last_rate_tick = now;
+                if prev_bps == 0 {
+                    inst_bps
+                } else {
+                    (prev_bps * 3 + inst_bps) / 4
+                }
+            } else {
+                prev_bps
+            }
         };
 
         // Update peer EWMA speed, adaptive pipeline queue, and collect timed-out requests.
         let mut drop_ids = Vec::new();
         let mut timed_out_chunks: Vec<(u64, u32, u32)> = Vec::new();
-        let has_waiting_peers = !self.peer_queue.is_empty();
+        let has_waiting_peers = !self.peer_queue.is_empty() || !self.peer_queue_v6.is_empty();
         let active_peers_len = self.peers.len();
 
         for peer in self.peers.values_mut() {
-            let pbps = peer.bytes_this_tick;
+            // 200ms tick -> multiply by 5 for instantaneous bytes/sec estimate.
+            let pbps = peer.bytes_this_tick.saturating_mul(5);
             peer.bytes_this_tick = 0;
-            peer.ewma_bps = (peer.ewma_bps * 2 + pbps) / 3;
+            if pbps > 0 && peer.ewma_bps == 0 {
+                peer.ewma_bps = pbps;
+            } else {
+                peer.ewma_bps = (peer.ewma_bps * 3 + pbps) / 4;
+            }
             let adaptive = (((peer.ewma_bps as f64) * 0.6) / (CHUNK_SIZE as f64)).round() as usize;
-            peer.target_queue = adaptive.clamp(INITIAL_QUEUE_TARGET, MAX_QUEUE_TARGET);
+            let min_q = INITIAL_QUEUE_TARGET.min(peer.peer_reqq);
+            peer.target_queue = adaptive.clamp(min_q, peer.peer_reqq);
 
             for (&(p, b), &sent) in &peer.in_flight {
                 if now.duration_since(sent) > STALE_REQUEST_TIMEOUT {
@@ -1694,7 +1886,7 @@ impl TorrentActor {
         for (cid, piece, begin) in timed_out_chunks {
             if let Some(p) = self.peers.get_mut(&cid) {
                 p.in_flight.remove(&(piece, begin));
-                p.target_queue = (p.target_queue / 2).max(8);
+                p.target_queue = (p.target_queue / 2).max(16.min(p.peer_reqq));
             }
             let cidx = (begin / CHUNK_SIZE) as usize;
             if let Some(pb) = self.active_pieces.get_mut(&(piece as usize)) {
@@ -1724,6 +1916,11 @@ impl TorrentActor {
                 self.start_discovery(true);
             }
         }
+    }
+
+    fn refresh_stats(&self) {
+        let rate_bps = self.shared.stats.read().unwrap().rate_bps;
+        self.update_stats(rate_bps);
     }
 
     fn update_stats(&self, rate_bps: u64) {
@@ -1963,6 +2160,7 @@ fn build_priority_list(
     storage: &TorrentStorage,
     selection: &PieceSelectionRanges,
     cursor: usize,
+    waited: &[usize],
     ahead_pieces: usize,
     num_pieces: usize,
 ) -> Vec<usize> {
@@ -1970,24 +2168,31 @@ fn build_priority_list(
         return Vec::new();
     }
     let in_selection = |p: usize| selection.ranges.iter().any(|r| r.contains(&p));
-    let mut out = Vec::with_capacity(ahead_pieces + selection.tails.len());
+    let mut out = Vec::with_capacity(ahead_pieces + selection.tails.len() + waited.len());
     let mut seen = HashSet::new();
 
-    // 1. Imminent streaming pieces at playback cursor (cursor, cursor + 1).
-    for p in [cursor, cursor.saturating_add(1)] {
+    // 1. Every piece currently awaited by an active HTTP stream reader (supports concurrent seeks/MOOV probes).
+    for &p in waited {
         if p < num_pieces && in_selection(p) && !storage.have_piece(p) && seen.insert(p) {
             out.push(p);
         }
     }
 
-    // 2. Last piece of each selected file right behind immediate cursor (MOOV/Cues seek readiness).
+    // 2. Imminent streaming pieces at playback cursor (cursor..cursor + 3).
+    for p in [cursor, cursor.saturating_add(1), cursor.saturating_add(2)] {
+        if p < num_pieces && in_selection(p) && !storage.have_piece(p) && seen.insert(p) {
+            out.push(p);
+        }
+    }
+
+    // 3. Last piece of each selected file right behind immediate startup pieces (MOOV/Cues seek readiness).
     for &t in &selection.tails {
         if t < num_pieces && !storage.have_piece(t) && seen.insert(t) {
             out.push(t);
         }
     }
 
-    // 3. Forward sequential readahead window from cursor.
+    // 4. Forward sequential readahead window from cursor.
     let window_end = (cursor.saturating_add(ahead_pieces)).min(num_pieces);
     for p in cursor.min(num_pieces)..window_end {
         if in_selection(p) && !storage.have_piece(p) && seen.insert(p) {
@@ -2159,6 +2364,160 @@ mod tests {
 
         seeder.shutdown();
         leecher.shutdown();
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_waits_seek_eviction_and_imminent_hedge_first() {
+        let base =
+            std::env::temp_dir().join(format!("bitlab_sched_test_{}", rand::random::<u32>()));
+        let _ = std::fs::create_dir_all(&base);
+
+        let piece_len = 32 * 1024usize;
+        let num_pieces = 40usize;
+        let mut bw = BWriter::with_capacity(2048);
+        bw.start_dict();
+        bw.push_str("length");
+        bw.push_int((piece_len * num_pieces) as i64);
+        bw.push_str("name");
+        bw.push_str("movie.mkv");
+        bw.push_str("piece length");
+        bw.push_int(piece_len as i64);
+        bw.push_str("pieces");
+        bw.push_bytes(&vec![0x11u8; num_pieces * 20]);
+        bw.end();
+
+        let meta = Arc::new(TorrentMeta::from_info_bytes(Bytes::from(bw.finish()), None).unwrap());
+        let readahead = Arc::new(AtomicI64::new(4 << 20));
+        let st = TorrentStorage::open(base.clone(), meta.clone(), readahead.clone()).unwrap();
+
+        let selection = PieceSelectionRanges {
+            ranges: std::iter::once(0..=(num_pieces - 1)).collect(),
+            tails: vec![num_pieces - 1],
+        };
+        let priority = build_priority_list(&st, &selection, 0, &[0, 38], 16, num_pieces);
+        assert_eq!(priority[0], 0);
+        assert_eq!(priority[1], 38);
+        assert_eq!(priority[2], 1);
+        assert_eq!(priority[3], 2);
+        assert_eq!(priority[4], 39);
+
+        let tracker = TrackerClient::new(reqwest::Client::new(), true)
+            .await
+            .unwrap();
+        let transport = TransportManager::start(
+            TransportConfig {
+                listen_port: 0,
+                bind_v4_only: true,
+                enable_utp: false,
+                allow_private: true,
+                ..Default::default()
+            },
+            *b"-BL0001-SCHEDTEST001",
+        )
+        .await
+        .unwrap();
+        let deps = Arc::new(TorrentDeps {
+            dht: None,
+            tracker,
+            transport,
+            readahead: readahead.clone(),
+            allow_private: true,
+        });
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (_inb_tx, inbound_rx) = mpsc::unbounded_channel();
+        let (shut_tx, shutdown_rx) = watch::channel(false);
+        let shared = Arc::new(TorrentShared {
+            info_hash: meta.info_hash,
+            save_dir: base.clone(),
+            readahead,
+            meta_slot: RwLock::new(Some(meta.clone())),
+            meta_notify: Notify::new(),
+            storage: RwLock::new(Some(st)),
+            stats: RwLock::new(TorrentStats::default()),
+            cursor_piece: AtomicUsize::new(0),
+            wait_pieces: Mutex::new(HashMap::new()),
+            active_readers: AtomicUsize::new(0),
+            work_notify: Notify::new(),
+            shutdown_tx: shut_tx,
+        });
+        let mut actor = TorrentActor::new(
+            shared.clone(),
+            deps,
+            cmd_tx,
+            cmd_rx,
+            inbound_rx,
+            shutdown_rx,
+            Vec::new(),
+            Vec::new(),
+            false,
+        );
+
+        let (wtx1, mut wrx1) = mpsc::unbounded_channel();
+        let (wtx2, mut wrx2) = mpsc::unbounded_channel();
+        actor.register_connected_peer(1, "127.0.0.1:41001".parse().unwrap(), false, wtx1);
+        actor.register_connected_peer(2, "127.0.0.1:41002".parse().unwrap(), false, wtx2);
+        while wrx1.try_recv().is_ok() {}
+        while wrx2.try_recv().is_ok() {}
+
+        for cid in [1u64, 2] {
+            let p = actor.peers.get_mut(&cid).unwrap();
+            p.peer_choking = false;
+            p.peer_bitfield.fill(true);
+            p.target_queue = 2;
+        }
+
+        // Saturate active_pieces at MAX_ACTIVE_PIECES (32) with old pieces 5..37 on peer 1.
+        let stale_ts = Instant::now() - HEDGE_DELAY - Duration::from_millis(20);
+        for p in 5..(5 + MAX_ACTIVE_PIECES) {
+            let mut pb = PieceBuf::new(&meta, p);
+            pb.chunk_inflight[0].push((1, stale_ts));
+            actor.active_pieces.insert(p, pb);
+            actor
+                .peers
+                .get_mut(&1)
+                .unwrap()
+                .in_flight
+                .insert((p as u32, 0), stale_ts);
+        }
+
+        // Seed piece 0 with 1 slow/stalled chunk on peer 1, chunk 1 already received, while peer 2
+        // has only 2 request slots (target_queue = 2).
+        let mut p0 = PieceBuf::new(&meta, 0);
+        p0.chunk_inflight[0].push((1, stale_ts));
+        p0.chunks[1] = Some(Bytes::from(vec![0u8; 16_384]));
+        // Make room cleanly via eviction: insert after removing one or test eviction of piece 36->0.
+        actor.schedule_pieces();
+
+        // Out-of-priority piece from 5..37 must have been evicted & cancelled, and cursor piece 0 inserted & requested!
+        assert!(actor.active_pieces.contains_key(&0));
+        assert!(actor.active_pieces.len() <= MAX_ACTIVE_PIECES);
+
+        let mut msgs1 = Vec::new();
+        while let Ok(m) = wrx1.try_recv() {
+            msgs1.push(m);
+        }
+        assert!(msgs1.iter().any(|m| matches!(m, WireMsg::Cancel { .. })));
+
+        // Verify peer 2 receives a HEDGED request for stalled chunk (0, 0) BEFORE future pieces fill its queue!
+        actor.active_pieces.insert(0, p0);
+        actor.peers.get_mut(&2).unwrap().in_flight.clear();
+        actor.peers.get_mut(&2).unwrap().target_queue = 1;
+        while wrx2.try_recv().is_ok() {}
+
+        actor.schedule_pieces();
+
+        let mut msgs2 = Vec::new();
+        while let Ok(m) = wrx2.try_recv() {
+            msgs2.push(m);
+        }
+        assert!(
+            msgs2
+                .iter()
+                .any(|m| matches!(m, WireMsg::Request { index: 0, begin: 0, .. })),
+            "expected hedged imminent request for piece 0 chunk 0 ahead of future pieces, got {msgs2:?}"
+        );
+
         let _ = std::fs::remove_dir_all(&base);
     }
 }
