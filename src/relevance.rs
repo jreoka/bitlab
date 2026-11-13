@@ -249,11 +249,7 @@ fn match_normalized(name: &str, title: &str) -> bool {
         }
     }
 
-    if !matched_start {
-        return false;
-    }
-
-    true
+    matched_start
 }
 
 pub fn title_matches(name: &str, title: &str) -> bool {

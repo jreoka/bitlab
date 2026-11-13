@@ -1,6 +1,7 @@
 mod addon;
 mod admin;
 mod anilist;
+mod bt;
 mod cache;
 mod config;
 mod engine;

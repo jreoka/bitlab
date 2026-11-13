@@ -17,6 +17,7 @@ pub struct App {
     pub session_key: Vec<u8>,
     pub readahead: Arc<std::sync::atomic::AtomicI64>,
     pub hints: Arc<dashmap_like::DashMap>,
+    pub torrent_hints: Arc<dashmap_like::DashMap>,
     pub totp_mu: Arc<tokio::sync::Mutex<()>>,
     pub ix_cache: Arc<dashmap_like::IxCache>,
     pub ep_cache: Arc<dashmap_like::EpCache>,
@@ -133,7 +134,7 @@ impl App {
     pub fn new(cfg: crate::config::Config, store: Arc<crate::store::Store>, engine: Arc<crate::engine::Engine>, session_key: Vec<u8>) -> Self {
         let allow_private = std::env::var("BITLAB_ALLOW_PRIVATE_INDEXERS").as_deref() == Ok("1");
         let http = crate::netguard::build_client(allow_private);
-        let ra = cfg.readahead_bytes;
+        let readahead = engine.readahead_handle();
         Self {
             cfg: Arc::new(cfg),
             store,
@@ -142,8 +143,9 @@ impl App {
             allow_private,
             start: SystemTime::now(),
             session_key,
-            readahead: Arc::new(std::sync::atomic::AtomicI64::new(ra)),
+            readahead,
             hints: Arc::new(dashmap_like::DashMap::new()),
+            torrent_hints: Arc::new(dashmap_like::DashMap::new()),
             totp_mu: Arc::new(tokio::sync::Mutex::new(())),
             ix_cache: Arc::new(dashmap_like::IxCache::new()),
             ep_cache: Arc::new(dashmap_like::EpCache::new()),
@@ -461,9 +463,15 @@ fn merge_search_batch(
                             }
                         }
                         let fallback_size = all[i].size;
+                        let fallback_torrent_url = std::mem::take(&mut all[i].torrent_url);
                         all[i] = crate::indexers::ResultRow {
                             trackers: merged_trackers,
                             size: if row.size > 0 { row.size } else { fallback_size },
+                            torrent_url: if !row.torrent_url.is_empty() {
+                                row.torrent_url
+                            } else {
+                                fallback_torrent_url
+                            },
                             ..row
                         };
                     } else {
@@ -474,6 +482,9 @@ fn merge_search_batch(
                         }
                         if all[i].size <= 0 && row.size > 0 {
                             all[i].size = row.size;
+                        }
+                        if all[i].torrent_url.is_empty() && !row.torrent_url.is_empty() {
+                            all[i].torrent_url = row.torrent_url;
                         }
                     }
                     continue;
@@ -540,9 +551,9 @@ mod tests {
             size: 1_500_000_000,
             seeders: 5,
             indexer: "ix1".into(),
-            magnet: "".into(),
-            score: 0.0,
             trackers: vec!["udp://tracker.opentrackr.org:1337/announce".into()],
+            torrent_url: "https://example.org/movie.torrent".into(),
+            ..Default::default()
         };
         let r2 = crate::indexers::ResultRow {
             title: "Movie 1080p".into(),
@@ -550,9 +561,8 @@ mod tests {
             size: 0,
             seeders: 20,
             indexer: "ix2".into(),
-            magnet: "".into(),
-            score: 0.0,
             trackers: vec!["udp://open.stealth.si:80/announce".into()],
+            ..Default::default()
         };
         merge_search_batch("ix1", Ok(vec![r1]), &mut seen, &mut all, &mut errs);
         merge_search_batch("ix2", Ok(vec![r2]), &mut seen, &mut all, &mut errs);
@@ -561,5 +571,6 @@ mod tests {
         assert_eq!(all[0].seeders, 20);
         assert_eq!(all[0].size, 1_500_000_000);
         assert_eq!(all[0].trackers.len(), 2);
+        assert_eq!(all[0].torrent_url, "https://example.org/movie.torrent");
     }
 }

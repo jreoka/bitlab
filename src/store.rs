@@ -1,10 +1,22 @@
 use rusqlite::{params, Connection, OptionalExtension};
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{mpsc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+const KEY_CACHE_TTL: Duration = Duration::from_secs(15);
 
 fn now_unix() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+enum WriteJob {
+    TouchKey { id: String, now: i64 },
+    AddKeyBytes { id: String, n: i64 },
+    TouchMedia { ih: String, now: i64 },
+    SaveMedia { ih: String, name: String, size: i64, files_json: String, now: i64 },
+    Flush(mpsc::SyncSender<()>),
+    Shutdown,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -54,13 +66,30 @@ pub enum KeyLookup {
 
 pub struct Store {
     conn: Mutex<Connection>,
+    key_cache: Mutex<HashMap<String, (Key, Instant)>>,
+    writer_tx: Option<mpsc::Sender<WriteJob>>,
 }
 
 impl Store {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         let conn = Connection::open(path)?;
-        conn.execute_batch("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")?;
-        let s = Self { conn: Mutex::new(conn) };
+        conn.execute_batch("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
+        let writer_tx = if path.to_str() != Some(":memory:") {
+            let mut wconn = Connection::open(path)?;
+            wconn.execute_batch("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
+            let (tx, rx) = mpsc::channel();
+            std::thread::Builder::new()
+                .name("store-writer".into())
+                .spawn(move || store_writer_loop(&mut wconn, rx))?;
+            Some(tx)
+        } else {
+            None
+        };
+        let s = Self {
+            conn: Mutex::new(conn),
+            key_cache: Mutex::new(HashMap::new()),
+            writer_tx,
+        };
         s.migrate()?;
         #[cfg(unix)]
         {
@@ -68,6 +97,15 @@ impl Store {
             let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
         }
         Ok(s)
+    }
+
+    pub fn flush_writes(&self) {
+        if let Some(tx) = &self.writer_tx {
+            let (done_tx, done_rx) = mpsc::sync_channel(1);
+            if tx.send(WriteJob::Flush(done_tx)).is_ok() {
+                let _ = done_rx.recv_timeout(Duration::from_secs(2));
+            }
+        }
     }
 
     fn migrate(&self) -> anyhow::Result<()> {
@@ -170,6 +208,7 @@ CREATE TABLE IF NOT EXISTS meta_cache (
     }
 
     pub fn list_keys(&self) -> anyhow::Result<Vec<Key>> {
+        self.flush_writes();
         let c = self.conn.lock().unwrap();
         let mut stmt = c.prepare("SELECT id,token,label,note,status,created_at,last_used_at,requests,bytes,expires_at FROM keys ORDER BY created_at DESC")?;
         let rows = stmt.query_map([], Self::scan_key_row)?;
@@ -181,6 +220,7 @@ CREATE TABLE IF NOT EXISTS meta_cache (
     }
 
     pub fn list_keys_page(&self, q: &str, status: &str, limit: i64, offset: i64) -> anyhow::Result<(Vec<Key>, i64)> {
+        self.flush_writes();
         let mut conds: Vec<String> = vec![];
         let mut args: Vec<String> = vec![];
         let q = q.trim();
@@ -220,6 +260,20 @@ CREATE TABLE IF NOT EXISTS meta_cache (
     }
 
     pub fn key_by_token(&self, token: &str) -> Result<Key, KeyLookup> {
+        let now = now_unix();
+        if let Some((cached, fetched_at)) = self.key_cache.lock().unwrap().get(token).cloned() {
+            if fetched_at.elapsed() < KEY_CACHE_TTL {
+                if cached.expires_at > 0 && now > cached.expires_at {
+                    let _ = self.delete_key(&cached.id);
+                    return Err(KeyLookup::Expired);
+                }
+                if cached.paused() {
+                    return Err(KeyLookup::Paused);
+                }
+                return Ok(cached);
+            }
+        }
+
         let row: Option<Key> = self
             .conn
             .lock()
@@ -232,10 +286,14 @@ CREATE TABLE IF NOT EXISTS meta_cache (
             .optional()
             .map_err(|_| KeyLookup::NotFound)?;
         let k = row.ok_or(KeyLookup::NotFound)?;
-        if k.expires_at > 0 && now_unix() > k.expires_at {
+        if k.expires_at > 0 && now > k.expires_at {
             let _ = self.delete_key(&k.id);
             return Err(KeyLookup::Expired);
         }
+        self.key_cache
+            .lock()
+            .unwrap()
+            .insert(token.to_string(), (k.clone(), Instant::now()));
         if k.paused() {
             return Err(KeyLookup::Paused);
         }
@@ -244,27 +302,43 @@ CREATE TABLE IF NOT EXISTS meta_cache (
 
     pub fn set_key_status(&self, id: &str, status: &str) -> anyhow::Result<bool> {
         let n = self.conn.lock().unwrap().execute("UPDATE keys SET status=? WHERE id=?", params![status, id])?;
+        self.key_cache.lock().unwrap().clear();
         Ok(n > 0)
     }
 
     pub fn delete_key(&self, id: &str) -> anyhow::Result<bool> {
         let n = self.conn.lock().unwrap().execute("DELETE FROM keys WHERE id=?", params![id])?;
+        self.key_cache.lock().unwrap().clear();
         Ok(n > 0)
     }
 
     pub fn delete_expired_keys(&self) -> i64 {
         match self.conn.lock().unwrap().execute("DELETE FROM keys WHERE expires_at>0 AND expires_at<?", params![now_unix()]) {
-            Ok(n) => n as i64,
+            Ok(n) => {
+                if n > 0 {
+                    self.key_cache.lock().unwrap().clear();
+                }
+                n as i64
+            }
             Err(_) => 0,
         }
     }
 
     pub fn touch_key(&self, id: &str) {
-        let _ = self.conn.lock().unwrap().execute("UPDATE keys SET last_used_at=?, requests=requests+1 WHERE id=?", params![now_unix(), id]);
+        let now = now_unix();
+        if let Some(tx) = &self.writer_tx {
+            let _ = tx.send(WriteJob::TouchKey { id: id.to_string(), now });
+            return;
+        }
+        let _ = self.conn.lock().unwrap().execute("UPDATE keys SET last_used_at=?, requests=requests+1 WHERE id=?", params![now, id]);
     }
 
     pub fn add_key_bytes(&self, id: &str, n: i64) {
         if n <= 0 {
+            return;
+        }
+        if let Some(tx) = &self.writer_tx {
+            let _ = tx.send(WriteJob::AddKeyBytes { id: id.to_string(), n });
             return;
         }
         let _ = self.conn.lock().unwrap().execute("UPDATE keys SET bytes=bytes+? WHERE id=?", params![n, id]);
@@ -425,6 +499,16 @@ CREATE TABLE IF NOT EXISTS meta_cache (
     pub fn save_media(&self, ih: &str, name: &str, size: i64, files: &[CachedFile]) -> anyhow::Result<()> {
         let b = serde_json::to_string(files).unwrap_or_else(|_| "[]".to_string());
         let now = now_unix();
+        if let Some(tx) = &self.writer_tx {
+            let _ = tx.send(WriteJob::SaveMedia {
+                ih: ih.to_string(),
+                name: name.to_string(),
+                size,
+                files_json: b,
+                now,
+            });
+            return Ok(());
+        }
         self.conn.lock().unwrap().execute(
             "INSERT INTO media_cache(infohash,name,size,files,first_seen,last_used) VALUES(?,?,?,?,?,?) ON CONFLICT(infohash) DO UPDATE SET name=excluded.name, size=excluded.size, files=excluded.files, last_used=excluded.last_used",
             params![ih, name, size, b, now, now],
@@ -433,6 +517,7 @@ CREATE TABLE IF NOT EXISTS meta_cache (
     }
 
     pub fn media_name(&self, ih: &str) -> Option<String> {
+        self.flush_writes();
         self.conn
             .lock()
             .unwrap()
@@ -444,6 +529,7 @@ CREATE TABLE IF NOT EXISTS meta_cache (
         if ih.is_empty() {
             return None;
         }
+        self.flush_writes();
         self.conn
             .lock()
             .unwrap()
@@ -456,6 +542,10 @@ CREATE TABLE IF NOT EXISTS meta_cache (
             return;
         }
         let now = now_unix();
+        if let Some(tx) = &self.writer_tx {
+            let _ = tx.send(WriteJob::TouchMedia { ih: ih.to_string(), now });
+            return;
+        }
         let _ = self.conn.lock().unwrap().execute(
             "UPDATE media_cache SET last_used=? WHERE infohash=?",
             params![now, ih],
@@ -466,6 +556,7 @@ CREATE TABLE IF NOT EXISTS meta_cache (
         if ih.is_empty() {
             return None;
         }
+        self.flush_writes();
         self.conn
             .lock()
             .unwrap()
@@ -474,12 +565,77 @@ CREATE TABLE IF NOT EXISTS meta_cache (
     }
 
     pub fn forget_media(&self, ih: &str, name: &str) {
+        self.flush_writes();
         if !ih.is_empty() {
             let _ = self.conn.lock().unwrap().execute("DELETE FROM media_cache WHERE infohash=?", params![ih]);
         }
         let name = name.trim_end_matches(".part");
         if !name.is_empty() {
             let _ = self.conn.lock().unwrap().execute("DELETE FROM media_cache WHERE name=?", params![name]);
+        }
+    }
+}
+
+impl Drop for Store {
+    fn drop(&mut self) {
+        if let Some(tx) = self.writer_tx.take() {
+            let (done_tx, done_rx) = mpsc::sync_channel(1);
+            if tx.send(WriteJob::Flush(done_tx)).is_ok() {
+                let _ = done_rx.recv_timeout(Duration::from_secs(2));
+            }
+            let _ = tx.send(WriteJob::Shutdown);
+        }
+    }
+}
+
+fn store_writer_loop(conn: &mut Connection, rx: mpsc::Receiver<WriteJob>) {
+    while let Ok(first) = rx.recv() {
+        let mut batch = vec![first];
+        while let Ok(more) = rx.try_recv() {
+            let is_ctrl = matches!(more, WriteJob::Flush(_) | WriteJob::Shutdown);
+            batch.push(more);
+            if is_ctrl || batch.len() >= 64 {
+                break;
+            }
+        }
+
+        let mut shut = false;
+        let mut acks = Vec::new();
+        if let Ok(tx) = conn.unchecked_transaction() {
+            for job in batch {
+                match job {
+                    WriteJob::TouchKey { id, now } => {
+                        let _ = tx.execute(
+                            "UPDATE keys SET last_used_at=?, requests=requests+1 WHERE id=?",
+                            params![now, id],
+                        );
+                    }
+                    WriteJob::AddKeyBytes { id, n } => {
+                        let _ = tx.execute("UPDATE keys SET bytes=bytes+? WHERE id=?", params![n, id]);
+                    }
+                    WriteJob::TouchMedia { ih, now } => {
+                        let _ = tx.execute(
+                            "UPDATE media_cache SET last_used=? WHERE infohash=?",
+                            params![now, ih],
+                        );
+                    }
+                    WriteJob::SaveMedia { ih, name, size, files_json, now } => {
+                        let _ = tx.execute(
+                            "INSERT INTO media_cache(infohash,name,size,files,first_seen,last_used) VALUES(?,?,?,?,?,?) ON CONFLICT(infohash) DO UPDATE SET name=excluded.name, size=excluded.size, files=excluded.files, last_used=excluded.last_used",
+                            params![ih, name, size, files_json, now, now],
+                        );
+                    }
+                    WriteJob::Flush(done) => acks.push(done),
+                    WriteJob::Shutdown => shut = true,
+                }
+            }
+            let _ = tx.commit();
+        }
+        for ack in acks {
+            let _ = ack.send(());
+        }
+        if shut {
+            break;
         }
     }
 }

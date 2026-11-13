@@ -34,7 +34,7 @@ pub fn default_indexers() -> Vec<Indexer> {
     ]
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResultRow {
     #[serde(default)]
     pub title: String,
@@ -52,9 +52,16 @@ pub struct ResultRow {
     pub score: f64,
     #[serde(default)]
     pub trackers: Vec<String>,
+    #[serde(default)]
+    pub torrent_url: String,
 }
 
 static IH_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| Regex::new(r"(?i)\burn:btih:([a-z0-9]{32,40})\b").unwrap());
+
+fn is_http_url(s: &str) -> bool {
+    let t = s.trim();
+    t.starts_with("http://") || t.starts_with("https://")
+}
 
 pub fn magnet_uri(ih: &str, name: &str, trackers: &[String]) -> String {
     let mut b = format!("magnet:?xt=urn:btih:{ih}");
@@ -285,7 +292,7 @@ pub async fn torznab_search(client: &reqwest::Client, ix: &Indexer, q: &str, typ
     let feed: TorznabFeed = quick_xml::de::from_reader(&body[..]).map_err(|e| anyhow::anyhow!("bad xml: {e}"))?;
     let mut out = vec![];
     for it in feed.channel.items {
-        let mut r = ResultRow { title: it.title.trim().to_string(), indexer: ix.name.clone(), size: 0, infohash: String::new(), seeders: 0, magnet: String::new(), score: 0.0, trackers: vec![] };
+        let mut r = ResultRow { title: it.title.trim().to_string(), indexer: ix.name.clone(), ..Default::default() };
         let mut size_i: i64 = it.size.as_deref().and_then(|s| s.parse().ok()).unwrap_or(0);
         for a in &it.attrs {
             match a.name.to_lowercase().as_str() {
@@ -307,6 +314,11 @@ pub async fn torznab_search(client: &reqwest::Client, ix: &Indexer, q: &str, typ
         let enc_url = it.enclosure.map(|e| e.url).unwrap_or_default();
         if r.magnet.is_empty() && enc_url.starts_with("magnet:?") {
             r.magnet = enc_url.clone();
+        }
+        if is_http_url(&enc_url) {
+            r.torrent_url = enc_url.clone();
+        } else if is_http_url(&it.link) && (it.link.contains(".torrent") || it.link.contains("download")) {
+            r.torrent_url = it.link.clone();
         }
         if r.infohash.is_empty() || !crate::util::valid_infohash(&r.infohash) {
             r.infohash.clear();
@@ -370,9 +382,7 @@ pub async fn apibay_search(client: &reqwest::Client, ix: &Indexer, q: &str) -> a
             size: r.size.parse::<i64>().unwrap_or(0).max(0),
             seeders: r.seeders.parse::<i32>().unwrap_or(0).max(0),
             indexer: ix.name.clone(),
-            magnet: String::new(),
-            score: 0.0,
-            trackers: vec![],
+            ..Default::default()
         });
     }
     Ok(out)
@@ -466,8 +476,8 @@ async fn knaben_request(client: &reqwest::Client, ix: &Indexer, q: &str) -> anyh
             seeders: h.seeders.max(0),
             indexer: ix.name.clone(),
             magnet: h.magnet.clone(),
-            score: 0.0,
             trackers: trackers_from_magnet(&h.magnet),
+            ..Default::default()
         });
     }
     Ok(res)
@@ -489,6 +499,8 @@ struct NyaaChannel {
 struct NyaaItem {
     #[serde(default)]
     title: String,
+    #[serde(default)]
+    link: String,
     #[serde(default, rename = "infoHash")]
     infohash: String,
     #[serde(default)]
@@ -526,9 +538,9 @@ pub async fn nyaa_search(client: &reqwest::Client, ix: &Indexer, q: &str) -> any
             size: parse_size(&it.size),
             seeders: it.seeders.max(0),
             indexer: ix.name.clone(),
-            magnet: String::new(),
-            score: 0.0,
             trackers: vec!["http://nyaa.tracker.wf:7777/announce".to_string()],
+            torrent_url: if is_http_url(&it.link) { it.link.trim().to_string() } else { String::new() },
+            ..Default::default()
         });
     }
     Ok(out)
@@ -633,8 +645,8 @@ pub async fn eztv_search(client: &reqwest::Client, ix: &Indexer, typ: &str, seas
             seeders: t.seeds.max(0),
             indexer: ix.name.clone(),
             magnet: t.magnet.clone(),
-            score: 0.0,
             trackers: trackers_from_magnet(&t.magnet),
+            ..Default::default()
         });
     }
     Ok(res)
@@ -646,6 +658,8 @@ pub async fn eztv_search(client: &reqwest::Client, ix: &Indexer, typ: &str, seas
 struct YtsTorrent {
     #[serde(default, deserialize_with = "de_null_default")]
     hash: String,
+    #[serde(default, deserialize_with = "de_null_default")]
+    url: String,
     #[serde(default, deserialize_with = "de_null_default")]
     quality: String,
     #[serde(default, rename = "type", deserialize_with = "de_null_default")]
@@ -728,9 +742,8 @@ pub async fn yts_search(client: &reqwest::Client, ix: &Indexer, typ: &str, imdb:
                 size: t.size_bytes.max(0),
                 seeders: t.seeds.max(0),
                 indexer: ix.name.clone(),
-                magnet: String::new(),
-                score: 0.0,
-                trackers: vec![],
+                torrent_url: if is_http_url(&t.url) { t.url.trim().to_string() } else { String::new() },
+                ..Default::default()
             });
         }
     }
@@ -751,6 +764,8 @@ struct ToshoEntry {
     magnet: String,
     #[serde(default, rename = "magnet_uri", deserialize_with = "de_null_default")]
     magnet_uri: String,
+    #[serde(default, deserialize_with = "de_null_default")]
+    torrent_url: String,
     #[serde(default, deserialize_with = "de_flex_i32")]
     seeders: i32,
     #[serde(default, deserialize_with = "de_flex_i64")]
@@ -853,8 +868,9 @@ pub async fn animetosho_search(client: &reqwest::Client, ix: &Indexer, q: &str) 
             seeders: e.seeders.max(0),
             indexer: ix.name.clone(),
             magnet: mag.clone(),
-            score: 0.0,
             trackers: trackers_from_magnet(&mag),
+            torrent_url: if is_http_url(&e.torrent_url) { e.torrent_url.trim().to_string() } else { String::new() },
+            ..Default::default()
         });
     }
     Ok(res)
@@ -945,7 +961,7 @@ pub async fn torrentio_search(client: &reqwest::Client, ix: &Indexer, typ: &str,
             name = format!("{name} {q}");
         }
         let meta = if lines.len() > 1 { lines[1..].join("\n") } else { String::new() };
-        let mut r = ResultRow { title: name, infohash: ih, indexer: ix.name.clone(), size: 0, seeders: 0, magnet: String::new(), score: 0.0, trackers: vec![] };
+        let mut r = ResultRow { title: name, infohash: ih, indexer: ix.name.clone(), ..Default::default() };
         if let Some(m) = RE_TIO_SEEDS.captures(&meta) {
             r.seeders = m.get(1).map(|v| v.as_str().parse().unwrap_or(0)).unwrap_or(0);
         }

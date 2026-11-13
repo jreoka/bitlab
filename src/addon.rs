@@ -307,6 +307,14 @@ pub async fn handle_stream(
                 app.hints.insert(ih.clone(), clean);
             }
         }
+        if !res.torrent_url.trim().is_empty() {
+            let tu = res.torrent_url.trim().to_string();
+            let mut list = app.torrent_hints.get(&ih).unwrap_or_default();
+            if !list.contains(&tu) && list.len() < 4 {
+                list.push(tu);
+                app.torrent_hints.insert(ih.clone(), list);
+            }
+        }
         let (label, q) = release_label(&res.title);
         let src = label.trim_start_matches(&q).trim().to_string();
         let display = if typ == "series" && season > 0 {
@@ -412,26 +420,24 @@ async fn handle_play_inner(
         return crate::server::http_error(403, "play link expired or not issued for this key — reopen the stream list");
     }
     let extra: Vec<String> = app.hints.get(&ih).unwrap_or_default();
-    // Unpaused add: announces + dials peers while metadata resolves.
-    let handle = match app.engine.ensure_play(&ih, &hint, &extra).await {
+    let torrent_urls: Vec<String> = app.torrent_hints.get(&ih).unwrap_or_default();
+    // Click-triggered only: announces + dials peers while racing `.torrent` URLs and `ut_metadata`.
+    let handle = match app.engine.ensure_play(&ih, &hint, &extra, &torrent_urls).await {
         Ok(h) => h,
-        Err(e) => return crate::server::http_error(500, &format!("torrent: {e}")),
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("waiting for metadata") || msg.contains("timeout") {
+                return crate::server::http_error(504, &msg);
+            }
+            return crate::server::http_error(500, &format!("torrent: {msg}"));
+        }
     };
-    // wait metadata
-    let info_timeout = app.cfg.info_timeout;
-    let wait_res = tokio::time::timeout(info_timeout, handle.wait_until_initialized()).await;
-    if wait_res.is_err() || wait_res.unwrap().is_err() {
-        return crate::server::http_error(504, "waiting for metadata: timeout");
+    let files = handle.files();
+    if files.is_empty() {
+        return crate::server::http_error(504, "waiting for metadata: unavailable");
     }
-    // file list
-    let (paths, sizes) = match handle.with_metadata(|meta| {
-        let paths: Vec<String> = meta.file_infos.iter().map(|f| f.relative_filename.to_string_lossy().to_string()).collect();
-        let sizes: Vec<i64> = meta.file_infos.iter().map(|f| f.len as i64).collect();
-        (paths, sizes)
-    }) {
-        Ok(m) => m,
-        Err(_) => return crate::server::http_error(504, "waiting for metadata: unavailable"),
-    };
+    let paths: Vec<String> = files.iter().map(|f| f.name.clone()).collect();
+    let sizes: Vec<i64> = files.iter().map(|f| f.len as i64).collect();
     app.engine.record_media(&handle).await;
     // titles for movie already extracted cleanly from raw query parameters
     let idx_res = if !titles.is_empty() && ep_wanted == 0 {
@@ -493,13 +499,8 @@ async fn handle_play_inner(
     // Stream-first: immediately pause any background/idle torrents
     app.engine.pause_others(&ih).await;
 
-    // Select only this file to prevent downloading other files/episodes in the swarm
-    if let Err(e) = app.engine.select_only_file(&handle, idx).await {
-        tracing::warn!("select_only_file({idx}): {e}");
-    }
-
-    // Stream directly via librqbit Piece Prioritizer
-    let mut stream = match handle.stream(idx).await {
+    // Zero-copy streaming range directly from RAM piece cache (with sparse disk fallback)
+    let raw_stream = match handle.open_stream(idx, start as u64, content_len as u64) {
         Ok(s) => s,
         Err(e) => {
             closed.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -508,19 +509,6 @@ async fn handle_play_inner(
         }
     };
 
-    use tokio::io::AsyncSeekExt;
-    if start > 0 {
-        if let Err(e) = stream.seek(std::io::SeekFrom::Start(start as u64)).await {
-            closed.store(true, std::sync::atomic::Ordering::SeqCst);
-            app.engine.dec_reader(&ih, reader_id).await;
-            tracing::warn!("stream seek to {start}: {e}");
-            return crate::server::http_error(500, &format!("stream seek: {e}"));
-        }
-    }
-    let limited = tokio::io::AsyncReadExt::take(stream, content_len as u64);
-
-    // counting + touch stream
-    let reader_stream = tokio_util::io::ReaderStream::new(limited);
     // Wrap to count bytes and touch activity
     let written = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
     let written2 = written.clone();
@@ -531,7 +519,7 @@ async fn handle_play_inner(
         SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0),
     ));
     let last_touch2 = last_touch.clone();
-    let s = reader_stream.map(move |chunk| {
+    let s = raw_stream.map(move |chunk| {
         if let Ok(b) = &chunk {
             written2.fetch_add(b.len() as i64, std::sync::atomic::Ordering::Relaxed);
             let now_s = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
@@ -545,7 +533,7 @@ async fn handle_play_inner(
                 tokio::spawn(async move { a.engine.touch_reader(&ihc, reader_id, &cl).await; });
             }
         }
-        chunk.map_err(std::io::Error::other)
+        chunk
     });
 
     struct GuardStream<S> {
