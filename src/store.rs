@@ -45,8 +45,6 @@ pub struct CachedFile {
     pub size: i64,
 }
 
-
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyLookup {
     NotFound,
@@ -415,6 +413,13 @@ CREATE TABLE IF NOT EXISTS meta_cache (
             return None;
         }
         Some(v)
+    }
+
+    pub fn delete_expired_meta(&self) -> i64 {
+        match self.conn.lock().unwrap().execute("DELETE FROM meta_cache WHERE expires_at<?", params![now_unix()]) {
+            Ok(n) => n as i64,
+            Err(_) => 0,
+        }
     }
 
     pub fn save_media(&self, ih: &str, name: &str, size: i64, files: &[CachedFile]) -> anyhow::Result<()> {

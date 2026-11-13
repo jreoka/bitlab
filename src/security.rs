@@ -59,7 +59,16 @@ pub fn new_totp_secret() -> String {
 }
 
 fn url_escape(s: &str) -> String {
-    s.replace(' ', "%20").replace(':', "%3A").replace('/', "%2F").replace('@', "%40").replace('?', "%3F").replace('&', "%26").replace('=', "%3D").replace('#', "%23")
+    let mut out = String::with_capacity(s.len());
+    for b in s.as_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(*b as char);
+        } else {
+            use std::fmt::Write;
+            let _ = write!(&mut out, "%{b:02X}");
+        }
+    }
+    out
 }
 
 pub fn otpauth_uri(secret: &str, issuer: &str, account: &str) -> String {
@@ -120,12 +129,19 @@ fn save_recovery_hashes(app: &crate::server::App, h: &[String]) -> anyhow::Resul
 }
 
 pub fn check_password(app: &crate::server::App, pw: &str) -> bool {
+    use sha2::{Digest, Sha256};
     use subtle::ConstantTimeEq;
-    app.cfg.admin_password.as_bytes().ct_eq(pw.as_bytes()).into()
+    let a = Sha256::digest(app.cfg.admin_password.as_bytes());
+    let b = Sha256::digest(pw.as_bytes());
+    a.ct_eq(&b).into()
 }
 
 pub async fn check_second_factor(app: &crate::server::App, code: &str) -> bool {
     let _g = app.totp_mu.lock().await;
+    check_second_factor_locked(app, code)
+}
+
+fn check_second_factor_locked(app: &crate::server::App, code: &str) -> bool {
     let code = code.trim();
     if code.is_empty() {
         return false;
@@ -140,11 +156,11 @@ pub async fn check_second_factor(app: &crate::server::App, code: &str) -> bool {
         }
         return true;
     }
-    let norm = code.to_uppercase().trim().to_string();
-    if norm.replace('-', "").len() < 8 {
+    let alnum: String = code.to_uppercase().chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    if alnum.len() < 8 {
         return false;
     }
-    let want = hash_recovery_code(&norm);
+    let want = hash_recovery_code(&alnum);
     let hashes = recovery_hashes(app);
     for (i, h) in hashes.iter().enumerate() {
         use subtle::ConstantTimeEq;
@@ -202,25 +218,36 @@ pub fn issue_cookie_value(app: &crate::server::App, sess: &crate::store::Session
 // --- handlers ---
 
 pub async fn handle_security(State(app): State<crate::server::App>, headers: HeaderMap) -> Response {
-    if crate::admin::current_session(&app, &headers).await.is_none() {
+    let Some(cur) = crate::admin::current_session(&app, &headers).await else {
         return crate::server::http_error(401, "not signed in");
-    }
+    };
     let sessions = app.store.list_sessions().unwrap_or_default();
-    let cur = crate::admin::current_session(&app, &headers).await.map(|s| s.id).unwrap_or_default();
     crate::server::json_response(
         200,
         serde_json::json!({
             "two_factor": two_factor_enabled(&app),
             "recovery_left": recovery_hashes(&app).len(),
             "sessions": sessions,
-            "current": cur,
+            "current": cur.id,
         }),
     )
 }
 
-pub async fn handle_2fa_begin(State(app): State<crate::server::App>, headers: HeaderMap, body: axum::body::Bytes) -> Response {
+pub async fn handle_2fa_begin(
+    State(app): State<crate::server::App>,
+    headers: HeaderMap,
+    crate::admin::MaybeConnectInfo(remote): crate::admin::MaybeConnectInfo,
+    body: axum::body::Bytes,
+) -> Response {
     if crate::admin::current_session(&app, &headers).await.is_none() {
         return crate::server::http_error(401, "not signed in");
+    }
+    let ip = crate::admin::client_ip(&app, &headers, remote);
+    if crate::admin::check_auth_rate_limit(&ip) {
+        return crate::server::http_error(429, "too many attempts, try again later");
+    }
+    if body.len() > 64 * 1024 {
+        return crate::server::http_error(400, "bad json");
     }
     #[derive(serde::Deserialize)]
     struct B {
@@ -231,15 +258,19 @@ pub async fn handle_2fa_begin(State(app): State<crate::server::App>, headers: He
         Ok(v) => v,
         Err(_) => return crate::server::http_error(400, "bad json"),
     };
-    // rate limit via login window is in admin.rs; replicate minimal check: use password check only
     if !check_password(&app, &b.password) {
+        crate::admin::record_auth_failure(&ip);
         return crate::server::http_error(401, "wrong password");
     }
+    crate::admin::reset_auth_failure(&ip);
+    let _g = app.totp_mu.lock().await;
     if two_factor_enabled(&app) {
         return crate::server::http_error(409, "two-factor is already enabled");
     }
     let secret = new_totp_secret();
-    let _ = app.store.set_setting("totp_pending", &secret);
+    if app.store.set_setting("totp_pending", &secret).is_err() {
+        return crate::server::http_error(500, "failed to store pending secret");
+    }
     let uri = otpauth_uri(&secret, "Bitlab", "admin");
     let qr = match qr_data_uri(&uri) {
         Ok(q) => q,
@@ -248,9 +279,21 @@ pub async fn handle_2fa_begin(State(app): State<crate::server::App>, headers: He
     crate::server::json_response(200, serde_json::json!({"secret": secret, "otpauth": uri, "qr": qr}))
 }
 
-pub async fn handle_2fa_enable(State(app): State<crate::server::App>, headers: HeaderMap, body: axum::body::Bytes) -> Response {
-    if crate::admin::current_session(&app, &headers).await.is_none() {
+pub async fn handle_2fa_enable(
+    State(app): State<crate::server::App>,
+    headers: HeaderMap,
+    crate::admin::MaybeConnectInfo(remote): crate::admin::MaybeConnectInfo,
+    body: axum::body::Bytes,
+) -> Response {
+    let Some(cur) = crate::admin::current_session(&app, &headers).await else {
         return crate::server::http_error(401, "not signed in");
+    };
+    let ip = crate::admin::client_ip(&app, &headers, remote);
+    if crate::admin::check_auth_rate_limit(&ip) {
+        return crate::server::http_error(429, "too many attempts, try again later");
+    }
+    if body.len() > 64 * 1024 {
+        return crate::server::http_error(400, "bad json");
     }
     #[derive(serde::Deserialize)]
     struct B {
@@ -264,7 +307,12 @@ pub async fn handle_2fa_enable(State(app): State<crate::server::App>, headers: H
         Err(_) => return crate::server::http_error(400, "bad json"),
     };
     if !check_password(&app, &b.password) {
+        crate::admin::record_auth_failure(&ip);
         return crate::server::http_error(401, "wrong password");
+    }
+    let _g = app.totp_mu.lock().await;
+    if two_factor_enabled(&app) {
+        return crate::server::http_error(409, "two-factor is already enabled");
     }
     let pending = app.store.get_setting("totp_pending", "");
     if pending.is_empty() {
@@ -272,24 +320,43 @@ pub async fn handle_2fa_enable(State(app): State<crate::server::App>, headers: H
     }
     let step = match verify_totp_step(&pending, &b.code) {
         Some(s) => s,
-        None => return crate::server::http_error(400, "that code did not verify"),
+        None => {
+            crate::admin::record_auth_failure(&ip);
+            return crate::server::http_error(400, "that code did not verify");
+        }
     };
+    crate::admin::reset_auth_failure(&ip);
     let (plain, hashes) = generate_recovery_codes(10);
-    let _ = app.store.set_setting("totp_secret", &pending);
-    let _ = app.store.set_setting("totp_last_step", &step.to_string());
-    let _ = app.store.set_setting("totp_enabled", "1");
-    let _ = app.store.delete_setting("totp_pending");
-    let _ = save_recovery_hashes(&app, &hashes);
-    if let Some(cur) = crate::admin::current_session(&app, &headers).await {
-        app.store.delete_other_sessions(&cur.id);
+    if app.store.set_setting("totp_secret", &pending).is_err()
+        || app.store.set_setting("totp_last_step", &step.to_string()).is_err()
+        || save_recovery_hashes(&app, &hashes).is_err()
+        || app.store.set_setting("totp_enabled", "1").is_err()
+    {
+        let _ = app.store.delete_setting("totp_enabled");
+        let _ = app.store.delete_setting("totp_secret");
+        return crate::server::http_error(500, "failed to save two-factor settings");
     }
+    let _ = app.store.delete_setting("totp_pending");
+    app.store.delete_other_sessions(&cur.id);
     tracing::info!("two-factor enabled");
     crate::server::json_response(200, serde_json::json!({"ok": true, "recovery_codes": plain}))
 }
 
-pub async fn handle_2fa_disable(State(app): State<crate::server::App>, headers: HeaderMap, body: axum::body::Bytes) -> Response {
-    if crate::admin::current_session(&app, &headers).await.is_none() {
+pub async fn handle_2fa_disable(
+    State(app): State<crate::server::App>,
+    headers: HeaderMap,
+    crate::admin::MaybeConnectInfo(remote): crate::admin::MaybeConnectInfo,
+    body: axum::body::Bytes,
+) -> Response {
+    let Some(cur) = crate::admin::current_session(&app, &headers).await else {
         return crate::server::http_error(401, "not signed in");
+    };
+    let ip = crate::admin::client_ip(&app, &headers, remote);
+    if crate::admin::check_auth_rate_limit(&ip) {
+        return crate::server::http_error(429, "too many attempts, try again later");
+    }
+    if body.len() > 64 * 1024 {
+        return crate::server::http_error(400, "bad json");
     }
     #[derive(serde::Deserialize)]
     struct B {
@@ -303,27 +370,34 @@ pub async fn handle_2fa_disable(State(app): State<crate::server::App>, headers: 
         Err(_) => return crate::server::http_error(400, "bad json"),
     };
     if !check_password(&app, &b.password) {
+        crate::admin::record_auth_failure(&ip);
         return crate::server::http_error(401, "wrong password");
     }
-    if !check_second_factor(&app, &b.code).await {
+    let _g = app.totp_mu.lock().await;
+    if !two_factor_enabled(&app) {
+        return crate::server::http_error(409, "two-factor is not enabled");
+    }
+    if !check_second_factor_locked(&app, &b.code) {
+        crate::admin::record_auth_failure(&ip);
         return crate::server::http_error(401, "a current two-factor code or recovery code is required");
     }
+    crate::admin::reset_auth_failure(&ip);
+    if app.store.delete_setting("totp_enabled").is_err() {
+        return crate::server::http_error(500, "failed to disable two-factor");
+    }
     let _ = app.store.delete_setting("totp_secret");
-    let _ = app.store.delete_setting("totp_enabled");
     let _ = app.store.delete_setting("totp_pending");
     let _ = save_recovery_hashes(&app, &[]);
     let _ = app.store.set_setting("totp_last_step", "0");
-    if let Some(cur) = crate::admin::current_session(&app, &headers).await {
-        app.store.delete_other_sessions(&cur.id);
-    }
+    app.store.delete_other_sessions(&cur.id);
     tracing::info!("two-factor disabled");
     crate::server::json_response(200, serde_json::json!({"ok": true}))
 }
 
 pub async fn handle_delete_session(State(app): State<crate::server::App>, headers: HeaderMap, Path(id): Path<String>) -> Response {
-    if crate::admin::current_session(&app, &headers).await.is_none() {
+    let Some(cur) = crate::admin::current_session(&app, &headers).await else {
         return crate::server::http_error(401, "not signed in");
-    }
+    };
     if id.len() < 8 {
         return crate::server::http_error(404, "session not found");
     }
@@ -332,10 +406,9 @@ pub async fn handle_delete_session(State(app): State<crate::server::App>, header
     }
     // if deleted current, clear cookie
     let mut r = crate::server::json_response(200, serde_json::json!({"ok": true}));
-    if let Some(cur) = crate::admin::current_session(&app, &headers).await {
-        if cur.id == id {
-            r.headers_mut().insert("set-cookie", "bitlab_session=; Path=/; Max-Age=-1".parse().unwrap());
-        }
+    if cur.id == id {
+        let secure = crate::admin::is_https(&app, &headers);
+        r.headers_mut().insert("set-cookie", crate::admin::clear_cookie("bitlab_session", secure).parse().unwrap());
     }
     tracing::info!("session {} revoked", &id[..8.min(id.len())]);
     r
@@ -352,6 +425,18 @@ pub async fn handle_revoke_others(State(app): State<crate::server::App>, headers
 
 // --- TTL ---
 
+const MAX_TTL_SECS: i64 = 50 * 365 * 24 * 3600;
+
+fn validate_ttl_bounds(until: i64) -> anyhow::Result<i64> {
+    if until <= 0 {
+        anyhow::bail!("that date has already passed");
+    }
+    if until > MAX_TTL_SECS {
+        anyhow::bail!("that is longer than 50 years");
+    }
+    Ok(until)
+}
+
 pub fn parse_ttl(v: &str) -> anyhow::Result<i64> {
     let raw = v.trim().to_lowercase();
     if raw.is_empty() || raw == "never" || raw == "none" || raw == "-" || raw == "0" {
@@ -361,28 +446,16 @@ pub fn parse_ttl(v: &str) -> anyhow::Result<i64> {
     for layout in ["%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y"] {
         if let Ok(d) = chrono::NaiveDate::parse_from_str(&raw, layout) {
             let dt = d.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
-            let until = dt - now_unix();
-            if until <= 0 {
-                anyhow::bail!("that date has already passed");
-            }
-            return Ok(until);
+            return validate_ttl_bounds(dt - now_unix());
         }
     }
     // RFC3339
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&raw) {
-        let until = dt.timestamp() - now_unix();
-        if until <= 0 {
-            anyhow::bail!("that date has already passed");
-        }
-        return Ok(until);
+        return validate_ttl_bounds(dt.timestamp() - now_unix());
     }
     // "2006-01-02 15:04"
     if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&raw, "%Y-%m-%d %H:%M") {
-        let until = dt.and_utc().timestamp() - now_unix();
-        if until <= 0 {
-            anyhow::bail!("that date has already passed");
-        }
-        return Ok(until);
+        return validate_ttl_bounds(dt.and_utc().timestamp() - now_unix());
     }
     // duration
     let mut i = 0;
@@ -395,7 +468,7 @@ pub fn parse_ttl(v: &str) -> anyhow::Result<i64> {
         anyhow::bail!("use a duration like 3d, 2w, 3m, 1y or a date like 2027-06-01");
     }
     let n: f64 = num.parse().map_err(|_| anyhow::anyhow!("invalid amount {num:?}"))?;
-    if n <= 0.0 {
+    if !n.is_finite() || n <= 0.0 {
         anyhow::bail!("invalid amount {num:?}");
     }
     let mult: f64 = match unit {
@@ -408,12 +481,32 @@ pub fn parse_ttl(v: &str) -> anyhow::Result<i64> {
         _ => anyhow::bail!("unknown unit {unit:?} — use h, d, w, m (months) or y"),
     };
     let secs = n * mult;
-    if !secs.is_finite() || secs <= 0.0 {
-        anyhow::bail!("invalid duration");
+    if !secs.is_finite() || secs <= 0.0 || secs > MAX_TTL_SECS as f64 {
+        anyhow::bail!("that is longer than 50 years");
     }
     let d = secs as i64;
-    if d <= 0 || d > 50 * 365 * 24 * 3600 {
+    if d <= 0 || d > MAX_TTL_SECS {
         anyhow::bail!("that is longer than 50 years");
     }
     Ok(d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_url_escape_rfc3986() {
+        assert_eq!(url_escape("Bitlab:user+1%test"), "Bitlab%3Auser%2B1%25test");
+        assert_eq!(url_escape("abc-._~123"), "abc-._~123");
+    }
+
+    #[test]
+    fn test_parse_ttl_bounds() {
+        assert_eq!(parse_ttl("never").unwrap(), 0);
+        assert_eq!(parse_ttl("3d").unwrap(), 3 * 24 * 3600);
+        assert!(parse_ttl("51y").is_err());
+        assert!(parse_ttl("2999-01-01").is_err());
+        assert!(parse_ttl("2000-01-01").is_err());
+    }
 }

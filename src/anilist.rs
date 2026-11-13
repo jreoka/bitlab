@@ -1,63 +1,82 @@
+use crate::server::{de_null_default, read_body_limited, MAX_HTTP_BODY};
+use once_cell::sync::Lazy;
 use serde::Deserialize;
+use std::time::Duration;
 
 #[derive(Debug, Deserialize)]
 struct AnilistResponse {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     data: AnilistData,
 }
 #[derive(Debug, Deserialize, Default)]
 struct AnilistData {
-    #[serde(rename = "Page", default)]
+    #[serde(rename = "Page", default, deserialize_with = "de_null_default")]
     page: AnilistPage,
 }
 #[derive(Debug, Deserialize, Default)]
 struct AnilistPage {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     media: Vec<AnilistMedia>,
 }
 #[derive(Debug, Deserialize, Default)]
 struct AnilistMedia {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     title: AnilistTitle,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     synonyms: Vec<String>,
 }
 #[derive(Debug, Deserialize, Default)]
 struct AnilistTitle {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     romaji: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     english: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     native: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct KitsuResponse {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     data: Vec<KitsuItem>,
 }
 #[derive(Debug, Deserialize, Default)]
 struct KitsuItem {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     attributes: KitsuAttrs,
 }
 #[derive(Debug, Deserialize, Default)]
 struct KitsuAttrs {
-    #[serde(default, rename = "canonicalTitle")]
+    #[serde(default, rename = "canonicalTitle", deserialize_with = "de_null_default")]
     canonical: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     titles: KitsuTitles,
-    #[serde(default, rename = "abbreviatedTitles")]
+    #[serde(default, rename = "abbreviatedTitles", deserialize_with = "de_null_default")]
     abbrev: Vec<String>,
 }
 #[derive(Debug, Deserialize, Default)]
 struct KitsuTitles {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     en: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     en_jp: String,
 }
+
+static ROMAN_REPS: Lazy<Vec<(regex::Regex, &'static str)>> = Lazy::new(|| {
+    [
+        ("jyou", "jou"), ("jyo", "jo"), ("jya", "ja"), ("jyu", "ju"),
+        ("zyou", "jou"), ("zyo", "jo"), ("zya", "ja"), ("zyu", "ju"), ("zi", "ji"),
+        ("shyou", "shou"), ("syou", "shou"), ("syo", "sho"), ("sya", "sha"), ("syu", "shu"), ("si", "shi"),
+        ("chyou", "chou"), ("tyou", "chou"), ("tyo", "cho"), ("tya", "cha"), ("tyu", "chu"),
+        ("cyou", "chou"), ("cyo", "cho"), ("cya", "cha"), ("cyu", "chu"),
+        ("ti", "chi"), ("tu", "tsu"), ("hu", "fu"),
+    ]
+    .into_iter()
+    .map(|(f, t)| (regex::Regex::new(&format!("(?i){}", regex::escape(f))).unwrap(), t))
+    .collect()
+});
+static RE_OO: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r"(?i)oo").unwrap());
+static RE_OU: Lazy<regex::Regex> = Lazy::new(|| regex::Regex::new(r"(?i)ou").unwrap());
 
 const ANILIST_QUERY: &str = r#"query ($s: String) { Page(perPage: 1) { media(search: $s, type: ANIME) { title { romaji english native } synonyms } } }"#;
 
@@ -99,17 +118,27 @@ async fn fetch_anilist_candidates(http: &reqwest::Client, title: &str) -> Vec<St
             }
         }
     }
-    // also try original
-    query_anilist(http, title, title).await.unwrap_or_default()
+    vec![]
 }
 
 async fn query_anilist(http: &reqwest::Client, query: &str, title: &str) -> Option<Vec<String>> {
     let payload = serde_json::json!({"query": ANILIST_QUERY, "variables": {"s": query}});
-    let resp = http.post("https://graphql.anilist.co").json(&payload).header("Accept", "application/json").send().await.ok()?;
-    if resp.status() != 200 {
-        return None;
-    }
-    let ar: AnilistResponse = resp.json().await.ok()?;
+    let body = tokio::time::timeout(Duration::from_secs(4), async {
+        let resp = http
+            .post("https://graphql.anilist.co")
+            .json(&payload)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .ok()?;
+        if resp.status() != 200 {
+            return None;
+        }
+        read_body_limited(resp, MAX_HTTP_BODY).await.ok()
+    })
+    .await
+    .ok()??;
+    let ar: AnilistResponse = serde_json::from_slice(&body).ok()?;
     let m = ar.data.page.media.into_iter().next()?;
     let mut out = vec![m.title.romaji, m.title.english, m.title.native];
     out.extend(m.synonyms);
@@ -123,11 +152,25 @@ async fn query_anilist(http: &reqwest::Client, query: &str, title: &str) -> Opti
 
 async fn fetch_kitsu_candidates(http: &reqwest::Client, title: &str) -> Vec<String> {
     let u = format!("https://kitsu.io/api/edge/anime?filter[text]={}", url::form_urlencoded::byte_serialize(title.as_bytes()).collect::<String>());
-    let resp = match http.get(&u).header("Accept", "application/vnd.api+json").header("User-Agent", "bitlab/1.0").send().await { Ok(r) => r, Err(_) => return vec![] };
-    if resp.status() != 200 {
-        return vec![];
-    }
-    let kr: KitsuResponse = resp.json().await.unwrap_or(KitsuResponse { data: vec![] });
+    let body = match tokio::time::timeout(Duration::from_secs(4), async {
+        let resp = http
+            .get(&u)
+            .header("Accept", "application/vnd.api+json")
+            .header("User-Agent", "bitlab/1.0")
+            .send()
+            .await
+            .ok()?;
+        if resp.status() != 200 {
+            return None;
+        }
+        read_body_limited(resp, MAX_HTTP_BODY).await.ok()
+    })
+    .await
+    {
+        Ok(Some(b)) => b,
+        _ => return vec![],
+    };
+    let kr: KitsuResponse = serde_json::from_slice(&body).unwrap_or(KitsuResponse { data: vec![] });
     for item in kr.data {
         let a = item.attributes;
         let mut c = vec![a.canonical, a.titles.en, a.titles.en_jp];
@@ -143,46 +186,23 @@ async fn fetch_kitsu_candidates(http: &reqwest::Client, title: &str) -> Vec<Stri
 fn romanization_variants(title: &str) -> Vec<String> {
     let mut out = vec![title.to_string()];
     let mut v = title.to_string();
-    let reps = [
-        ("jyou", "jou"), ("jyo", "jo"), ("jya", "ja"), ("jyu", "ju"),
-        ("zyou", "jou"), ("zyo", "jo"), ("zya", "ja"), ("zyu", "ju"), ("zi", "ji"),
-        ("shyou", "shou"), ("syou", "shou"), ("syo", "sho"), ("sya", "sha"), ("syu", "shu"), ("si", "shi"),
-        ("chyou", "chou"), ("tyou", "chou"), ("tyo", "cho"), ("tya", "cha"), ("tyu", "chu"),
-        ("cyou", "chou"), ("cyo", "cho"), ("cya", "cha"), ("cyu", "chu"),
-        ("ti", "chi"), ("tu", "tsu"), ("hu", "fu"),
-    ];
-    for (f, t) in reps {
+    for (re, t) in ROMAN_REPS.iter() {
         // case-insensitive replace preserving case of first letter
-        let re = regex::Regex::new(&format!("(?i){}", regex::escape(f))).unwrap();
-        let nv = re.replace_all(&v, |caps: &regex::Captures| {
-            let m = &caps[0];
-            if m.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
-                let mut tc = t.to_string();
-                if let Some(first) = tc.get_mut(..1) {
-                    first.make_ascii_uppercase();
-                }
-                tc
-            } else {
-                t.to_string()
-            }
-        }).to_string();
-        v = nv;
+        v = replace_preserving(&v, re, t);
     }
     if !v.eq_ignore_ascii_case(title) {
         out.push(v.clone());
     }
     let lower = title.to_lowercase();
     if lower.contains("oo") {
-        let re = regex::Regex::new(r"(?i)oo").unwrap();
-        out.push(replace_preserving(title, &re, "ou"));
+        out.push(replace_preserving(title, &RE_OO, "ou"));
         if !v.eq_ignore_ascii_case(title) {
-            out.push(replace_preserving(&v, &re, "ou"));
+            out.push(replace_preserving(&v, &RE_OO, "ou"));
         }
     } else if lower.contains("ou") {
-        let re = regex::Regex::new(r"(?i)ou").unwrap();
-        out.push(replace_preserving(title, &re, "oo"));
+        out.push(replace_preserving(title, &RE_OU, "oo"));
         if !v.eq_ignore_ascii_case(title) {
-            out.push(replace_preserving(&v, &re, "oo"));
+            out.push(replace_preserving(&v, &RE_OU, "oo"));
         }
     }
     let unfolded = fold_macrons(title);
@@ -392,5 +412,17 @@ mod tests {
         ];
         let aliases = pick_aliases("Attack on Titan", &candidates);
         assert_eq!(aliases, vec!["Shingeki no Kyojin"]);
+    }
+
+    #[test]
+    fn test_null_tolerance_in_payloads() {
+        let j = r#"{"data":{"Page":{"media":[{"title":{"romaji":"Frieren","english":null,"native":null},"synonyms":null}]}}}"#;
+        let ar: AnilistResponse = serde_json::from_str(j).unwrap();
+        assert_eq!(ar.data.page.media[0].title.romaji, "Frieren");
+        assert!(ar.data.page.media[0].synonyms.is_empty());
+
+        let kj = r#"{"data":[{"attributes":{"canonicalTitle":"Frieren","titles":{"en":null,"en_jp":"Sousou no Frieren"},"abbreviatedTitles":null}}]}"#;
+        let kr: KitsuResponse = serde_json::from_str(kj).unwrap();
+        assert_eq!(kr.data[0].attributes.titles.en_jp, "Sousou no Frieren");
     }
 }

@@ -58,7 +58,7 @@ impl Default for CacheStats {
 pub fn cache_skip(name: &str) -> bool {
     match name {
         "bitlab.db" | "bitlab.db-wal" | "bitlab.db-shm" | "bitlab.db-journal" | "ADMIN_PASSWORD" | "lost+found" => true,
-        _ => name.is_empty() || name.starts_with('.'),
+        _ => name.is_empty() || name.starts_with('.') || name == "dht.json" || name.starts_with("dht.json."),
     }
 }
 

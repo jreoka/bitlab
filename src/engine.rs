@@ -6,10 +6,11 @@ use tokio::sync::RwLock;
 
 pub use librqbit_core::hash_id::Id20;
 pub type ManagedTorrentHandle = Arc<librqbit::ManagedTorrent>;
+type AddLocksMap = Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>;
 
 #[derive(Debug, Clone)]
 struct Activity {
-    readers: i32,
+    active_readers: HashMap<u64, SystemTime>,
     adding: bool,
     last_access: SystemTime,
     label: String,
@@ -20,7 +21,7 @@ impl Default for Activity {
     fn default() -> Self {
         let now = SystemTime::now();
         Self {
-            readers: 0,
+            active_readers: HashMap::new(),
             adding: false,
             last_access: now,
             label: String::new(),
@@ -69,6 +70,8 @@ pub struct Engine {
     info_timeout: Duration,
     act: Arc<RwLock<HashMap<String, Activity>>>,
     add_locks: Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    sweep_mu: Arc<tokio::sync::Mutex<()>>,
+    next_reader_id: Arc<std::sync::atomic::AtomicU64>,
     stats: Arc<RwLock<crate::cache::CacheStats>>,
     evicted_bytes: Arc<std::sync::atomic::AtomicI64>,
     evicted_count: Arc<std::sync::atomic::AtomicI64>,
@@ -144,6 +147,31 @@ impl Engine {
         let session = librqbit::Session::new_with_opts(media_dir.clone(), session_opts).await
             .map_err(|e| anyhow::anyhow!("librqbit session: {e}"))?;
 
+        let mut initial_act = HashMap::new();
+        let resumed = session.with_torrents(|iter| {
+            iter.map(|(_id, handle)| handle.clone()).collect::<Vec<_>>()
+        });
+        let now = SystemTime::now();
+        for handle in resumed {
+            let ih = handle.info_hash().as_string();
+            if !handle.is_paused() {
+                let _ = session.pause(&handle).await;
+            }
+            let last_access = store
+                .media_last_used(&ih)
+                .filter(|&ts| ts > 0)
+                .map(|ts| std::time::UNIX_EPOCH + Duration::from_secs(ts as u64))
+                .unwrap_or(now);
+            initial_act.insert(
+                ih,
+                Activity {
+                    last_access,
+                    label: handle.name().unwrap_or_default(),
+                    ..Default::default()
+                },
+            );
+        }
+
         let e = Self {
             session,
             media_dir,
@@ -154,8 +182,10 @@ impl Engine {
             idle_timeout: Arc::new(std::sync::atomic::AtomicI64::new(cfg.idle_timeout.as_nanos() as i64)),
             max_torrents: cfg.max_torrents,
             info_timeout: cfg.info_timeout,
-            act: Arc::new(RwLock::new(HashMap::new())),
+            act: Arc::new(RwLock::new(initial_act)),
             add_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            sweep_mu: Arc::new(tokio::sync::Mutex::new(())),
+            next_reader_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             stats: Arc::new(RwLock::new(crate::cache::CacheStats::default())),
             evicted_bytes: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             evicted_count: Arc::new(std::sync::atomic::AtomicI64::new(0)),
@@ -181,6 +211,8 @@ impl Engine {
 
     fn spawn_janitor(&self) {
         let act = self.act.clone();
+        let add_locks = self.add_locks.clone();
+        let sweep_mu = self.sweep_mu.clone();
         let session = self.session.clone();
         let media_dir = self.media_dir.clone();
         let store = self.store.clone();
@@ -196,11 +228,11 @@ impl Engine {
             loop {
                 tick.tick().await;
                 let now = SystemTime::now();
-                reap_idle(&session, &act, &idle, now).await;
+                reap_idle(&session, &act, &add_locks, &store, &idle, now).await;
                 sweep_counter += 1;
                 if sweep_counter >= 3 {
                     sweep_counter = 0;
-                    sweep_cache_once(&session, &media_dir, &store, &act, &stats, &ev_b, &ev_c, &max_cache, reserve, now, false).await;
+                    sweep_cache_once(&sweep_mu, &session, &media_dir, &store, &act, &stats, &ev_b, &ev_c, &max_cache, reserve, now, false).await;
                 }
             }
         });
@@ -209,6 +241,7 @@ impl Engine {
     pub async fn sweep_cache(&self) {
         let now = SystemTime::now();
         sweep_cache_once(
+            &self.sweep_mu,
             &self.session,
             &self.media_dir,
             &self.store,
@@ -226,6 +259,7 @@ impl Engine {
     pub async fn purge_inactive_cache(&self) -> (i64, i64) {
         let now = SystemTime::now();
         sweep_cache_once(
+            &self.sweep_mu,
             &self.session,
             &self.media_dir,
             &self.store,
@@ -330,16 +364,37 @@ impl Engine {
             Ok(r) => r,
             Err(_) => Err(anyhow::anyhow!("timeout waiting for torrent metadata")),
         };
-        {
-            let mut m = self.act.write().await;
-            if let Some(a) = m.get_mut(&ih) {
-                a.adding = false;
+        let handle = match res {
+            Ok(r) => match r.into_handle() {
+                Some(h) => {
+                    let mut m = self.act.write().await;
+                    if let Some(a) = m.get_mut(&ih) {
+                        a.adding = false;
+                    }
+                    h
+                }
+                None => {
+                    let mut m = self.act.write().await;
+                    if let Some(a) = m.get_mut(&ih) {
+                        a.adding = false;
+                        if a.active_readers.is_empty() && self.session.get(librqbit::api::TorrentIdOrHash::Hash(id20)).is_none() {
+                            m.remove(&ih);
+                        }
+                    }
+                    anyhow::bail!("failed to get managed torrent handle");
+                }
+            },
+            Err(e) => {
+                let mut m = self.act.write().await;
+                if let Some(a) = m.get_mut(&ih) {
+                    a.adding = false;
+                    if a.active_readers.is_empty() && self.session.get(librqbit::api::TorrentIdOrHash::Hash(id20)).is_none() {
+                        m.remove(&ih);
+                    }
+                }
+                return Err(anyhow::anyhow!("{e}"));
             }
-        }
-
-        let handle = res.map_err(|e| anyhow::anyhow!("{e}"))?
-            .into_handle()
-            .ok_or_else(|| anyhow::anyhow!("failed to get managed torrent handle"))?;
+        };
 
         Ok(handle)
     }
@@ -368,7 +423,7 @@ impl Engine {
                 let mut oldest: Option<String> = None;
                 let mut when: Option<SystemTime> = None;
                 for (ih, a) in m.iter() {
-                    if a.readers > 0 || a.adding {
+                    if !a.active_readers.is_empty() || a.adding {
                         continue;
                     }
                     match when {
@@ -398,8 +453,11 @@ impl Engine {
                 l.remove(&oldest);
             }
             if let Some(id20) = hex_to_id20(&oldest) {
-                let _ = self.session.delete(librqbit::api::TorrentIdOrHash::Hash(id20), false).await;
-                return true;
+                if self.session.get(librqbit::api::TorrentIdOrHash::Hash(id20)).is_some()
+                    && self.session.delete(librqbit::api::TorrentIdOrHash::Hash(id20), false).await.is_ok()
+                {
+                    return true;
+                }
             }
         }
     }
@@ -441,7 +499,7 @@ impl Engine {
                 let m = self.act.read().await;
                 if let Some(a) = m.get(&ih) {
                     (
-                        a.readers,
+                        a.active_readers.len() as i32,
                         now.duration_since(a.last_access).map(|d| d.as_secs() as i64).unwrap_or(0),
                         a.label.clone(),
                     )
@@ -477,7 +535,10 @@ impl Engine {
     }
 
     pub async fn cache_stats(&self) -> crate::cache::CacheStats {
-        let entries = crate::cache::scan_cache(&self.media_dir).unwrap_or_default();
+        let dir = self.media_dir.clone();
+        let entries = tokio::task::spawn_blocking(move || crate::cache::scan_cache(&dir).unwrap_or_default())
+            .await
+            .unwrap_or_default();
         let mut used = 0i64;
         let mut partial = 0i64;
         for e in &entries {
@@ -505,7 +566,10 @@ impl Engine {
     }
 
     pub async fn disk_free(&self) -> i64 {
-        crate::platform::free_disk_space(&self.media_dir).unwrap_or(-1)
+        let dir = self.media_dir.clone();
+        tokio::task::spawn_blocking(move || crate::platform::free_disk_space(&dir).unwrap_or(-1))
+            .await
+            .unwrap_or(-1)
     }
 
     pub fn torrent_count(&self) -> usize {
@@ -537,7 +601,7 @@ impl Engine {
                     if ih.as_str() == current_ih {
                         return None;
                     }
-                    if a.readers == 0 {
+                    if a.active_readers.is_empty() {
                         return Some(ih.clone());
                     }
                     // If readers > 0, check if this stream is inactive (no reads in >= 8s).
@@ -559,7 +623,7 @@ impl Engine {
             for ih in &stale_to_clear {
                 if let Some(a) = act.get_mut(ih) {
                     tracing::info!("stream switch: clearing stale reader for other torrent {}", &ih[..8.min(ih.len())]);
-                    a.readers = 0;
+                    a.active_readers.clear();
                 }
             }
         }
@@ -583,7 +647,7 @@ impl Engine {
             tokio::time::sleep(delay).await;
             let readers = {
                 let m = act.read().await;
-                m.get(&ih).map(|a| a.readers).unwrap_or(0)
+                m.get(&ih).map(|a| a.active_readers.len()).unwrap_or(0)
             };
             if readers == 0 {
                 if let Some(id20) = hex_to_id20(&ih) {
@@ -598,22 +662,25 @@ impl Engine {
         });
     }
 
-    pub async fn inc_reader(&self, ih: &str) {
+    pub async fn inc_reader(&self, ih: &str) -> u64 {
         self.store.touch_media(ih);
+        let id = self.next_reader_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let now = SystemTime::now();
         let mut m = self.act.write().await;
         let a = m.entry(ih.to_string()).or_insert_with(Activity::default);
-        a.readers += 1;
-        a.last_access = SystemTime::now();
+        a.active_readers.insert(id, now);
+        a.last_access = now;
+        id
     }
 
-    pub async fn dec_reader(&self, ih: &str) {
+    pub async fn dec_reader(&self, ih: &str, reader_id: u64) {
         self.store.touch_media(ih);
         let (zero_readers, ih_owned) = {
             let mut m = self.act.write().await;
             if let Some(a) = m.get_mut(ih) {
-                a.readers = (a.readers - 1).max(0);
+                a.active_readers.remove(&reader_id);
                 a.last_access = SystemTime::now();
-                (a.readers == 0, ih.to_string())
+                (a.active_readers.is_empty(), ih.to_string())
             } else {
                 (false, String::new())
             }
@@ -623,15 +690,19 @@ impl Engine {
         }
     }
 
-    pub async fn touch_now(&self, ih: &str) {
-        self.store.touch_media(ih);
-        let mut m = self.act.write().await;
-        if let Some(a) = m.get_mut(ih) {
-            a.last_access = SystemTime::now();
-            if a.readers == 0 {
-                a.readers = 1;
+    pub async fn touch_reader(&self, ih: &str, reader_id: u64, closed: &std::sync::atomic::AtomicBool) {
+        {
+            let mut m = self.act.write().await;
+            if closed.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            let now = SystemTime::now();
+            if let Some(a) = m.get_mut(ih) {
+                a.last_access = now;
+                a.active_readers.insert(reader_id, now);
             }
         }
+        self.store.touch_media(ih);
         if let Some(id20) = hex_to_id20(ih) {
             if let Some(handle) = self.session.get(librqbit::api::TorrentIdOrHash::Hash(id20)) {
                 if handle.is_paused() {
@@ -646,7 +717,7 @@ async fn migrate_cache_root(root: &Path, media: &Path) -> anyhow::Result<()> {
     let mut rd = tokio::fs::read_dir(root).await?;
     while let Some(ent) = rd.next_entry().await? {
         let name = ent.file_name().to_string_lossy().to_string();
-        if name == "media" || name == "ADMIN_PASSWORD" || crate::cache::cache_skip(&name) {
+        if name == "media" || name == "ADMIN_PASSWORD" || name == "dht.json" || name.starts_with("dht.json.") || crate::cache::cache_skip(&name) {
             continue;
         }
         let src = root.join(&name);
@@ -664,6 +735,8 @@ async fn migrate_cache_root(root: &Path, media: &Path) -> anyhow::Result<()> {
 async fn reap_idle(
     session: &librqbit::Session,
     act: &Arc<RwLock<HashMap<String, Activity>>>,
+    add_locks: &AddLocksMap,
+    store: &Arc<crate::store::Store>,
     idle: &Arc<std::sync::atomic::AtomicI64>,
     now: SystemTime,
 ) {
@@ -674,19 +747,32 @@ async fn reap_idle(
         let ih = handle.info_hash().as_string();
         let stats = handle.stats();
         let size = stats.total_bytes;
-        let (mut readers, last, warned) = {
+        let (mut readers, adding, last, warned) = {
             let m = act.read().await;
-            match m.get(&ih) {
-                Some(a) => (a.readers, a.last_access, a.warned_no_peers),
-                None => (0, now, false),
-            }
-        };
+            m.get(&ih).map(|a| (a.active_readers.len() as i32, a.adding, a.last_access, a.warned_no_peers))
+        }
+        .unwrap_or_else(|| {
+            let last_access = store
+                .media_last_used(&ih)
+                .filter(|&ts| ts > 0)
+                .map(|ts| std::time::UNIX_EPOCH + Duration::from_secs(ts as u64))
+                .unwrap_or(now);
+            (0, false, last_access, false)
+        });
+        {
+            let mut m = act.write().await;
+            m.entry(ih.clone()).or_insert_with(|| Activity {
+                last_access: last,
+                label: handle.name().unwrap_or_default(),
+                ..Default::default()
+            });
+        }
         let inactive_dur = now.duration_since(last).unwrap_or_default();
-        if readers > 0 && inactive_dur >= Duration::from_secs(30) {
+        if readers > 0 && inactive_dur >= Duration::from_secs(45) {
             tracing::info!("clearing {readers} stale reader(s) for {} (inactive for {inactive_dur:?})", &ih[..8.min(ih.len())]);
             let mut m = act.write().await;
             if let Some(a) = m.get_mut(&ih) {
-                a.readers = 0;
+                a.active_readers.clear();
             }
             readers = 0;
             if !handle.is_paused() {
@@ -703,18 +789,22 @@ async fn reap_idle(
                 }
             }
         }
-        let idle_dur = Duration::from_nanos(idle.load(std::sync::atomic::Ordering::Relaxed) as u64);
-        if readers == 0 && inactive_dur > idle_dur {
+        let idle_dur = Duration::from_nanos(idle.load(std::sync::atomic::Ordering::Relaxed).max(0) as u64);
+        if readers == 0 && !adding && inactive_dur > idle_dur {
             tracing::info!("drop idle torrent {} ({:?} idle)", &ih[..8.min(ih.len())], inactive_dur);
             let _ = session.delete(librqbit::api::TorrentIdOrHash::Hash(handle.info_hash()), false).await;
             let mut m = act.write().await;
             m.remove(&ih);
         }
     }
+    let m = act.read().await;
+    let mut locks = add_locks.lock().await;
+    locks.retain(|k, v| Arc::strong_count(v) > 1 || m.contains_key(k));
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn sweep_cache_once(
+    sweep_mu: &Arc<tokio::sync::Mutex<()>>,
     session: &librqbit::Session,
     data_dir: &Path,
     store: &Arc<crate::store::Store>,
@@ -727,10 +817,16 @@ async fn sweep_cache_once(
     now: SystemTime,
     force_purge_inactive: bool,
 ) -> (i64, i64) {
-    let entries = match crate::cache::scan_cache(data_dir) {
-        Ok(e) => e,
-        Err(e) => {
+    let _sweep_guard = sweep_mu.lock().await;
+    let scan_dir = data_dir.to_path_buf();
+    let entries = match tokio::task::spawn_blocking(move || crate::cache::scan_cache(&scan_dir)).await {
+        Ok(Ok(e)) => e,
+        Ok(Err(e)) => {
             tracing::warn!("cache: scan {}: {e}", data_dir.display());
+            return (0, 0);
+        }
+        Err(e) => {
+            tracing::warn!("cache: scan join {}: {e}", data_dir.display());
             return (0, 0);
         }
     };
@@ -806,7 +902,7 @@ async fn sweep_cache_once(
             let (readers, last) = {
                 let m = act.read().await;
                 match m.get(&en.name) {
-                    Some(a) => (a.readers, a.last_access),
+                    Some(a) => (a.active_readers.len() as i32, a.last_access),
                     None => (0, en.modified),
                 }
             };
@@ -827,13 +923,17 @@ async fn sweep_cache_once(
         }
         units.push(u);
     }
-    let free = crate::platform::free_disk_space(data_dir).unwrap_or(-1);
+    let free_dir = data_dir.to_path_buf();
+    let free = tokio::task::spawn_blocking(move || crate::platform::free_disk_space(&free_dir).unwrap_or(-1))
+        .await
+        .unwrap_or(-1);
     let plan = crate::cache::plan_cache(&units, used, max_cache.load(std::sync::atomic::Ordering::Relaxed), reserve, free, now, force_purge_inactive);
     let mut freed = 0i64;
     let mut freed_count = 0i64;
-    let mut rem_orphans = 0i64;
+    let mut rem_orphans = 0usize;
     let mut rem_orphan_bytes = 0i64;
     let mut rem_partial = 0i64;
+    let mut rem_loaded = 0usize;
     for (idx, reason) in plan {
         let u = &units[idx];
         if u.loaded {
@@ -844,6 +944,9 @@ async fn sweep_cache_once(
         if crate::platform::remove_all_async(&u.entry.path).await.is_err() {
             tracing::warn!("cache: remove {}", u.entry.name);
             continue;
+        }
+        if u.loaded {
+            rem_loaded += 1;
         }
         if u.orphan {
             rem_orphans += 1;
@@ -865,17 +968,22 @@ async fn sweep_cache_once(
             tracing::info!("cache: auto-evicted idle {} ({})", u.entry.name, crate::util::human_bytes(u.entry.bytes));
         }
     }
-    let free_after = crate::platform::free_disk_space(data_dir).unwrap_or(if free >= 0 { free + freed } else { -1 });
+    let free_dir_after = data_dir.to_path_buf();
+    let free_after = tokio::task::spawn_blocking(move || crate::platform::free_disk_space(&free_dir_after).ok())
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(if free >= 0 { free + freed } else { -1 });
     let mut st = crate::cache::CacheStats {
-        used_bytes: used - freed,
+        used_bytes: (used - freed).max(0),
         budget_bytes: max_cache.load(std::sync::atomic::Ordering::Relaxed),
         reserve_bytes: reserve,
         free_bytes: free_after,
-        entries: entries.len() - freed_count as usize,
-        partial_bytes: partial_bytes - rem_partial,
-        orphan_bytes: orphan_bytes - rem_orphan_bytes,
-        orphan_entries: orphan_count - rem_orphans as usize,
-        loaded_entries: loaded,
+        entries: entries.len().saturating_sub(freed_count as usize),
+        partial_bytes: (partial_bytes - rem_partial).max(0),
+        orphan_bytes: (orphan_bytes - rem_orphan_bytes).max(0),
+        orphan_entries: orphan_count.saturating_sub(rem_orphans),
+        loaded_entries: loaded.saturating_sub(rem_loaded),
         last_sweep_unix: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0),
         evicted_bytes: 0,
         evicted_entries: 0,

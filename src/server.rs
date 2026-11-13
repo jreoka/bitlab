@@ -12,21 +12,59 @@ pub struct App {
     pub store: Arc<crate::store::Store>,
     pub engine: Arc<crate::engine::Engine>,
     pub http: reqwest::Client,
+    pub allow_private: bool,
     pub start: SystemTime,
     pub session_key: Vec<u8>,
     pub readahead: Arc<std::sync::atomic::AtomicI64>,
     pub hints: Arc<dashmap_like::DashMap>,
-    pub hint_n: Arc<std::sync::atomic::AtomicI64>,
     pub totp_mu: Arc<tokio::sync::Mutex<()>>,
     pub ix_cache: Arc<dashmap_like::IxCache>,
     pub ep_cache: Arc<dashmap_like::EpCache>,
-    pub ep_n: Arc<std::sync::atomic::AtomicI64>,
+}
+
+pub const MAX_HTTP_BODY: usize = 16 * 1024 * 1024;
+
+pub fn de_null_default<'de, D, T>(de: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(de)?.unwrap_or_default())
+}
+
+pub fn de_string_or_num<'de, D>(de: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    match Option::<serde_json::Value>::deserialize(de)? {
+        Some(serde_json::Value::String(s)) => Ok(s),
+        Some(serde_json::Value::Number(n)) => Ok(n.to_string()),
+        _ => Ok(String::new()),
+    }
+}
+
+pub async fn read_body_limited(mut resp: reqwest::Response, max_bytes: usize) -> anyhow::Result<Vec<u8>> {
+    if let Some(len) = resp.content_length() {
+        if len > max_bytes as u64 {
+            anyhow::bail!("response too large ({len} bytes)");
+        }
+    }
+    let mut out = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        if out.len().saturating_add(chunk.len()) > max_bytes {
+            anyhow::bail!("response exceeds {max_bytes} bytes");
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
 }
 
 // Minimal DashMap replacements to avoid extra dep (use std RwLock<HashMap>)
 pub mod dashmap_like {
-use std::collections::HashMap;
+    use std::collections::HashMap;
     use std::sync::RwLock;
+    use std::time::SystemTime;
+
     pub struct DashMap {
         inner: RwLock<HashMap<String, Vec<String>>>,
     }
@@ -35,19 +73,19 @@ use std::collections::HashMap;
             Self { inner: RwLock::new(HashMap::new()) }
         }
         pub fn insert(&self, k: String, v: Vec<String>) {
-            self.inner.write().unwrap().insert(k, v);
+            let mut w = self.inner.write().unwrap();
+            if w.len() >= 8192 && !w.contains_key(&k) {
+                w.clear();
+            }
+            w.insert(k, v);
         }
         pub fn get(&self, k: &str) -> Option<Vec<String>> {
             self.inner.read().unwrap().get(k).cloned()
-        }
-        pub fn clear(&self) {
-            self.inner.write().unwrap().clear();
         }
     }
     pub struct IxCache {
         inner: RwLock<HashMap<String, (Vec<crate::indexers::ResultRow>, SystemTime)>>,
     }
-    use std::time::SystemTime;
     impl IxCache {
         pub fn new() -> Self {
             Self { inner: RwLock::new(HashMap::new()) }
@@ -56,10 +94,14 @@ use std::collections::HashMap;
             self.inner.read().unwrap().get(k).cloned()
         }
         pub fn insert(&self, k: String, v: (Vec<crate::indexers::ResultRow>, SystemTime)) {
-            // bound size: clear if too big
+            // bound size: drop expired entries first, then clear if still oversized
             let mut w = self.inner.write().unwrap();
-            if w.len() > 4096 {
-                w.clear();
+            if w.len() >= 4096 && !w.contains_key(&k) {
+                let now = SystemTime::now();
+                w.retain(|_, (_, exp)| now < *exp);
+                if w.len() >= 4096 {
+                    w.clear();
+                }
             }
             w.insert(k, v);
         }
@@ -79,13 +121,10 @@ use std::collections::HashMap;
         }
         pub fn insert(&self, k: String, v: Vec<(i32, i32)>) {
             let mut w = self.inner.write().unwrap();
-            if w.len() > 4096 {
+            if w.len() >= 4096 && !w.contains_key(&k) {
                 w.clear();
             }
             w.insert(k, v);
-        }
-        pub fn clear(&self) {
-            self.inner.write().unwrap().clear();
         }
     }
 }
@@ -100,15 +139,14 @@ impl App {
             store,
             engine,
             http,
+            allow_private,
             start: SystemTime::now(),
             session_key,
             readahead: Arc::new(std::sync::atomic::AtomicI64::new(ra)),
             hints: Arc::new(dashmap_like::DashMap::new()),
-            hint_n: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             totp_mu: Arc::new(tokio::sync::Mutex::new(())),
             ix_cache: Arc::new(dashmap_like::IxCache::new()),
             ep_cache: Arc::new(dashmap_like::EpCache::new()),
-            ep_n: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             // cfg stored with original values; readahead atomic holds live value
         }
     }
@@ -164,10 +202,6 @@ impl App {
     }
 
     pub fn store_episode_list(&self, imdb: &str, eps: Vec<(i32, i32)>) {
-        if self.ep_cache.get(imdb).is_none() && self.ep_n.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1 > 4096 {
-            self.ep_cache.clear();
-            self.ep_n.store(1, std::sync::atomic::Ordering::Relaxed);
-        }
         self.ep_cache.insert(imdb.to_string(), eps);
     }
 
@@ -229,22 +263,7 @@ use std::collections::HashMap;
                     // drain whatever is already queued without waiting
                     while let Ok((name, r)) = rx.try_recv() {
                         *received.entry(name.clone()).or_insert(0) += 1;
-                        match r {
-                            Ok(mut v) => {
-                                for row in v.drain(..) {
-                                    if row.infohash.is_empty() { continue; }
-                                    if let Some(&i) = seen.get(&row.infohash) {
-                                        if row.seeders > all[i].seeders {
-                                            all[i] = row;
-                                        }
-                                        continue;
-                                    }
-                                    seen.insert(row.infohash.clone(), all.len());
-                                    all.push(row);
-                                }
-                            }
-                            Err(e) => errs.push(format!("{name}: {e}")),
-                        }
+                        merge_search_batch(&name, r, &mut seen, &mut all, &mut errs);
                     }
                     done = true;
                 }
@@ -253,22 +272,7 @@ use std::collections::HashMap;
                         None => done = true,
                         Some((name, r)) => {
                             *received.entry(name.clone()).or_insert(0) += 1;
-                            match r {
-                                Ok(mut v) => {
-                                    for row in v.drain(..) {
-                                        if row.infohash.is_empty() { continue; }
-                                        if let Some(&i) = seen.get(&row.infohash) {
-                                            if row.seeders > all[i].seeders {
-                                                all[i] = row;
-                                            }
-                                            continue;
-                                        }
-                                        seen.insert(row.infohash.clone(), all.len());
-                                        all.push(row);
-                                    }
-                                }
-                                Err(e) => errs.push(format!("{name}: {e}")),
-                            }
+                            merge_search_batch(&name, r, &mut seen, &mut all, &mut errs);
                             // check if all launched received
                             let total_launched: usize = launched.values().sum();
                             let total_received: usize = received.values().sum();
@@ -338,6 +342,12 @@ use std::collections::HashMap;
     }
 
     async fn search_indexer_uncached(&self, ix: &crate::indexers::Indexer, q: &str, typ: &str, season: i32, ep: i32, imdb: &str) -> anyhow::Result<Vec<crate::indexers::ResultRow>> {
+        if !ix.url.trim().is_empty() {
+            let parsed = url::Url::parse(ix.url.trim()).map_err(|_| anyhow::anyhow!("invalid indexer url"))?;
+            if !crate::netguard::url_allowed(&parsed, self.allow_private) {
+                anyhow::bail!("indexer host is not allowed");
+            }
+        }
         let timeout = crate::indexers::indexer_timeout(&ix.kind);
         let fut = async {
             match ix.kind.as_str() {
@@ -356,13 +366,21 @@ use std::collections::HashMap;
     }
 
     pub async fn resolve_meta(&self, typ: &str, imdb: &str) -> anyhow::Result<(String, i32)> {
+        if typ != "movie" && typ != "series" {
+            anyhow::bail!("invalid media type");
+        }
+        if !crate::addon::is_valid_imdb(imdb) {
+            anyhow::bail!("invalid imdb id");
+        }
         let ck = format!("meta2:{typ}:{imdb}");
         if let Some(v) = self.store.get_cached_meta(&ck) {
             if let Ok(m) = serde_json::from_str::<serde_json::Value>(&v) {
                 if let (Some(name), Some(year)) = (m.get("name").and_then(|v| v.as_str()), m.get("year").and_then(|v| v.as_i64())) {
                     if !name.is_empty() {
                         let eps: Vec<(i32, i32)> = m.get("eps").and_then(|e| serde_json::from_value(e.clone()).ok()).unwrap_or_default();
-                        self.store_episode_list(imdb, eps);
+                        if !eps.is_empty() {
+                            self.store_episode_list(imdb, eps);
+                        }
                         return Ok((name.to_string(), year as i32));
                     }
                 }
@@ -373,31 +391,28 @@ use std::collections::HashMap;
         if resp.status() != 200 {
             anyhow::bail!("cinemeta http {}", resp.status());
         }
-        let body = resp.bytes().await?;
-        if body.len() > 16 * 1024 * 1024 {
-            anyhow::bail!("meta too large");
-        }
+        let body = read_body_limited(resp, MAX_HTTP_BODY).await?;
         #[derive(Deserialize)]
         struct Payload {
-            #[serde(default)]
+            #[serde(default, deserialize_with = "de_null_default")]
             meta: Meta,
         }
         #[derive(Deserialize, Default)]
         struct Meta {
-            #[serde(default)]
+            #[serde(default, deserialize_with = "de_null_default")]
             name: String,
-            #[serde(default)]
+            #[serde(default, deserialize_with = "de_string_or_num")]
             year: String,
-            #[serde(default, rename = "releaseInfo")]
+            #[serde(default, rename = "releaseInfo", deserialize_with = "de_string_or_num")]
             release_info: String,
-            #[serde(default)]
+            #[serde(default, deserialize_with = "de_null_default")]
             videos: Vec<Video>,
         }
         #[derive(Deserialize)]
         struct Video {
-            #[serde(default)]
+            #[serde(default, deserialize_with = "de_null_default")]
             season: i32,
-            #[serde(default)]
+            #[serde(default, deserialize_with = "de_null_default")]
             episode: i32,
         }
         let p: Payload = serde_json::from_slice(&body).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -405,21 +420,85 @@ use std::collections::HashMap;
         if name.is_empty() {
             anyhow::bail!("no metadata for {imdb}");
         }
-        let mut ys = p.meta.year.clone();
-        if ys.is_empty() {
-            ys = p.meta.release_info.clone();
-        }
-        if ys.len() > 4 {
-            ys = ys[..4].to_string();
-        }
-        let year: i32 = ys.parse().unwrap_or(0);
+        let ys = if !p.meta.year.trim().is_empty() {
+            p.meta.year.as_str()
+        } else {
+            p.meta.release_info.as_str()
+        };
+        let year = extract_year(ys);
         let mut eps: Vec<(i32, i32)> = p.meta.videos.into_iter().filter(|v| v.season > 0 && v.episode > 0).map(|v| (v.season, v.episode)).collect();
         eps.sort();
-        self.store_episode_list(imdb, eps.clone());
+        if !eps.is_empty() {
+            self.store_episode_list(imdb, eps.clone());
+        }
         let b = serde_json::json!({"name": name, "year": year, "eps": eps}).to_string();
         let _ = self.store.cache_meta(&ck, &b, 30 * 24 * 3600);
         Ok((name, year))
     }
+}
+
+fn merge_search_batch(
+    name: &str,
+    r: anyhow::Result<Vec<crate::indexers::ResultRow>>,
+    seen: &mut std::collections::HashMap<String, usize>,
+    all: &mut Vec<crate::indexers::ResultRow>,
+    errs: &mut Vec<String>,
+) {
+    match r {
+        Ok(mut v) => {
+            for mut row in v.drain(..) {
+                let ih = row.infohash.trim().to_lowercase();
+                if !crate::util::valid_infohash(&ih) {
+                    continue;
+                }
+                row.infohash = ih.clone();
+                if let Some(&i) = seen.get(&ih) {
+                    if row.seeders > all[i].seeders {
+                        let mut merged_trackers = row.trackers;
+                        for tr in all[i].trackers.drain(..) {
+                            if !merged_trackers.contains(&tr) && merged_trackers.len() < 32 {
+                                merged_trackers.push(tr);
+                            }
+                        }
+                        let fallback_size = all[i].size;
+                        all[i] = crate::indexers::ResultRow {
+                            trackers: merged_trackers,
+                            size: if row.size > 0 { row.size } else { fallback_size },
+                            ..row
+                        };
+                    } else {
+                        for tr in row.trackers {
+                            if !all[i].trackers.contains(&tr) && all[i].trackers.len() < 32 {
+                                all[i].trackers.push(tr);
+                            }
+                        }
+                        if all[i].size <= 0 && row.size > 0 {
+                            all[i].size = row.size;
+                        }
+                    }
+                    continue;
+                }
+                seen.insert(ih, all.len());
+                all.push(row);
+            }
+        }
+        Err(e) => errs.push(format!("{name}: {e}")),
+    }
+}
+
+fn extract_year(s: &str) -> i32 {
+    for w in s.as_bytes().windows(4) {
+        if w.iter().all(|b| b.is_ascii_digit()) {
+            if let Ok(text) = std::str::from_utf8(w) {
+                if let Ok(y) = text.parse::<i32>() {
+                    if (1880..=2100).contains(&y) {
+                        return y;
+                    }
+                }
+            }
+        }
+    }
+    0
 }
 
 // http helpers
@@ -435,4 +514,52 @@ pub fn json_response(code: u16, v: serde_json::Value) -> Response {
 
 pub fn http_error(code: u16, msg: &str) -> Response {
     json_response(code, serde_json::json!({"error": msg}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_year_utf8_safe() {
+        assert_eq!(extract_year("2014–2020"), 2014);
+        assert_eq!(extract_year("日本語2019年"), 2019);
+        assert_eq!(extract_year(""), 0);
+        assert_eq!(extract_year("999"), 0);
+    }
+
+    #[test]
+    fn test_merge_search_batch_combines_trackers_and_size() {
+        let mut seen = std::collections::HashMap::new();
+        let mut all = Vec::new();
+        let mut errs = Vec::new();
+        let ih = "0123456789abcdef0123456789abcdef01234567";
+        let r1 = crate::indexers::ResultRow {
+            title: "Movie 1080p".into(),
+            infohash: ih.to_uppercase(),
+            size: 1_500_000_000,
+            seeders: 5,
+            indexer: "ix1".into(),
+            magnet: "".into(),
+            score: 0.0,
+            trackers: vec!["udp://tracker.opentrackr.org:1337/announce".into()],
+        };
+        let r2 = crate::indexers::ResultRow {
+            title: "Movie 1080p".into(),
+            infohash: ih.into(),
+            size: 0,
+            seeders: 20,
+            indexer: "ix2".into(),
+            magnet: "".into(),
+            score: 0.0,
+            trackers: vec!["udp://open.stealth.si:80/announce".into()],
+        };
+        merge_search_batch("ix1", Ok(vec![r1]), &mut seen, &mut all, &mut errs);
+        merge_search_batch("ix2", Ok(vec![r2]), &mut seen, &mut all, &mut errs);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].infohash, ih);
+        assert_eq!(all[0].seeders, 20);
+        assert_eq!(all[0].size, 1_500_000_000);
+        assert_eq!(all[0].trackers.len(), 2);
+    }
 }

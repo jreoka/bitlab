@@ -1,10 +1,22 @@
-use axum::extract::{ConnectInfo, Path, Query, State};
+use axum::extract::{ConnectInfo, FromRequestParts, Path, Query, State};
+use axum::http::request::Parts;
 use axum::http::HeaderMap;
 use axum::response::Response;
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
+
+pub struct MaybeConnectInfo(pub Option<SocketAddr>);
+
+impl<S: Send + Sync> FromRequestParts<S> for MaybeConnectInfo {
+    type Rejection = Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        Ok(Self(parts.extensions.get::<ConnectInfo<SocketAddr>>().map(|c| c.0)))
+    }
+}
 
 struct FailWindow {
     inner: Mutex<HashMap<String, Vec<Instant>>>,
@@ -49,6 +61,39 @@ fn login_window() -> &'static FailWindow {
     LOGIN_WINDOW.get_or_init(FailWindow::new)
 }
 
+pub fn check_auth_rate_limit(ip: &str) -> bool {
+    login_window().blocked(ip)
+}
+
+pub fn record_auth_failure(ip: &str) {
+    login_window().fail(ip);
+}
+
+pub fn reset_auth_failure(ip: &str) {
+    login_window().reset(ip);
+}
+
+pub fn is_https(app: &crate::server::App, headers: &HeaderMap) -> bool {
+    if app.cfg.base_url.starts_with("https://") {
+        return true;
+    }
+    if app.cfg.trust_proxy {
+        if let Some(proto) = headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()) {
+            if proto.split(',').next().is_some_and(|p| p.trim().eq_ignore_ascii_case("https")) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub fn clear_cookie(name: &str, secure: bool) -> String {
+    format!(
+        "{name}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax{}",
+        if secure { "; Secure" } else { "" }
+    )
+}
+
 pub fn client_ip(app: &crate::server::App, headers: &HeaderMap, remote: Option<SocketAddr>) -> String {
     let mut ip = String::new();
     if app.cfg.trust_proxy {
@@ -66,10 +111,17 @@ pub fn client_ip(app: &crate::server::App, headers: &HeaderMap, remote: Option<S
     if ip.is_empty() {
         ip = remote.map(|a| a.ip().to_string()).unwrap_or_else(|| "unknown".to_string());
     }
-    if ip.parse::<std::net::IpAddr>().is_err() {
-        return "unknown".to_string();
+    match ip.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V6(v6)) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                v4.to_string()
+            } else {
+                v6.to_string()
+            }
+        }
+        Ok(addr) => addr.to_string(),
+        Err(_) => "unknown".to_string(),
     }
-    ip
 }
 
 pub async fn handle_favicon() -> Response {
@@ -103,7 +155,7 @@ pub async fn handle_admin_page(State(app): State<crate::server::App>, headers: H
         let next = clean_next_path(p);
         let mut b = Response::builder().status(302).header("location", "/login");
         if next != "/admin/keys" {
-            let secure = app.cfg.base_url.starts_with("https://");
+            let secure = is_https(&app, &headers);
             b = b.header(
                 "set-cookie",
                 format!("bitlab_next={next}; Path=/; Max-Age=600; HttpOnly; SameSite=Lax{}", if secure { "; Secure" } else { "" }),
@@ -137,11 +189,11 @@ fn serve_admin_shell() -> Response {
 pub async fn handle_login(
     State(app): State<crate::server::App>,
     headers: HeaderMap,
-    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    MaybeConnectInfo(remote): MaybeConnectInfo,
     body: axum::body::Bytes,
 ) -> Response {
-    let ip = client_ip(&app, &headers, Some(remote));
-    if login_window().blocked(&ip) {
+    let ip = client_ip(&app, &headers, remote);
+    if check_auth_rate_limit(&ip) {
         return crate::server::http_error(429, "too many attempts, try again later");
     }
     #[derive(serde::Deserialize)]
@@ -151,7 +203,7 @@ pub async fn handle_login(
         #[serde(default)]
         code: String,
     }
-    if body.len() > 1024 * 1024 {
+    if body.len() > 64 * 1024 {
         return crate::server::http_error(400, "bad json");
     }
     let b: B = match serde_json::from_slice(&body) {
@@ -159,7 +211,7 @@ pub async fn handle_login(
         Err(_) => return crate::server::http_error(400, "bad json"),
     };
     if !crate::security::check_password(&app, &b.password) {
-        login_window().fail(&ip);
+        record_auth_failure(&ip);
         tracing::info!("admin login failed from {ip}");
         return crate::server::http_error(401, "wrong password");
     }
@@ -168,16 +220,19 @@ pub async fn handle_login(
             return crate::server::json_response(401, serde_json::json!({"error": "two-factor code required", "twofa": true}));
         }
         if !crate::security::check_second_factor(&app, &b.code).await {
-            login_window().fail(&ip);
+            record_auth_failure(&ip);
             tracing::info!("two-factor failure from {ip}");
             return crate::server::http_error(401, "invalid two-factor code");
         }
     }
-    login_window().reset(&ip);
+    reset_auth_failure(&ip);
     let ua = headers.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
     let sess = match app.store.create_session(&crate::security::session_name(&ua), &ip, &ua, 7 * 24 * 3600) {
         Ok(s) => s,
-        Err(e) => return crate::server::http_error(500, &e.to_string()),
+        Err(e) => {
+            tracing::info!("create session failed: {e}");
+            return crate::server::http_error(500, "store unavailable");
+        }
     };
     app.store.prune_sessions(50);
     let cookie = crate::security::issue_cookie_value(&app, &sess);
@@ -190,10 +245,10 @@ pub async fn handle_login(
         .unwrap_or_else(|| "/admin/keys".to_string());
     let mut resp = crate::server::json_response(200, serde_json::json!({"ok": true, "session": sess.id, "next": next}));
     // set cookies: session + clear next
-    let secure = app.cfg.base_url.starts_with("https://");
+    let secure = is_https(&app, &headers);
     let set1 = format!("bitlab_session={cookie}; Path=/; HttpOnly; SameSite=Lax; Expires={}{}", http_date(sess.expires_at), if secure { "; Secure" } else { "" });
     resp.headers_mut().append("set-cookie", set1.parse().unwrap());
-    resp.headers_mut().append("set-cookie", "bitlab_next=; Path=/; Max-Age=-1".parse().unwrap());
+    resp.headers_mut().append("set-cookie", clear_cookie("bitlab_next", secure).parse().unwrap());
     resp
 }
 
@@ -219,8 +274,9 @@ pub async fn handle_logout(State(app): State<crate::server::App>, headers: Heade
     if let Some(s) = current_session(&app, &headers).await {
         let _ = app.store.delete_session(&s.id);
     }
+    let secure = is_https(&app, &headers);
     let mut r = crate::server::json_response(200, serde_json::json!({"ok": true}));
-    r.headers_mut().insert("set-cookie", "bitlab_session=; Path=/; Max-Age=-1".parse().unwrap());
+    r.headers_mut().insert("set-cookie", clear_cookie("bitlab_session", secure).parse().unwrap());
     r
 }
 
@@ -292,12 +348,11 @@ pub async fn handle_list_keys(State(app): State<crate::server::App>, headers: He
     let qq = q.get("q").cloned().unwrap_or_default();
     let status = q.get("status").cloned().unwrap_or_default();
     let mut page: i64 = q.get("page").and_then(|v| v.parse().ok()).unwrap_or(1);
-    if page < 1 {
-        page = 1;
-    }
+    page = page.clamp(1, 1_000_000);
     let mut per: i64 = q.get("per").and_then(|v| v.parse().ok()).unwrap_or(25);
     per = per.clamp(5, 100);
-    match app.store.list_keys_page(&qq, &status, per, (page - 1) * per) {
+    let offset = (page - 1).saturating_mul(per);
+    match app.store.list_keys_page(&qq, &status, per, offset) {
         Ok((keys, total)) => crate::server::json_response(200, serde_json::json!({"keys": keys, "total": total, "page": page, "per": per, "query": qq, "status": status})),
         Err(e) => {
             tracing::info!("list keys: {e}");
@@ -310,7 +365,7 @@ pub async fn handle_create_key(State(app): State<crate::server::App>, headers: H
     if let Some(e) = require_admin_state(&app, &headers).await {
         return e;
     }
-    if body.len() > 1024 * 1024 {
+    if body.len() > 64 * 1024 {
         return crate::server::http_error(400, "bad json");
     }
     #[derive(serde::Deserialize)]
@@ -328,25 +383,42 @@ pub async fn handle_create_key(State(app): State<crate::server::App>, headers: H
         Ok(v) => v,
         Err(_) => return crate::server::http_error(400, "bad json"),
     };
+    let label = b.label.trim();
+    let note = b.note.trim();
+    if label.chars().count() > 200 || note.chars().count() > 1000 {
+        return crate::server::http_error(400, "label or note too long");
+    }
+    if b.days < 0 {
+        return crate::server::http_error(400, "days must be non-negative");
+    }
     let mut ttl = match crate::security::parse_ttl(&b.expires) {
         Ok(v) => v,
         Err(e) => return crate::server::http_error(400, &e.to_string()),
     };
     if ttl == 0 && b.days > 0 {
-        ttl = b.days * 24 * 3600;
+        if b.days > 50 * 365 {
+            return crate::server::http_error(400, "expiry too far in the future (max 50 years)");
+        }
+        ttl = b.days.saturating_mul(24 * 3600);
     }
-    match app.store.create_key(b.label.trim(), b.note.trim(), ttl) {
+    match app.store.create_key(label, note, ttl) {
         Ok(k) => {
             tracing::info!("key created id={} label={:?}", k.id, k.label);
             crate::server::json_response(200, serde_json::to_value(&k).unwrap())
         }
-        Err(e) => crate::server::http_error(500, &e.to_string()),
+        Err(e) => {
+            tracing::info!("create key failed: {e}");
+            crate::server::http_error(500, "failed to create key")
+        }
     }
 }
 
 pub async fn handle_pause_key(State(app): State<crate::server::App>, headers: HeaderMap, Path(id): Path<String>, body: axum::body::Bytes) -> Response {
     if let Some(e) = require_admin_state(&app, &headers).await {
         return e;
+    }
+    if body.len() > 64 * 1024 {
+        return crate::server::http_error(400, "bad json");
     }
     #[derive(serde::Deserialize)]
     struct B {
@@ -364,7 +436,10 @@ pub async fn handle_pause_key(State(app): State<crate::server::App>, headers: He
             crate::server::json_response(200, serde_json::json!({"ok": true, "status": status}))
         }
         Ok(false) => crate::server::http_error(404, "not found"),
-        Err(e) => crate::server::http_error(500, &e.to_string()),
+        Err(e) => {
+            tracing::info!("set key status failed: {e}");
+            crate::server::http_error(500, "store unavailable")
+        }
     }
 }
 
@@ -390,24 +465,34 @@ pub async fn handle_search(State(app): State<crate::server::App>, headers: Heade
     if typ.is_empty() {
         typ = "movie".to_string();
     }
+    if typ != "movie" && typ != "series" {
+        return crate::server::http_error(400, "type must be movie or series");
+    }
     if q.is_empty() {
         return crate::server::http_error(400, "q required");
     }
     let (base_id, season, ep) = crate::addon::parse_media_id(&q);
     let mut imdb = String::new();
-    if base_id.starts_with("tt") {
-        imdb = base_id.clone();
-        match app.resolve_meta(&typ, &base_id).await {
-            Ok((title, year)) => {
-                if typ == "series" && season > 0 {
-                    q = format!("{title} S{season:02}E{ep:02}");
-                } else if year > 0 {
-                    q = format!("{title} {year}");
-                } else {
-                    q = title;
-                }
+    if let Some(after_tt) = base_id.strip_prefix("tt") {
+        if !after_tt.is_empty() && after_tt.bytes().all(|b| b.is_ascii_digit()) {
+            if !crate::addon::is_valid_imdb(&base_id) {
+                return crate::server::http_error(400, "invalid imdb id");
             }
-            Err(e) => return crate::server::http_error(502, &format!("meta: {e}")),
+            imdb = base_id.clone();
+            match app.resolve_meta(&typ, &base_id).await {
+                Ok((title, year)) => {
+                    if typ == "series" && season > 0 && ep > 0 {
+                        q = format!("{title} S{season:02}E{ep:02}");
+                    } else if typ == "series" && season > 0 {
+                        q = format!("{title} S{season:02}");
+                    } else if year > 0 {
+                        q = format!("{title} {year}");
+                    } else {
+                        q = title;
+                    }
+                }
+                Err(e) => return crate::server::http_error(502, &format!("meta: {e}")),
+            }
         }
     }
     let (res, errs) = tokio::time::timeout(Duration::from_secs(25), app.search_all(vec![q.clone()], &typ, season, ep, &imdb))
@@ -420,6 +505,9 @@ pub async fn handle_settings(State(app): State<crate::server::App>, headers: Hea
     if let Some(e) = require_admin_state(&app, &headers).await {
         return e;
     }
+    if body.len() > 64 * 1024 {
+        return crate::server::http_error(400, "bad json");
+    }
     #[derive(serde::Deserialize)]
     struct B {
         cache_gb: Option<i64>,
@@ -431,21 +519,39 @@ pub async fn handle_settings(State(app): State<crate::server::App>, headers: Hea
         Err(_) => return crate::server::http_error(400, "bad json"),
     };
     if let Some(v) = b.cache_gb {
-        if (0..=1_000_000).contains(&v) {
-            app.engine.set_max_cache(v.saturating_mul(1_000_000_000));
-            let _ = app.store.set_setting("cache_gb", &v.to_string());
+        if !(0..=1_000_000).contains(&v) {
+            return crate::server::http_error(400, "cache_gb must be between 0 and 1000000");
         }
     }
     if let Some(v) = b.idle_minutes {
-        if v > 0 && v <= 7 * 24 * 60 {
-            app.engine.set_idle_timeout(Duration::from_secs((v as u64) * 60));
-            let _ = app.store.set_setting("idle_minutes", &v.to_string());
+        if !(1..=7 * 24 * 60).contains(&v) {
+            return crate::server::http_error(400, "idle_minutes must be between 1 and 10080");
         }
     }
     if let Some(v) = b.readahead_mb {
-        if v > 0 && v <= 1024 {
-            app.readahead.store(v << 20, std::sync::atomic::Ordering::Relaxed);
-            let _ = app.store.set_setting("readahead_mb", &v.to_string());
+        if !(1..=1024).contains(&v) {
+            return crate::server::http_error(400, "readahead_mb must be between 1 and 1024");
+        }
+    }
+    if let Some(v) = b.cache_gb {
+        app.engine.set_max_cache(v.saturating_mul(1_000_000_000));
+        if let Err(e) = app.store.set_setting("cache_gb", &v.to_string()) {
+            tracing::info!("save cache_gb failed: {e}");
+            return crate::server::http_error(500, "store unavailable");
+        }
+    }
+    if let Some(v) = b.idle_minutes {
+        app.engine.set_idle_timeout(Duration::from_secs((v as u64) * 60));
+        if let Err(e) = app.store.set_setting("idle_minutes", &v.to_string()) {
+            tracing::info!("save idle_minutes failed: {e}");
+            return crate::server::http_error(500, "store unavailable");
+        }
+    }
+    if let Some(v) = b.readahead_mb {
+        app.readahead.store(v << 20, std::sync::atomic::Ordering::Relaxed);
+        if let Err(e) = app.store.set_setting("readahead_mb", &v.to_string()) {
+            tracing::info!("save readahead_mb failed: {e}");
+            return crate::server::http_error(500, "store unavailable");
         }
     }
     handle_overview(State(app), headers).await

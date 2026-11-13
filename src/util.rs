@@ -49,33 +49,56 @@ pub fn human_bytes(n: i64) -> String {
 }
 
 pub fn valid_tracker(raw: &str) -> bool {
+    use std::net::IpAddr;
     let raw = raw.trim();
     let u = match url::Url::parse(raw) {
         Ok(u) => u,
         Err(_) => return false,
     };
-    match u.scheme().to_lowercase().as_str() {
+    match u.scheme() {
         "http" | "https" | "udp" => {}
         _ => return false,
     }
-    let host = match u.host_str() {
-        Some(h) => h.to_lowercase(),
-        None => return false,
-    };
-    if host.is_empty() || host == "localhost" || host.ends_with(".local") || host.ends_with(".internal") || host.ends_with(".localdomain") {
-        return false;
+    match u.host() {
+        Some(url::Host::Ipv4(v4)) => !crate::netguard::is_private_address_ip(&IpAddr::V4(v4)),
+        Some(url::Host::Ipv6(v6)) => !crate::netguard::is_private_address_ip(&IpAddr::V6(v6)),
+        Some(url::Host::Domain(d)) => {
+            if crate::netguard::is_private_hostname(d) {
+                return false;
+            }
+            let host = d.trim_end_matches('.').to_ascii_lowercase();
+            if let Ok(ip) = host.parse::<IpAddr>() {
+                return !crate::netguard::is_private_address_ip(&ip);
+            }
+            // Non-special schemes (udp://) do not invoke WHATWG IPv4 parsing in url::Url,
+            // so octal/hex/short IPv4s like 0x7f.0.0.1 or 127.1 arrive as Domain.
+            if let Ok(http_probe) = url::Url::parse(&format!("http://{host}")) {
+                match http_probe.host() {
+                    Some(url::Host::Ipv4(v4)) => {
+                        return !crate::netguard::is_private_address_ip(&IpAddr::V4(v4));
+                    }
+                    Some(url::Host::Ipv6(v6)) => {
+                        return !crate::netguard::is_private_address_ip(&IpAddr::V6(v6));
+                    }
+                    _ => {}
+                }
+            }
+            host.contains('.')
+        }
+        None => false,
     }
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        return !crate::netguard::is_private_address_ip(&ip);
-    }
-    host.contains('.')
 }
 
 pub fn hosts_equal(got: &str, want: &str, scheme: &str) -> bool {
+    let got = got.trim();
+    let want = want.trim();
+    if got.is_empty() || want.is_empty() {
+        return false;
+    }
     if got.eq_ignore_ascii_case(want) {
         return true;
     }
-    let def = match scheme {
+    let def = match scheme.to_ascii_lowercase().as_str() {
         "https" => "443",
         "http" => "80",
         _ => return false,
@@ -89,13 +112,20 @@ pub fn hosts_equal(got: &str, want: &str, scheme: &str) -> bool {
 
 pub fn range_start(h: &str) -> Option<i64> {
     let h = h.trim();
-    let rest = h.strip_prefix("bytes=")?;
+    if h.len() < 6 || !h[..6].eq_ignore_ascii_case("bytes=") {
+        return None;
+    }
+    let rest = &h[6..];
     let spec = rest.split(',').next().unwrap_or("").trim();
     let dash = spec.find('-')?;
     if dash == 0 {
         return None;
     }
-    spec[..dash].trim().parse::<i64>().ok()
+    let start_str = spec[..dash].trim();
+    if !start_str.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    start_str.parse::<i64>().ok()
 }
 
 #[cfg(test)]
@@ -113,5 +143,37 @@ mod tests {
         assert_eq!(human_bytes(1_500_000_000), "1.5 GB");
         assert_eq!(human_bytes(25_000_000_000), "25.0 GB");
         assert_eq!(human_bytes(1_000_000_000_000), "1.0 TB");
+    }
+
+    #[test]
+    fn test_valid_tracker() {
+        assert!(valid_tracker("udp://tracker.opentrackr.org:1337/announce"));
+        assert!(valid_tracker("https://1.tracker.eu.org:443/announce"));
+        assert!(valid_tracker("http://[2606:4700:4700::1111]:80/announce"));
+        assert!(!valid_tracker("http://127.0.0.1:8080/announce"));
+        assert!(!valid_tracker("http://[::1]:8080/announce"));
+        assert!(!valid_tracker("http://[::ffff:127.0.0.1]:8080/announce"));
+        assert!(!valid_tracker("udp://[::ffff:10.0.0.1]:1337/announce"));
+        assert!(!valid_tracker("http://localhost./announce"));
+        assert!(!valid_tracker("udp://0x7f.0.0.1:1337/announce"));
+        assert!(!valid_tracker("udp://127.1:1337/announce"));
+        assert!(!valid_tracker("udp://0177.0.0.1:1337/announce"));
+        assert!(!valid_tracker("file:///etc/passwd"));
+    }
+
+    #[test]
+    fn test_hosts_equal() {
+        assert!(hosts_equal("example.com:443", "example.com", "https"));
+        assert!(hosts_equal("example.com", "example.com:80", "http"));
+        assert!(!hosts_equal("", "", "http"));
+        assert!(!hosts_equal("example.com:8080", "example.com", "http"));
+    }
+
+    #[test]
+    fn test_range_start() {
+        assert_eq!(range_start("bytes=0-100"), Some(0));
+        assert_eq!(range_start("Bytes=1024-"), Some(1024));
+        assert_eq!(range_start("bytes=-500"), None);
+        assert_eq!(range_start("bytes=+10-20"), None);
     }
 }

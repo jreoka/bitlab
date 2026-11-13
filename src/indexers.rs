@@ -1,3 +1,5 @@
+use crate::server::{de_null_default, de_string_or_num, read_body_limited, MAX_HTTP_BODY};
+use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -126,11 +128,12 @@ pub fn queries_for(kind: &str, queries: &[String]) -> Vec<String> {
     }
 }
 
+static RE_STRIP_EP: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bS\d{2}E\d{2}\b").unwrap());
+static RE_STRIP_YR: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(19|20)\d{2}\b").unwrap());
+
 fn loose_query(q: &str) -> String {
-    let re_ep = Regex::new(r"(?i)\bS\d{2}E\d{2}\b").unwrap();
-    let re_yr = Regex::new(r"\b(19|20)\d{2}\b").unwrap();
-    let s = re_ep.replace_all(q, " ");
-    let s = re_yr.replace_all(&s, " ");
+    let s = RE_STRIP_EP.replace_all(q, " ");
+    let s = RE_STRIP_YR.replace_all(&s, " ");
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -142,52 +145,104 @@ fn trackers_from_magnet(m: &str) -> Vec<String> {
     u.query_pairs().filter(|(k, _)| k == "tr").map(|(_, v)| v.to_string()).collect()
 }
 
+fn decode_btih(raw: &str) -> Option<String> {
+    let s = raw.trim().to_lowercase();
+    if crate::util::valid_infohash(&s) {
+        return Some(s);
+    }
+    if s.len() != 32 {
+        return None;
+    }
+    let mut bytes = [0u8; 20];
+    let mut acc: u32 = 0;
+    let mut bits: u8 = 0;
+    let mut idx = 0usize;
+    for b in s.bytes() {
+        let val = match b {
+            b'a'..=b'z' => b - b'a',
+            b'2'..=b'7' => b - b'2' + 26,
+            _ => return None,
+        };
+        acc = (acc << 5) | u32::from(val);
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            if idx >= 20 {
+                return None;
+            }
+            bytes[idx] = ((acc >> bits) & 0xff) as u8;
+            idx += 1;
+        }
+    }
+    if idx == 20 && bits == 0 {
+        Some(hex::encode(bytes))
+    } else {
+        None
+    }
+}
+
+fn normalize_base_url(custom: &str, default_url: &str) -> anyhow::Result<String> {
+    let raw = if custom.trim().is_empty() {
+        default_url
+    } else {
+        custom.trim()
+    };
+    let u = url::Url::parse(raw).map_err(|_| anyhow::anyhow!("invalid indexer url"))?;
+    match u.scheme() {
+        "http" | "https" => Ok(raw.trim_end_matches('/').to_string()),
+        s => anyhow::bail!("unsupported url scheme {s:?}"),
+    }
+}
+
 // ---------- Torznab ----------
 
 #[derive(Debug, Deserialize)]
 struct TorznabFeed {
-    #[serde(rename = "channel")]
+    #[serde(rename = "channel", default, deserialize_with = "de_null_default")]
     channel: TorznabChannel,
 }
 
 #[derive(Debug, Deserialize, Default)]
 struct TorznabChannel {
-    #[serde(rename = "item", default)]
+    #[serde(rename = "item", default, deserialize_with = "de_null_default")]
     items: Vec<TorznabItem>,
 }
 
 #[derive(Debug, Deserialize, Default)]
 struct TorznabItem {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     title: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     link: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     guid: String,
     #[serde(default)]
     size: Option<String>,
     #[serde(default)]
     enclosure: Option<TorznabEnclosure>,
-    #[serde(rename = "attr", default)]
+    #[serde(rename = "attr", default, deserialize_with = "de_null_default")]
     attrs: Vec<TorznabAttr>,
 }
 
 #[derive(Debug, Deserialize, Default)]
 struct TorznabEnclosure {
-    #[serde(rename = "@url", default)]
+    #[serde(rename = "@url", default, deserialize_with = "de_null_default")]
     url: String,
 }
 
 #[derive(Debug, Deserialize, Default)]
 struct TorznabAttr {
-    #[serde(rename = "@name", default)]
+    #[serde(rename = "@name", default, deserialize_with = "de_null_default")]
     name: String,
-    #[serde(rename = "@value", default)]
+    #[serde(rename = "@value", default, deserialize_with = "de_null_default")]
     value: String,
 }
 
 pub async fn torznab_search(client: &reqwest::Client, ix: &Indexer, q: &str, typ: &str, season: i32, ep: i32, imdb: &str) -> anyhow::Result<Vec<ResultRow>> {
-    let mut base = ix.url.trim_end_matches('/').to_string();
+    if ix.url.trim().is_empty() {
+        anyhow::bail!("empty torznab url");
+    }
+    let mut base = normalize_base_url(&ix.url, "")?;
     if !base.ends_with("/api") {
         base.push_str("/api");
     }
@@ -226,7 +281,7 @@ pub async fn torznab_search(client: &reqwest::Client, ix: &Indexer, q: &str, typ
     if resp.status() != 200 {
         anyhow::bail!("http {}", resp.status());
     }
-    let body = resp.bytes().await?;
+    let body = read_body_limited(resp, MAX_HTTP_BODY).await?;
     let feed: TorznabFeed = quick_xml::de::from_reader(&body[..]).map_err(|e| anyhow::anyhow!("bad xml: {e}"))?;
     let mut out = vec![];
     for it in feed.channel.items {
@@ -245,18 +300,29 @@ pub async fn torznab_search(client: &reqwest::Client, ix: &Indexer, q: &str, typ
                 _ => {}
             }
         }
-        r.size = size_i;
-        if r.infohash.is_empty() {
-            for cand in [&it.enclosure.map(|e| e.url).unwrap_or_default(), &it.link, &it.guid, &r.magnet] {
+        r.size = size_i.max(0);
+        if r.seeders < 0 {
+            r.seeders = 0;
+        }
+        let enc_url = it.enclosure.map(|e| e.url).unwrap_or_default();
+        if r.magnet.is_empty() && enc_url.starts_with("magnet:?") {
+            r.magnet = enc_url.clone();
+        }
+        if r.infohash.is_empty() || !crate::util::valid_infohash(&r.infohash) {
+            r.infohash.clear();
+            for cand in [&enc_url, &it.link, &it.guid, &r.magnet] {
                 if let Some(m) = IH_RE.captures(cand) {
-                    r.infohash = m.get(1).unwrap().as_str().to_lowercase();
-                    break;
+                    if let Some(hex_ih) = decode_btih(m.get(1).unwrap().as_str()) {
+                        r.infohash = hex_ih;
+                        break;
+                    }
                 }
             }
         }
-        if r.infohash.len() != 40 {
+        if !crate::util::valid_infohash(&r.infohash) {
             continue;
         }
+        r.trackers = trackers_from_magnet(&r.magnet);
         out.push(r);
     }
     Ok(out)
@@ -266,32 +332,33 @@ pub async fn torznab_search(client: &reqwest::Client, ix: &Indexer, q: &str, typ
 
 #[derive(Debug, Deserialize)]
 struct ApibayRow {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string_or_num")]
     id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     info_hash: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string_or_num")]
     seeders: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string_or_num")]
     size: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string_or_num")]
     category: String,
 }
 
 pub async fn apibay_search(client: &reqwest::Client, ix: &Indexer, q: &str) -> anyhow::Result<Vec<ResultRow>> {
-    let base = if ix.url.trim().is_empty() { "https://apibay.org".to_string() } else { ix.url.trim_end_matches('/').to_string() };
+    let base = normalize_base_url(&ix.url, "https://apibay.org")?;
     let u = format!("{base}/q.php?q={}&cat=0", url::form_urlencoded::byte_serialize(q.as_bytes()).collect::<String>());
     let resp = client.get(&u).header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) bitlab/1.0").send().await?;
     if resp.status() != 200 {
         anyhow::bail!("http {}", resp.status());
     }
-    let body = resp.bytes().await?;
+    let body = read_body_limited(resp, MAX_HTTP_BODY).await?;
     let raw: Vec<ApibayRow> = serde_json::from_slice(&body).map_err(|e| anyhow::anyhow!("bad json: {e}"))?;
     let mut out = vec![];
     for r in raw {
-        if r.id == "0" || r.name == "No results returned" || r.info_hash.len() != 40 {
+        let ih = r.info_hash.trim().to_lowercase();
+        if r.id == "0" || r.name == "No results returned" || !crate::util::valid_infohash(&ih) {
             continue;
         }
         if !r.category.is_empty() && !r.category.starts_with('2') {
@@ -299,9 +366,9 @@ pub async fn apibay_search(client: &reqwest::Client, ix: &Indexer, q: &str) -> a
         }
         out.push(ResultRow {
             title: r.name,
-            infohash: r.info_hash.to_lowercase(),
-            size: r.size.parse().unwrap_or(0),
-            seeders: r.seeders.parse().unwrap_or(0),
+            infohash: ih,
+            size: r.size.parse::<i64>().unwrap_or(0).max(0),
+            seeders: r.seeders.parse::<i32>().unwrap_or(0).max(0),
             indexer: ix.name.clone(),
             magnet: String::new(),
             score: 0.0,
@@ -342,7 +409,7 @@ pub async fn knaben_search(client: &reqwest::Client, ix: &Indexer, q: &str) -> a
 }
 
 async fn knaben_request(client: &reqwest::Client, ix: &Indexer, q: &str) -> anyhow::Result<Vec<ResultRow>> {
-    let mut base = if ix.url.trim().is_empty() { "https://api.knaben.org".to_string() } else { ix.url.trim_end_matches('/').to_string() };
+    let mut base = normalize_base_url(&ix.url, "https://api.knaben.org")?;
     if !base.ends_with("/v1") {
         base.push_str("/v1");
     }
@@ -363,39 +430,40 @@ async fn knaben_request(client: &reqwest::Client, ix: &Indexer, q: &str) -> anyh
     if resp.status() != 200 {
         anyhow::bail!("http {}", resp.status());
     }
-    let body = resp.bytes().await?;
+    let body = read_body_limited(resp, MAX_HTTP_BODY).await?;
     #[derive(Deserialize)]
     struct Resp {
-        #[serde(default)]
+        #[serde(default, deserialize_with = "de_null_default")]
         hits: Vec<Hit>,
     }
     #[derive(Deserialize)]
     struct Hit {
-        #[serde(default)]
+        #[serde(default, deserialize_with = "de_null_default")]
         title: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "de_null_default")]
         hash: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "de_flex_i64")]
         bytes: i64,
-        #[serde(default, rename = "liveSeeders")]
+        #[serde(default, rename = "liveSeeders", deserialize_with = "de_flex_i32")]
         seeders: i32,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "de_null_default")]
         category: String,
-        #[serde(default, rename = "magnetUrl")]
+        #[serde(default, rename = "magnetUrl", deserialize_with = "de_null_default")]
         magnet: String,
     }
     let out: Resp = serde_json::from_slice(&body).map_err(|e| anyhow::anyhow!("bad json: {e}"))?;
     let skip: std::collections::HashSet<&str> = ["audio", "applications", "apps", "pc", "games", "books", "ebook", "ebooks", "software", "android", "mac", "windows", "xxx", "other"].into_iter().collect();
     let mut res = vec![];
     for h in out.hits {
-        if h.hash.len() != 40 || skip.contains(h.category.to_lowercase().as_str()) {
+        let ih = h.hash.trim().to_lowercase();
+        if !crate::util::valid_infohash(&ih) || skip.contains(h.category.to_lowercase().as_str()) {
             continue;
         }
         res.push(ResultRow {
             title: h.title,
-            infohash: h.hash.to_lowercase(),
-            size: h.bytes,
-            seeders: h.seeders,
+            infohash: ih,
+            size: h.bytes.max(0),
+            seeders: h.seeders.max(0),
             indexer: ix.name.clone(),
             magnet: h.magnet.clone(),
             score: 0.0,
@@ -430,7 +498,7 @@ struct NyaaItem {
 }
 
 pub async fn nyaa_search(client: &reqwest::Client, ix: &Indexer, q: &str) -> anyhow::Result<Vec<ResultRow>> {
-    let mut base = if ix.url.trim().is_empty() { "https://nyaa.si".to_string() } else { ix.url.clone() };
+    let mut base = normalize_base_url(&ix.url, "https://nyaa.si")?;
     let mut cat = "1_2".to_string();
     if let Some(i) = base.find("/c=") {
         cat = base[i + 3..].trim_end_matches('/').to_string();
@@ -444,19 +512,19 @@ pub async fn nyaa_search(client: &reqwest::Client, ix: &Indexer, q: &str) -> any
     if resp.status() != 200 {
         anyhow::bail!("http {}", resp.status());
     }
-    let body = resp.bytes().await?;
+    let body = read_body_limited(resp, MAX_HTTP_BODY).await?;
     let feed: NyaaFeed = quick_xml::de::from_reader(&body[..]).map_err(|e| anyhow::anyhow!("bad xml: {e}"))?;
     let mut out = vec![];
     for it in feed.channel.items {
         let ih = it.infohash.to_lowercase().trim().to_string();
-        if ih.len() != 40 {
+        if !crate::util::valid_infohash(&ih) {
             continue;
         }
         out.push(ResultRow {
             title: it.title.trim().to_string(),
             infohash: ih,
             size: parse_size(&it.size),
-            seeders: it.seeders,
+            seeders: it.seeders.max(0),
             indexer: ix.name.clone(),
             magnet: String::new(),
             score: 0.0,
@@ -470,22 +538,28 @@ pub async fn nyaa_search(client: &reqwest::Client, ix: &Indexer, q: &str) -> any
 
 #[derive(Debug, Deserialize)]
 struct EztvTorrent {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     hash: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     filename: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     title: String,
-    #[serde(default, rename = "magnet_url")]
+    #[serde(default, rename = "magnet_url", deserialize_with = "de_null_default")]
     magnet: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string_or_num")]
     season: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string_or_num")]
     episode: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_flex_i32")]
     seeds: i32,
     #[serde(default, deserialize_with = "de_flex_i64")]
     size_bytes: i64,
+}
+
+fn de_flex_i32<'de, D>(d: D) -> Result<i32, D::Error>
+where D: serde::Deserializer<'de> {
+    let v = de_flex_i64(d)?;
+    Ok(v.clamp(0, i32::MAX as i64) as i32)
 }
 
 fn de_flex_i64<'de, D>(d: D) -> Result<i64, D::Error>
@@ -513,23 +587,26 @@ pub async fn eztv_search(client: &reqwest::Client, ix: &Indexer, typ: &str, seas
     if typ != "series" || imdb.is_empty() {
         return Ok(vec![]);
     }
-    let base = if ix.url.trim().is_empty() { "https://eztvx.to".to_string() } else { ix.url.trim_end_matches('/').to_string() };
+    if !RE_IMDB.is_match(imdb) {
+        anyhow::bail!("bad imdb id");
+    }
+    let base = normalize_base_url(&ix.url, "https://eztvx.to")?;
     let u = format!("{base}/api/get-torrents?limit=100&imdb_id={}", url::form_urlencoded::byte_serialize(imdb.trim_start_matches("tt").as_bytes()).collect::<String>());
     let resp = client.get(&u).header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) bitlab/1.0").header("Accept", "application/json").send().await?;
     if resp.status() != 200 {
         anyhow::bail!("http {}", resp.status());
     }
-    let body = resp.bytes().await?;
+    let body = read_body_limited(resp, MAX_HTTP_BODY).await?;
     #[derive(Deserialize)]
     struct Feed {
-        #[serde(default)]
+        #[serde(default, deserialize_with = "de_null_default")]
         torrents: Vec<EztvTorrent>,
     }
     let feed: Feed = serde_json::from_slice(&body).map_err(|e| anyhow::anyhow!("bad json: {e}"))?;
     let mut res = vec![];
     for t in feed.torrents {
         let ih = t.hash.to_lowercase().trim().to_string();
-        if ih.len() != 40 {
+        if !crate::util::valid_infohash(&ih) {
             continue;
         }
         let s: i32 = t.season.trim().parse().unwrap_or(-1);
@@ -552,8 +629,8 @@ pub async fn eztv_search(client: &reqwest::Client, ix: &Indexer, typ: &str, seas
         res.push(ResultRow {
             title,
             infohash: ih,
-            size: t.size_bytes,
-            seeders: t.seeds,
+            size: t.size_bytes.max(0),
+            seeders: t.seeds.max(0),
             indexer: ix.name.clone(),
             magnet: t.magnet.clone(),
             score: 0.0,
@@ -567,28 +644,28 @@ pub async fn eztv_search(client: &reqwest::Client, ix: &Indexer, typ: &str, seas
 
 #[derive(Debug, Deserialize)]
 struct YtsTorrent {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     hash: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     quality: String,
-    #[serde(default, rename = "type")]
+    #[serde(default, rename = "type", deserialize_with = "de_null_default")]
     typ: String,
-    #[serde(default, rename = "video_codec")]
+    #[serde(default, rename = "video_codec", deserialize_with = "de_null_default")]
     codec: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_flex_i32")]
     seeds: i32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_flex_i64")]
     size_bytes: i64,
 }
 #[derive(Debug, Deserialize)]
 struct YtsMovie {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     title: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_flex_i32")]
     year: i32,
-    #[serde(default, rename = "imdb_code")]
+    #[serde(default, rename = "imdb_code", deserialize_with = "de_null_default")]
     imdb: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     torrents: Vec<YtsTorrent>,
 }
 
@@ -603,22 +680,22 @@ pub async fn yts_search(client: &reqwest::Client, ix: &Indexer, typ: &str, imdb:
     if term.is_empty() {
         return Ok(vec![]);
     }
-    let base = if ix.url.trim().is_empty() { "https://yts.lt".to_string() } else { ix.url.trim_end_matches('/').to_string() };
+    let base = normalize_base_url(&ix.url, "https://yts.lt")?;
     let u = format!("{base}/api/v2/list_movies.json?query_term={}&limit=20&sort_by=seeds&order_by=desc",
         url::form_urlencoded::byte_serialize(term.as_bytes()).collect::<String>());
     let resp = client.get(&u).header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) bitlab/1.0").header("Accept", "application/json").send().await?;
     if resp.status() != 200 {
         anyhow::bail!("http {}", resp.status());
     }
-    let body = resp.bytes().await?;
+    let body = read_body_limited(resp, MAX_HTTP_BODY).await?;
     #[derive(Deserialize)]
     struct Feed {
-        #[serde(default)]
+        #[serde(default, deserialize_with = "de_null_default")]
         data: YtsData,
     }
     #[derive(Deserialize, Default)]
     struct YtsData {
-        #[serde(default)]
+        #[serde(default, deserialize_with = "de_null_default")]
         movies: Vec<YtsMovie>,
     }
     let feed: Feed = serde_json::from_slice(&body).map_err(|e| anyhow::anyhow!("bad json: {e}"))?;
@@ -629,7 +706,7 @@ pub async fn yts_search(client: &reqwest::Client, ix: &Indexer, typ: &str, imdb:
         }
         for t in &m.torrents {
             let ih = t.hash.to_lowercase().trim().to_string();
-            if ih.len() != 40 {
+            if !crate::util::valid_infohash(&ih) {
                 continue;
             }
             let mut src = t.typ.to_uppercase();
@@ -648,8 +725,8 @@ pub async fn yts_search(client: &reqwest::Client, ix: &Indexer, typ: &str, imdb:
             res.push(ResultRow {
                 title: bits.join(" "),
                 infohash: ih,
-                size: t.size_bytes,
-                seeders: t.seeds,
+                size: t.size_bytes.max(0),
+                seeders: t.seeds.max(0),
                 indexer: ix.name.clone(),
                 magnet: String::new(),
                 score: 0.0,
@@ -664,27 +741,25 @@ pub async fn yts_search(client: &reqwest::Client, ix: &Indexer, typ: &str, imdb:
 
 #[derive(Debug, Deserialize)]
 struct ToshoEntry {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     title: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     torrent_name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     info_hash: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     magnet: String,
-    #[serde(default, rename = "magnet_uri")]
+    #[serde(default, rename = "magnet_uri", deserialize_with = "de_null_default")]
     magnet_uri: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_flex_i32")]
     seeders: i32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_flex_i64")]
     total_size: i64,
 }
 
 fn tosho_title_query(q: &str) -> String {
-    let re_ep = Regex::new(r"(?i)\bS\d{2}E\d{2}\b").unwrap();
-    let re_yr = Regex::new(r"\b(19|20)\d{2}\b").unwrap();
-    let s = re_ep.replace_all(q, " ");
-    let s = re_yr.replace_all(&s, " ");
+    let s = RE_STRIP_EP.replace_all(q, " ");
+    let s = RE_STRIP_YR.replace_all(&s, " ");
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -694,21 +769,22 @@ fn contains_word(hay: &str, needle: &str) -> bool {
     if n.is_empty() {
         return false;
     }
-    let hb = h.as_bytes();
-    let nb = n.as_bytes();
     let mut start = 0;
-    while start + nb.len() <= hb.len() {
-        if let Some(pos) = h[start..].find(&n) {
-            let i = start + pos;
-            let before = i == 0 || !hb[i - 1].is_ascii_alphanumeric();
-            let after = i + nb.len() == hb.len() || !hb[i + nb.len()].is_ascii_alphanumeric();
-            if before && after {
-                return true;
-            }
-            start = i + 1;
-        } else {
+    while start < h.len() {
+        let Some(pos) = h[start..].find(&n) else {
             return false;
+        };
+        let i = start + pos;
+        let end = i + n.len();
+        let before = h[..i].chars().next_back().is_none_or(|c| !c.is_alphanumeric());
+        let after = h[end..].chars().next().is_none_or(|c| !c.is_alphanumeric());
+        if before && after {
+            return true;
         }
+        start = match h[i..].chars().next() {
+            Some(c) => i + c.len_utf8(),
+            None => break,
+        };
     }
     false
 }
@@ -741,7 +817,7 @@ fn tosho_relevant(q: &str, title: &str) -> bool {
 }
 
 pub async fn animetosho_search(client: &reqwest::Client, ix: &Indexer, q: &str) -> anyhow::Result<Vec<ResultRow>> {
-    let base = if ix.url.trim().is_empty() { "https://animetosho.org".to_string() } else { ix.url.trim_end_matches('/').to_string() };
+    let base = normalize_base_url(&ix.url, "https://animetosho.org")?;
     let mut term = tosho_title_query(q);
     if term.is_empty() {
         term = q.to_string();
@@ -751,16 +827,12 @@ pub async fn animetosho_search(client: &reqwest::Client, ix: &Indexer, q: &str) 
     if resp.status() != 200 {
         anyhow::bail!("http {}", resp.status());
     }
-    let body = resp.bytes().await?;
-    // Cap at 16MB like Go
-    if body.len() > 16 * 1024 * 1024 {
-        anyhow::bail!("response too large");
-    }
+    let body = read_body_limited(resp, MAX_HTTP_BODY).await?;
     let feed: Vec<ToshoEntry> = serde_json::from_slice(&body).map_err(|e| anyhow::anyhow!("bad json: {e}"))?;
     let mut res = vec![];
     for e in feed {
         let ih = e.info_hash.to_lowercase().trim().to_string();
-        if ih.len() != 40 {
+        if !crate::util::valid_infohash(&ih) {
             continue;
         }
         let mut title = e.torrent_name.trim().to_string();
@@ -777,8 +849,8 @@ pub async fn animetosho_search(client: &reqwest::Client, ix: &Indexer, q: &str) 
         res.push(ResultRow {
             title,
             infohash: ih,
-            size: e.total_size,
-            seeders: e.seeders,
+            size: e.total_size.max(0),
+            seeders: e.seeders.max(0),
             indexer: ix.name.clone(),
             magnet: mag.clone(),
             score: 0.0,
@@ -790,30 +862,29 @@ pub async fn animetosho_search(client: &reqwest::Client, ix: &Indexer, q: &str) 
 
 // ---------- torrentio ----------
 
-static RE_TIO_SEEDS: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| Regex::new(r"👤\s*(\d+)").unwrap());
-static RE_TIO_SIZE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| Regex::new(r"💾\s*([0-9]+(?:\.[0-9]+)?\s*[KMGT]?i?B)").unwrap());
-static RE_TIO_SRC: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| Regex::new(r"⚙️\s*([^\n]+)").unwrap());
-static RE_RES_TOKEN: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| Regex::new(r"(?i)\b(2160p|1080p|720p|480p|4k|uhd)\b").unwrap());
-static RE_LATIN_WORD: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| Regex::new(r"[A-Za-z]{4,}").unwrap());
-static RE_HASH40: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| Regex::new(r"^[0-9a-f]{40}$").unwrap());
-static RE_IMDB: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| Regex::new(r"^tt[0-9]{6,10}$").unwrap());
+static RE_TIO_SEEDS: Lazy<Regex> = Lazy::new(|| Regex::new(r"👤\s*(\d+)").unwrap());
+static RE_TIO_SIZE: Lazy<Regex> = Lazy::new(|| Regex::new(r"💾\s*([0-9]+(?:\.[0-9]+)?\s*[KMGT]?i?B)").unwrap());
+static RE_TIO_SRC: Lazy<Regex> = Lazy::new(|| Regex::new(r"⚙️\s*([^\n]+)").unwrap());
+static RE_RES_TOKEN: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\b(2160p|1080p|720p|480p|4k|uhd)\b").unwrap());
+static RE_LATIN_WORD: Lazy<Regex> = Lazy::new(|| Regex::new(r"[A-Za-z]{2,}").unwrap());
+static RE_IMDB: Lazy<Regex> = Lazy::new(|| Regex::new(r"^tt[0-9]{5,12}$").unwrap());
 
 #[derive(Debug, Deserialize)]
 struct TorrentioStream {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     title: String,
-    #[serde(default, rename = "infoHash")]
+    #[serde(default, rename = "infoHash", deserialize_with = "de_null_default")]
     infohash: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     sources: Vec<String>,
-    #[serde(default, rename = "behaviorHints")]
+    #[serde(default, rename = "behaviorHints", deserialize_with = "de_null_default")]
     behavior_hints: TorrentioHints,
 }
 #[derive(Debug, Deserialize, Default)]
 struct TorrentioHints {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     filename: String,
 }
 
@@ -826,36 +897,39 @@ fn torrentio_quality(name: &str) -> String {
 }
 
 pub async fn torrentio_search(client: &reqwest::Client, ix: &Indexer, typ: &str, season: i32, ep: i32, imdb: &str) -> anyhow::Result<Vec<ResultRow>> {
+    if typ != "movie" && typ != "series" {
+        anyhow::bail!("bad type");
+    }
     if !RE_IMDB.is_match(imdb) {
         anyhow::bail!("bad imdb id");
     }
-    if imdb.is_empty() || (typ == "series" && season <= 0) {
+    if typ == "series" && season <= 0 {
         return Ok(vec![]);
     }
-    let base = if ix.url.trim().is_empty() { "https://torrentio.strem.fun".to_string() } else { ix.url.trim_end_matches('/').to_string() };
+    let base = normalize_base_url(&ix.url, "https://torrentio.strem.fun")?;
     let id = if typ == "series" { format!("{imdb}:{season}:{ep}") } else { imdb.to_string() };
     let u = format!("{base}/stream/{typ}/{id}.json");
-    let resp = client.get(&u).header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36").send().await?;
+    let resp = client.get(&u)
+        .header("Accept", "application/json")
+        .header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+        .send().await?;
     if resp.status() == 404 {
         return Ok(vec![]);
     }
     if resp.status() != 200 {
         anyhow::bail!("http {}", resp.status());
     }
-    let body = resp.bytes().await?;
-    if body.len() > 16 * 1024 * 1024 {
-        anyhow::bail!("response too large");
-    }
+    let body = read_body_limited(resp, MAX_HTTP_BODY).await?;
     #[derive(Deserialize)]
     struct Payload {
-        #[serde(default)]
+        #[serde(default, deserialize_with = "de_null_default")]
         streams: Vec<TorrentioStream>,
     }
     let payload: Payload = serde_json::from_slice(&body).map_err(|e| anyhow::anyhow!("bad json: {e}"))?;
     let mut out = vec![];
     for st in payload.streams {
         let ih = st.infohash.to_lowercase().trim().to_string();
-        if !RE_HASH40.is_match(&ih) {
+        if !crate::util::valid_infohash(&ih) {
             continue;
         }
         let lines: Vec<&str> = st.title.split('\n').collect();
@@ -909,5 +983,32 @@ mod tests {
         assert_eq!(parse_size("2.5 GiB"), (2.5 * 1024.0 * 1024.0 * 1024.0) as i64);
         assert_eq!(parse_size("1 TB"), 1_000_000_000_000);
         assert_eq!(parse_size("1 TiB"), 1024_i64 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_contains_word_utf8_safe() {
+        assert!(!contains_word("SPY×FAMILY S01E01", "×"));
+        assert!(contains_word("×foo SPY×FAMILY bar", "family"));
+        assert!(!contains_word("résumé guide", "sum"));
+        assert!(contains_word("[SubsPlease] Frieren - 01 (1080p)", "frieren"));
+    }
+
+    #[test]
+    fn test_decode_btih_hex_and_base32() {
+        let hex40 = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(decode_btih(hex40).as_deref(), Some(hex40));
+        // 32 'A' base32 -> 20 zero bytes -> 40 zeros
+        let b32 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        assert_eq!(decode_btih(b32).as_deref(), Some("0000000000000000000000000000000000000000"));
+        assert!(decode_btih("too-short").is_none());
+    }
+
+    #[test]
+    fn test_tosho_null_fields_deserialize() {
+        let raw = r#"[{"title":null,"torrent_name":"Show - 01 [1080p].mkv","info_hash":"0123456789abcdef0123456789abcdef01234567","magnet":null,"magnet_uri":null,"seeders":null,"total_size":null}]"#;
+        let parsed: Vec<ToshoEntry> = serde_json::from_str(raw).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].seeders, 0);
+        assert_eq!(parsed[0].total_size, 0);
     }
 }

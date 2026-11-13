@@ -1,8 +1,9 @@
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::HeaderMap;
 use axum::response::Response;
-use std::collections::HashMap;
 use futures::StreamExt;
+use std::collections::HashMap;
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 
 #[derive(Debug, serde::Serialize)]
@@ -16,8 +17,6 @@ pub(crate) struct Manifest {
     #[serde(rename = "idPrefixes")]
     id_prefixes: Vec<String>,
     catalogs: Vec<serde_json::Value>,
-    #[serde(rename = "behaviorHints", skip_serializing_if = "Option::is_none")]
-    behavior_h: Option<serde_json::Value>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -40,22 +39,21 @@ pub(crate) fn manifest_for(label: &str, key_id: &str) -> Manifest {
         types: vec!["movie".to_string(), "series".to_string()],
         id_prefixes: vec!["tt".to_string()],
         catalogs: vec![],
-        behavior_h: None,
     }
 }
 
-async fn auth_key(app: &crate::server::App, token: &str) -> Result<crate::store::Key, Response> {
+async fn auth_key(app: &crate::server::App, token: &str) -> Result<crate::store::Key, Box<Response>> {
     if token.is_empty() {
-        return Err(crate::server::http_error(401, "missing manifest key"));
+        return Err(Box::new(crate::server::http_error(401, "missing manifest key")));
     }
     match app.store.key_by_token(token) {
         Ok(k) => {
             app.store.touch_key(&k.id);
             Ok(k)
         }
-        Err(crate::store::KeyLookup::NotFound) => Err(crate::server::http_error(401, "unknown manifest key")),
-        Err(crate::store::KeyLookup::Paused) => Err(crate::server::http_error(403, "this manifest key is paused")),
-        Err(crate::store::KeyLookup::Expired) => Err(crate::server::http_error(410, "this manifest key expired")),
+        Err(crate::store::KeyLookup::NotFound) => Err(Box::new(crate::server::http_error(401, "unknown manifest key"))),
+        Err(crate::store::KeyLookup::Paused) => Err(Box::new(crate::server::http_error(403, "this manifest key is paused"))),
+        Err(crate::store::KeyLookup::Expired) => Err(Box::new(crate::server::http_error(410, "this manifest key expired"))),
     }
 }
 
@@ -65,7 +63,7 @@ pub async fn handle_manifest(
 ) -> Response {
     let k = match auth_key(&app, &token).await {
         Ok(k) => k,
-        Err(e) => return e,
+        Err(e) => return *e,
     };
     let m = manifest_for(&k.label, &k.id);
     let body = serde_json::to_string(&m).unwrap();
@@ -91,21 +89,60 @@ pub fn parse_media_id(id: &str) -> (String, i32, i32) {
     (base, season, ep)
 }
 
+pub(crate) fn is_valid_imdb(s: &str) -> bool {
+    s.starts_with("tt")
+        && (7..=14).contains(&s.len())
+        && s.as_bytes()[2..].iter().all(|b| b.is_ascii_digit())
+}
+
+fn sanitize_filename(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '"' | '\\' | '/' | ';') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() {
+        "video".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn release_label(title: &str) -> (String, String) {
-    let q = if regex::Regex::new(r"(?i)\b(2160p|4k|uhd)\b").unwrap().is_match(title) {
+    static RE_4K: OnceLock<regex::Regex> = OnceLock::new();
+    static RE_1080: OnceLock<regex::Regex> = OnceLock::new();
+    static RE_720: OnceLock<regex::Regex> = OnceLock::new();
+    static RE_REMUX: OnceLock<regex::Regex> = OnceLock::new();
+    static RE_BLURAY: OnceLock<regex::Regex> = OnceLock::new();
+    static RE_WEB: OnceLock<regex::Regex> = OnceLock::new();
+
+    let re_4k = RE_4K.get_or_init(|| regex::Regex::new(r"(?i)\b(2160p|4k|uhd)\b").unwrap());
+    let re_1080 = RE_1080.get_or_init(|| regex::Regex::new(r"(?i)\b1080p\b").unwrap());
+    let re_720 = RE_720.get_or_init(|| regex::Regex::new(r"(?i)\b720p\b").unwrap());
+    let re_remux = RE_REMUX.get_or_init(|| regex::Regex::new(r"(?i)\bremux\b").unwrap());
+    let re_bluray = RE_BLURAY.get_or_init(|| regex::Regex::new(r"(?i)\b(bluray|blu-ray|bdrip)\b").unwrap());
+    let re_web = RE_WEB.get_or_init(|| regex::Regex::new(r"(?i)\b(web-dl|webrip|web)\b").unwrap());
+
+    let q = if re_4k.is_match(title) {
         "2160p"
-    } else if regex::Regex::new(r"(?i)\b1080p\b").unwrap().is_match(title) {
+    } else if re_1080.is_match(title) {
         "1080p"
-    } else if regex::Regex::new(r"(?i)\b720p\b").unwrap().is_match(title) {
+    } else if re_720.is_match(title) {
         "720p"
     } else {
         "SD"
     };
-    let src = if regex::Regex::new(r"(?i)\bremux\b").unwrap().is_match(title) {
+    let src = if re_remux.is_match(title) {
         "REMUX"
-    } else if regex::Regex::new(r"(?i)\b(bluray|blu-ray|bdrip)\b").unwrap().is_match(title) {
+    } else if re_bluray.is_match(title) {
         "BluRay"
-    } else if regex::Regex::new(r"(?i)\b(web-dl|webrip|web)\b").unwrap().is_match(title) {
+    } else if re_web.is_match(title) {
         "WEB"
     } else {
         ""
@@ -129,7 +166,7 @@ pub async fn handle_stream(
 ) -> Response {
     let k = match auth_key(&app, &token).await {
         Ok(k) => k,
-        Err(e) => return e,
+        Err(e) => return *e,
     };
     let raw_id = id.trim_end_matches(".json").to_string();
     let (base_id, mut season, mut ep) = parse_media_id(&raw_id);
@@ -137,7 +174,10 @@ pub async fn handle_stream(
     if typ != "movie" && typ != "series" {
         return crate::server::json_response(200, serde_json::json!({"streams": []}));
     }
-    if typ == "series" && season <= 0 {
+    if !is_valid_imdb(&base_id) {
+        return crate::server::json_response(200, serde_json::json!({"streams": []}));
+    }
+    if typ == "series" && (season <= 0 || ep <= 0) {
         tracing::info!("stream {raw_id:?}: no season/episode to match, refusing to guess");
         return crate::server::json_response(200, serde_json::json!({"streams": []}));
     }
@@ -240,7 +280,7 @@ pub async fn handle_stream(
 
     // base url
     let host = headers.get("host").and_then(|v| v.to_str().ok()).unwrap_or("localhost");
-    let tls = false;
+    let tls = crate::admin::is_https(&app, &headers);
     let base = app.base_url(host, tls);
 
     let mut streams = vec![];
@@ -264,11 +304,6 @@ pub async fn handle_stream(
                 }
             }
             if !clean.is_empty() {
-                let n = app.hint_n.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                if n > 8192 {
-                    app.hints.clear();
-                    app.hint_n.store(0, std::sync::atomic::Ordering::Relaxed);
-                }
                 app.hints.insert(ih.clone(), clean);
             }
         }
@@ -321,18 +356,18 @@ pub async fn handle_play(
     State(app): State<crate::server::App>,
     headers: HeaderMap,
     Path((token, ih)): Path<(String, String)>,
-    Query(q): Query<HashMap<String, String>>,
+    RawQuery(raw_q): RawQuery,
 ) -> Response {
-    handle_play_inner(app, headers, token, ih, q).await
+    handle_play_inner(app, headers, token, ih, raw_q).await
 }
 
 pub async fn handle_play_file(
     State(app): State<crate::server::App>,
     headers: HeaderMap,
     Path((token, ih, _fname)): Path<(String, String, String)>,
-    Query(q): Query<HashMap<String, String>>,
+    RawQuery(raw_q): RawQuery,
 ) -> Response {
-    handle_play_inner(app, headers, token, ih, q).await
+    handle_play_inner(app, headers, token, ih, raw_q).await
 }
 
 async fn handle_play_inner(
@@ -340,12 +375,24 @@ async fn handle_play_inner(
     headers: HeaderMap,
     token: String,
     ih_raw: String,
-    q: HashMap<String, String>,
+    raw_q: Option<String>,
 ) -> Response {
     let k = match auth_key(&app, &token).await {
         Ok(k) => k,
-        Err(e) => return e,
+        Err(e) => return *e,
     };
+    let mut q: HashMap<String, String> = HashMap::new();
+    let mut titles: Vec<String> = Vec::new();
+    for (key, val) in url::form_urlencoded::parse(raw_q.as_deref().unwrap_or("").as_bytes()) {
+        if key == "t" {
+            let v = val.into_owned();
+            if !v.is_empty() && titles.len() < 8 {
+                titles.push(v);
+            }
+        } else {
+            q.insert(key.into_owned(), val.into_owned());
+        }
+    }
     let ih = ih_raw.to_lowercase();
     if !crate::util::valid_infohash(&ih) {
         return crate::server::http_error(400, "bad infohash");
@@ -386,11 +433,7 @@ async fn handle_play_inner(
         Err(_) => return crate::server::http_error(504, "waiting for metadata: unavailable"),
     };
     app.engine.record_media(&handle).await;
-    // titles for movie
-    let titles: Vec<String> = match q.get("t") {
-        Some(v) => vec![v.clone()],
-        None => vec![],
-    };
+    // titles for movie already extracted cleanly from raw query parameters
     let idx_res = if !titles.is_empty() && ep_wanted == 0 {
         crate::relevance::choose_file_for_title(&paths, &sizes, want_idx, &titles)
     } else {
@@ -408,24 +451,42 @@ async fn handle_play_inner(
     };
     let rel = paths[idx].clone();
     let file_len = sizes[idx];
-    // range past end check
-    if let Some(rh) = headers.get("range").and_then(|v| v.to_str().ok()) {
-        if let Some(start) = crate::util::range_start(rh) {
-            if start >= file_len {
-                tracing::info!("play {}: range starts at {start} but this file is {} — the player is holding an offset from another release", &ih[..8.min(ih.len())], crate::util::human_bytes(file_len));
+
+    // Range handling BEFORE incrementing active readers or waking piece streaming
+    let range_hdr = headers.get("range").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let (start, end, status, content_len) = match parse_range(&range_hdr, file_len) {
+        RangeSpec::Unsatisfiable => {
+            if let Some(start) = crate::util::range_start(&range_hdr) {
+                if start >= file_len {
+                    tracing::info!(
+                        "play {}: range starts at {start} but this file is {} — the player is holding an offset from another release",
+                        &ih[..8.min(ih.len())],
+                        crate::util::human_bytes(file_len)
+                    );
+                }
             }
+            return Response::builder()
+                .status(416)
+                .header("content-range", format!("bytes */{}", file_len.max(0)))
+                .header("accept-ranges", "bytes")
+                .header("cache-control", "no-store")
+                .body(axum::body::Body::empty())
+                .unwrap();
         }
-    }
+        RangeSpec::Partial(s, e) => (s, e, 206u16, e - s + 1),
+        RangeSpec::Full => (0, (file_len - 1).max(0), 200u16, file_len.max(0)),
+    };
 
     let fname = std::path::Path::new(&rel).file_name().and_then(|s| s.to_str()).unwrap_or("video");
     let mut ct = mime_guess::from_path(fname).first_raw().unwrap_or("video/mp4").to_string();
-    let disp_name = fname.to_string();
+    let disp_name = sanitize_filename(fname);
     if !ct.starts_with("video/") {
         ct = "video/mp4".to_string();
     }
 
     // readers accounting
-    app.engine.inc_reader(&ih).await;
+    let reader_id = app.engine.inc_reader(&ih).await;
+    let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let app2 = app.clone();
     let ih2 = ih.clone();
 
@@ -441,20 +502,19 @@ async fn handle_play_inner(
     let mut stream = match handle.stream(idx).await {
         Ok(s) => s,
         Err(e) => {
-            app.engine.dec_reader(&ih).await;
+            closed.store(true, std::sync::atomic::Ordering::SeqCst);
+            app.engine.dec_reader(&ih, reader_id).await;
             return crate::server::http_error(500, &format!("stream: {e}"));
         }
     };
 
-    // Range handling
-    let range_hdr = headers.get("range").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
-    let (start, end, status) = parse_range(&range_hdr, file_len);
-    let content_len = end - start + 1;
-
     use tokio::io::AsyncSeekExt;
     if start > 0 {
         if let Err(e) = stream.seek(std::io::SeekFrom::Start(start as u64)).await {
+            closed.store(true, std::sync::atomic::Ordering::SeqCst);
+            app.engine.dec_reader(&ih, reader_id).await;
             tracing::warn!("stream seek to {start}: {e}");
+            return crate::server::http_error(500, &format!("stream seek: {e}"));
         }
     }
     let limited = tokio::io::AsyncReadExt::take(stream, content_len as u64);
@@ -466,6 +526,7 @@ async fn handle_play_inner(
     let written2 = written.clone();
     let app3 = app.clone();
     let ih3 = ih.clone();
+    let closed2 = closed.clone();
     let last_touch = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(
         SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0),
     ));
@@ -474,26 +535,25 @@ async fn handle_play_inner(
         if let Ok(b) = &chunk {
             written2.fetch_add(b.len() as i64, std::sync::atomic::Ordering::Relaxed);
             let now_s = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-            if now_s - last_touch2.load(std::sync::atomic::Ordering::Relaxed) >= 2 {
+            if !closed2.load(std::sync::atomic::Ordering::SeqCst)
+                && now_s - last_touch2.load(std::sync::atomic::Ordering::Relaxed) >= 2
+            {
                 last_touch2.store(now_s, std::sync::atomic::Ordering::Relaxed);
                 let a = app3.clone();
                 let ihc = ih3.clone();
-                tokio::spawn(async move { a.engine.touch_now(&ihc).await; });
+                let cl = closed2.clone();
+                tokio::spawn(async move { a.engine.touch_reader(&ihc, reader_id, &cl).await; });
             }
         }
         chunk.map_err(std::io::Error::other)
     });
 
-    // Decrement reader when stream ends: spawn watchdog that polls? Use Drop via extension?
-    // We use a background task that waits until response is done is hard without body callbacks.
-    // Instead, decrement after content_len bytes served OR after idle timeout. Simplest: decrement in a task after estimated time?
-    // Correct approach: use `async_stream` with finally. We'll wrap with a custom stream that decrements on last poll.
-    // For simplicity, spawn a task that decrements after (content_len / 1MB * 2s + 60s) — but that leaks readers.
-    // Better: use Stream impl with Drop.
     struct GuardStream<S> {
         inner: S,
         app: crate::server::App,
         ih: String,
+        reader_id: u64,
+        closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
         key_id: String,
         idx: usize,
         range: String,
@@ -511,14 +571,16 @@ async fn handle_play_inner(
                 std::task::Poll::Ready(None) => {
                     if !this.done {
                         this.done = true;
+                        this.closed.store(true, std::sync::atomic::Ordering::SeqCst);
                         let app = this.app.clone();
                         let ih = this.ih.clone();
+                        let reader_id = this.reader_id;
                         let key_id = this.key_id.clone();
                         let idx = this.idx;
                         let range = this.range.clone();
                         let written = this.written.load(std::sync::atomic::Ordering::Relaxed);
                         tokio::spawn(async move {
-                            app.engine.dec_reader(&ih).await;
+                            app.engine.dec_reader(&ih, reader_id).await;
                             app.store.add_key_bytes(&key_id, written);
                             tracing::info!("play {} key={key_id} file={idx} served={} range={range:?}", &ih[..8.min(ih.len())], crate::util::human_bytes(written));
                         });
@@ -542,26 +604,28 @@ async fn handle_play_inner(
         inner: Box::pin(s),
         app: app2,
         ih: ih2,
+        reader_id,
+        closed,
         key_id: k.id.clone(),
         idx,
         range: range_hdr.clone(),
         written,
         done: false,
     };
-    // Also handle client disconnect via request body? Axum will drop stream on disconnect, but our Drop won't run unless polled to None.
-    // Add Drop impl to decrement if not done.
     impl<S> Drop for GuardStream<S> {
         fn drop(&mut self) {
             if !self.done {
                 self.done = true;
+                self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
                 let app = self.app.clone();
                 let ih = self.ih.clone();
+                let reader_id = self.reader_id;
                 let key_id = self.key_id.clone();
                 let idx = self.idx;
                 let range = self.range.clone();
                 let written = self.written.load(std::sync::atomic::Ordering::Relaxed);
                 tokio::spawn(async move {
-                    app.engine.dec_reader(&ih).await;
+                    app.engine.dec_reader(&ih, reader_id).await;
                     if written > 0 {
                         app.store.add_key_bytes(&key_id, written);
                     }
@@ -574,7 +638,7 @@ async fn handle_play_inner(
     let body = axum::body::Body::from_stream(guarded);
     let mut builder = Response::builder()
         .header("content-type", ct)
-        .header("content-disposition", format!("inline; filename=\"{}\"", disp_name.replace('"', "_")))
+        .header("content-disposition", format!("inline; filename=\"{disp_name}\""))
         .header("accept-ranges", "bytes")
         .header("cache-control", "no-store")
         .header("x-bitlab-file", idx.to_string());
@@ -583,43 +647,69 @@ async fn handle_play_inner(
             .header("content-range", format!("bytes {start}-{end}/{file_len}"))
             .header("content-length", content_len.to_string());
     } else {
-        builder = builder.status(200).header("content-length", file_len.to_string());
+        builder = builder.status(200).header("content-length", file_len.max(0).to_string());
     }
     builder.body(body).unwrap()
 }
 
-fn parse_range(hdr: &str, size: i64) -> (i64, i64, u16) {
+#[derive(Debug, PartialEq, Eq)]
+enum RangeSpec {
+    Full,
+    Partial(i64, i64),
+    Unsatisfiable,
+}
+
+fn parse_range(hdr: &str, size: i64) -> RangeSpec {
     let hdr = hdr.trim();
-    if !hdr.starts_with("bytes=") {
-        return (0, size - 1, 200);
+    if hdr.is_empty() || hdr.len() < 6 || !hdr[..6].eq_ignore_ascii_case("bytes=") {
+        return RangeSpec::Full;
     }
-    let spec = hdr.trim_start_matches("bytes=").split(',').next().unwrap_or("").trim();
-    if let Some(stripped) = spec.strip_prefix('-') {
-        // suffix: last N bytes
-        if let Ok(n) = stripped.parse::<i64>() {
-            if n <= 0 {
-                return (0, size - 1, 200);
-            }
-            let start = (size - n).max(0);
-            return (start, size - 1, 206);
-        }
-        return (0, size - 1, 200);
-    }
-    let parts: Vec<&str> = spec.split('-').collect();
-    if parts.len() != 2 {
-        return (0, size - 1, 200);
-    }
-    let start: i64 = parts[0].trim().parse().unwrap_or(0);
-    let end: i64 = if parts[1].trim().is_empty() {
-        size - 1
-    } else {
-        parts[1].trim().parse().unwrap_or(size - 1)
+    let spec = hdr[6..].split(',').next().unwrap_or("").trim();
+    let Some((start_s, end_s)) = spec.split_once('-') else {
+        return RangeSpec::Full;
     };
-    if start >= size {
-        return (start, size - 1, 206);
+    let start_s = start_s.trim();
+    let end_s = end_s.trim();
+
+    if start_s.is_empty() {
+        if end_s.is_empty() || !end_s.bytes().all(|b| b.is_ascii_digit()) {
+            return RangeSpec::Full;
+        }
+        let n = end_s.parse::<u64>().unwrap_or(u64::MAX).min(i64::MAX as u64) as i64;
+        if n <= 0 || size <= 0 {
+            return RangeSpec::Unsatisfiable;
+        }
+        let start = size.saturating_sub(n).max(0);
+        return RangeSpec::Partial(start, size - 1);
     }
-    let end = end.min(size - 1).max(start);
-    (start, end, 206)
+
+    if !start_s.bytes().all(|b| b.is_ascii_digit()) {
+        return RangeSpec::Full;
+    }
+    let start = match start_s.parse::<i64>() {
+        Ok(v) => v,
+        Err(_) => return RangeSpec::Unsatisfiable,
+    };
+
+    if end_s.is_empty() {
+        if size <= 0 || start >= size {
+            return RangeSpec::Unsatisfiable;
+        }
+        return RangeSpec::Partial(start, size - 1);
+    }
+
+    if !end_s.bytes().all(|b| b.is_ascii_digit()) {
+        return RangeSpec::Full;
+    }
+    let raw_end = end_s.parse::<u64>().unwrap_or(u64::MAX).min(i64::MAX as u64) as i64;
+    if start > raw_end {
+        return RangeSpec::Full;
+    }
+    if size <= 0 || start >= size {
+        return RangeSpec::Unsatisfiable;
+    }
+    let end = raw_end.min(size - 1);
+    RangeSpec::Partial(start, end)
 }
 
 #[cfg(test)]
@@ -633,5 +723,41 @@ mod tests {
         assert!(res.len() <= 120);
         // Ensure valid UTF-8 slice and doesn't panic
         assert_eq!(res, &title[..title.floor_char_boundary(120)]);
+    }
+
+    #[test]
+    fn test_parse_range_cases() {
+        assert_eq!(parse_range("", 1000), RangeSpec::Full);
+        assert_eq!(parse_range("items=0-5", 1000), RangeSpec::Full);
+        assert_eq!(parse_range("BYTES=0-99", 1000), RangeSpec::Partial(0, 99));
+        assert_eq!(parse_range("bytes=500-", 1000), RangeSpec::Partial(500, 999));
+        assert_eq!(parse_range("bytes=500-5000", 1000), RangeSpec::Partial(500, 999));
+        assert_eq!(parse_range("bytes=-100", 1000), RangeSpec::Partial(900, 999));
+        assert_eq!(parse_range("bytes=-5000", 1000), RangeSpec::Partial(0, 999));
+        assert_eq!(parse_range("bytes=1000-", 1000), RangeSpec::Unsatisfiable);
+        assert_eq!(parse_range("bytes=1500-2000", 1000), RangeSpec::Unsatisfiable);
+        assert_eq!(parse_range("bytes=-0", 1000), RangeSpec::Unsatisfiable);
+        assert_eq!(parse_range("bytes=0-", 0), RangeSpec::Unsatisfiable);
+        assert_eq!(parse_range("", 0), RangeSpec::Full);
+        assert_eq!(parse_range("bytes=+0-10", 1000), RangeSpec::Full);
+        assert_eq!(parse_range("bytes=500-100", 1000), RangeSpec::Full);
+        assert_eq!(parse_range("bytes=99999999999999999999999-", 1000), RangeSpec::Unsatisfiable);
+    }
+
+    #[test]
+    fn test_sanitize_filename() {
+        assert_eq!(sanitize_filename("movie.mkv"), "movie.mkv");
+        assert_eq!(sanitize_filename("bad\"\r\n;\\/name.mkv"), "bad______name.mkv");
+        assert_eq!(sanitize_filename("   \0 "), "_");
+        assert_eq!(sanitize_filename(""), "video");
+    }
+
+    #[test]
+    fn test_is_valid_imdb() {
+        assert!(is_valid_imdb("tt0133093"));
+        assert!(is_valid_imdb("tt12345"));
+        assert!(!is_valid_imdb("tt1234"));
+        assert!(!is_valid_imdb("nm0133093"));
+        assert!(!is_valid_imdb("tt013309a"));
     }
 }

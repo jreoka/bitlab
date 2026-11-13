@@ -73,7 +73,7 @@ pub fn load_config() -> Config {
     let mut cfg = Config {
         addr: env_str("BITLAB_ADDR", ":8090"),
         data_dir: data_dir.clone(),
-        base_url: env_str("BITLAB_BASE_URL", ""),
+        base_url: env_str("BITLAB_BASE_URL", "").trim_end_matches('/').to_string(),
         trackers: vec![],
         cache_max_bytes: env_int_clamped("BITLAB_CACHE_GB", 40, 0, 1_000_000).saturating_mul(1_000_000_000),
         cache_reserve_bytes: env_int_clamped("BITLAB_CACHE_RESERVE_GB", 2, 0, 1_000_000).saturating_mul(1_000_000_000),

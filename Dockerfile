@@ -9,7 +9,7 @@ COPY web ./web
 RUN cargo build --release --locked
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata wget \
   && rm -rf /var/lib/apt/lists/* \
   && useradd -u 65532 -m bitlab
 COPY --from=build /src/target/release/bitlab /usr/local/bin/bitlab
