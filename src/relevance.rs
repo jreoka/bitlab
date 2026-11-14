@@ -5,6 +5,7 @@ use std::collections::HashSet;
 static RE_EP_MARKER_SXXEXX: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bS\d{1,2}\s*E\d{1,3}\b").unwrap());
 static RE_EP_MARKER_X: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\b\d{1,2}x\d{2,3}\b").unwrap());
 static RE_EP_MARKER_EP: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bep(?:isode)?[.\s_-]*\d{1,4}\b").unwrap());
+static RE_EP_MARKER_E: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\be\d{1,4}(?:v\d)?(?:[^0-9a-z]|$)").unwrap());
 static RE_EP_MARKER_SEASON: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bseasons?[.\s_-]*\d{1,2}\b").unwrap());
 static RE_EP_MARKER_COMPLETE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bcomplete[.\s_-]+(series|season|collection|box[\s._-]*set)\b|\b(the[\s._-]+)?complete[\s._-]+(series|season|collection|box[\s._-]*set)\b|\b(all|entire|full)[\s._-]+(series|seasons?)\b|\bcomplete[\s._-]+boxset\b").unwrap());
 static RE_EP_MARKER_DASH: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(?:^|[\s\[_])[-–—][\s_]*\d{1,4}(?:v\d)?(?:[\s_]*[-–~][\s_]*\d{1,4}(?:v\d)?)?(?:[\s._\-\]\)]|$)").unwrap());
@@ -18,6 +19,9 @@ static RE_NON_VIDEO: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\.(rar|zip|7z|a
 pub static RE_SXXEXX: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bs(\d{1,3})[\s._-]?e(\d{1,4})(?:[^0-9]|$)").unwrap());
 static RE_DASH_EP: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(?:^|[\s\[_])[-–—][\s_]*0*(\d{1,4})(?:v\d)?(?:[\s_]*[-–~][\s_]*0*(\d{1,4})(?:v\d)?)?\b").unwrap());
 static RE_EP_ONLY: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bep(?:isode)?[\s._-]*0*(\d{1,3})(?:[^0-9]|$)").unwrap());
+static RE_E_EP: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)\be0*(\d{1,4})(?:v\d)?(?:[\s._-]*(?:-|–|—|to)[\s._-]*e?0*(\d{1,4})(?:v\d)?)?(?:[^0-9a-z]|$)").unwrap()
+});
 static RE_SEASON: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bs(\d{1,2})\b").unwrap());
 static RE_RECUT: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)director'?s[\s._-]*cut|\bshin[\s._-]*henshuu-?ban\b|新編集版").unwrap());
 
@@ -134,6 +138,7 @@ pub fn looks_like_episode(name: &str) -> bool {
     RE_EP_MARKER_SXXEXX.is_match(name)
         || RE_EP_MARKER_X.is_match(name)
         || RE_EP_MARKER_EP.is_match(name)
+        || RE_EP_MARKER_E.is_match(name)
         || RE_EP_MARKER_SEASON.is_match(name)
         || RE_EP_MARKER_COMPLETE.is_match(name)
         || RE_EP_MARKER_DASH.is_match(name)
@@ -371,7 +376,7 @@ pub fn extra_title_words(name: &str, titles: &[String]) -> usize {
 pub fn extra_title_words_before_marker(name: &str, titles: &[String]) -> usize {
     let mut cut = name.len();
     let patterns: Vec<&Regex> = vec![
-        &RE_SXXEXX, &RE_DASH_EP, &RE_EP_ONLY, &RE_X_EP_MARKER, &RE_SEASON_RANGE, &RE_SEASON_ORDINAL,
+        &RE_SXXEXX, &RE_DASH_EP, &RE_EP_ONLY, &RE_E_EP, &RE_X_EP_MARKER, &RE_SEASON_RANGE, &RE_SEASON_ORDINAL,
         &RE_SEASON_LONG, &RE_SEASON_SHORT, &RE_DASH_NUM_MARKER, &RE_YEAR,
     ];
     for re in patterns {
@@ -504,6 +509,19 @@ pub fn episode_signal(title: &str, season: i32, ep: i32) -> i32 {
         if e == ep {
             return 1;
         }
+        return -1;
+    }
+    let mut saw_e_ep = false;
+    for m in RE_E_EP.captures_iter(title) {
+        let e1: i32 = m.get(1).map(|v| v.as_str().parse().unwrap_or(0)).unwrap_or(0);
+        let e2: i32 = m.get(2).map(|v| v.as_str().parse().unwrap_or(e1)).unwrap_or(e1);
+        let (e1, e2) = if e1 > e2 { (e2, e1) } else { (e1, e2) };
+        saw_e_ep = true;
+        if ep >= e1 && ep <= e2 {
+            return 1;
+        }
+    }
+    if saw_e_ep {
         return -1;
     }
     0
@@ -656,6 +674,21 @@ static RE_FILE_EP_NUM: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"^(?:[\[\(][^\]\)]*[\]\)][\s_]*)*0*(\d{1,4})(?:v\d)?(?:\s*[-–~]\s*0*(\d{1,4})(?:v\d)?)?\s*(?:[.\-_ ]|$)").unwrap()
 });
 
+static RE_FILE_TRAILING_EP_NUM: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)(?:^|[\s._])(\d{2,4})(?:v\d)?(?:\s*[-–~]\s*(\d{2,4})(?:v\d)?)?(?:[\s_]*(?:\[[^\]]*\]|\([^)]*\)))*\.[^.]+$").unwrap()
+});
+
+static RE_FILE_SPECIAL_EP: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)(?:#|第)\s*0*(\d{1,4})\s*話?|\b0*(\d{1,4})話").unwrap()
+});
+
+static RE_AUDIO_CHANNEL_DEC: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b\d+\.\d+\b").unwrap());
+static RE_ALNUM_TOKEN: Lazy<Regex> = Lazy::new(|| Regex::new(r"[A-Za-z0-9]+").unwrap());
+
+fn is_non_ep_number(n: i32) -> bool {
+    (1900..=2099).contains(&n) || matches!(n, 480 | 720 | 1080 | 2160)
+}
+
 pub fn file_signal(path: &str, season: i32, ep: i32) -> i32 {
     if ep <= 0 {
         return 0;
@@ -682,6 +715,23 @@ pub fn file_signal(path: &str, season: i32, ep: i32) -> i32 {
             return 1;
         }
         return -1;
+    }
+    if let Some(m) = RE_FILE_TRAILING_EP_NUM.captures(base) {
+        let n1: i32 = m.get(1).map(|v| v.as_str().parse().unwrap_or(-1)).unwrap_or(-1);
+        let n2: i32 = m.get(2).map(|v| v.as_str().parse().unwrap_or(n1)).unwrap_or(n1);
+        if n1 > 0 && !is_non_ep_number(n1) && !is_non_ep_number(n2) {
+            let (n1, n2) = if n1 > n2 { (n2, n1) } else { (n1, n2) };
+            if ep >= n1 && ep <= n2 {
+                return 1;
+            }
+            return -1;
+        }
+    }
+    if let Some(m) = RE_FILE_SPECIAL_EP.captures(base) {
+        let n: i32 = m.get(1).or_else(|| m.get(2)).map(|v| v.as_str().parse().unwrap_or(-1)).unwrap_or(-1);
+        if n > 0 {
+            return if n == ep { 1 } else { -1 };
+        }
     }
     0
 }
@@ -769,6 +819,9 @@ pub fn choose_file_for_episode(paths: &[String], sizes: &[i64], want: i32, seaso
             anyhow::bail!("release has no file for this episode");
         }
         if videos > 1 {
+            if let Some(idx) = choose_file_by_pack_numbers(paths, sizes, season, ep) {
+                return Ok(idx);
+            }
             anyhow::bail!("release has no file for this episode");
         }
         if videos == 1 {
@@ -791,6 +844,87 @@ pub fn choose_file_for_episode(paths: &[String], sizes: &[i64], want: i32, seaso
         }
     }
     choose_file(paths, sizes, want)
+}
+
+fn extract_pack_numbers(path: &str) -> Vec<i32> {
+    let base = FsPath::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or(path);
+    let cleaned = RE_AUDIO_CHANNEL_DEC.replace_all(base, " ");
+    let mut nums = Vec::new();
+    for m in RE_ALNUM_TOKEN.find_iter(&cleaned) {
+        let tok = m.as_str();
+        let digits = if let Some(pos) = tok.rfind(|c: char| c == 'v' || c == 'V') {
+            let tail = &tok[pos + 1..];
+            if !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()) {
+                &tok[..pos]
+            } else {
+                tok
+            }
+        } else {
+            tok
+        };
+        if digits.is_empty() || digits.len() > 4 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        if let Ok(n) = digits.parse::<i32>() {
+            if n > 0 && !is_non_ep_number(n) {
+                nums.push(n);
+            }
+        }
+    }
+    nums
+}
+
+fn choose_file_by_pack_numbers(paths: &[String], sizes: &[i64], season: i32, ep: i32) -> Option<usize> {
+    use std::collections::HashMap;
+    let mut eligible: Vec<(usize, Vec<i32>)> = Vec::new();
+    for (i, p) in paths.iter().enumerate() {
+        if !is_video_path(p) || p.to_lowercase().contains("sample") || RE_PROMO.is_match(p) || looks_like_movie(p) {
+            continue;
+        }
+        if season > 0 {
+            let s = release_season(p, season);
+            if s > 0 && s != season {
+                continue;
+            }
+        }
+        eligible.push((i, extract_pack_numbers(p)));
+    }
+    if eligible.len() < 2 {
+        return None;
+    }
+    let mut doc_freq: HashMap<i32, usize> = HashMap::new();
+    for (_, nums) in &eligible {
+        let unique: HashSet<i32> = nums.iter().copied().collect();
+        for n in unique {
+            *doc_freq.entry(n).or_insert(0) += 1;
+        }
+    }
+    let max_freq = if eligible.len() >= 6 { 2 } else { 1 };
+    let mut files_with_disc = 0usize;
+    let mut ep_matches: Vec<usize> = Vec::new();
+    for (idx, nums) in &eligible {
+        let mut has_disc = false;
+        let mut has_ep = false;
+        for &n in nums {
+            let df = doc_freq.get(&n).copied().unwrap_or(0);
+            if df > 0 && df <= max_freq && df * 2 <= eligible.len() {
+                has_disc = true;
+                if n == ep {
+                    has_ep = true;
+                }
+            }
+        }
+        if has_disc {
+            files_with_disc += 1;
+        }
+        if has_ep {
+            ep_matches.push(*idx);
+        }
+    }
+    if files_with_disc < 2 || ep_matches.is_empty() {
+        return None;
+    }
+    ep_matches.into_iter().max_by_key(|&i| sizes.get(i).copied().unwrap_or(0))
 }
 
 pub fn choose_file_for_title(paths: &[String], sizes: &[i64], want: i32, hints: &[String]) -> anyhow::Result<usize> {
@@ -1034,5 +1168,86 @@ mod tests {
         let movie_sizes = vec![1000];
         let hints = vec!["Pokémon Detective Pikachu".to_string()];
         assert_eq!(choose_file_for_title(&movie_paths, &movie_sizes, -1, &hints).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_choose_file_for_episode_standalone_e_marker() {
+        let paths = vec![
+            "[ToonsHub] Frieren - Beyond Journey's End S01 [2160p] [Part 1]/Frieren- Beyond Journey's End E13 Hatred of One's Kind 2160p B-Global WEB-DL x264 [Japanese] (AAC 2.0) MSubs_ToonsHub_.mkv".to_string(),
+            "[ToonsHub] Frieren - Beyond Journey's End S01 [2160p] [Part 1]/Frieren- Beyond Journey's End E1 The Journey's End 2160p B-Global WEB-DL x264 [Japanese] (AAC 2.0) MSubs_ToonsHub_.mkv".to_string(),
+            "[ToonsHub] Frieren - Beyond Journey's End S01 [2160p] [Part 1]/Frieren- Beyond Journey's End E2 It Didn't Have to Be Magic… 2160p B-Global WEB-DL x264 [Japanese] (AAC 2.0) MSubs_ToonsHub_.mkv".to_string(),
+        ];
+        let sizes = vec![1000; 3];
+        assert_eq!(choose_file_for_episode(&paths, &sizes, -1, 1, 1).unwrap(), 1);
+        assert_eq!(choose_file_for_episode(&paths, &sizes, -1, 1, 2).unwrap(), 2);
+        assert_eq!(choose_file_for_episode(&paths, &sizes, -1, 1, 13).unwrap(), 0);
+        assert!(choose_file_for_episode(&paths, &sizes, -1, 1, 15).is_err());
+        assert!(choose_file_for_episode(&paths, &sizes, -1, 2, 1).is_err());
+
+        assert!(episode_signal("Show E01-E02.mkv", 1, 2) > 0);
+        assert!(episode_signal("Show E1v2.mkv", 1, 1) > 0);
+        assert_eq!(episode_signal("Show e2c84e30.mkv", 1, 2), 0);
+        assert!(looks_like_episode("Frieren E1.mkv"));
+        assert!(!looks_like_episode("e2c84e30"));
+    }
+
+    #[test]
+    fn test_choose_file_for_episode_trailing_number() {
+        let paths = vec![
+            "Sousou no Frieren/Sousou no Frieren 01.mkv".to_string(),
+            "Sousou no Frieren/Sousou no Frieren 02.mkv".to_string(),
+            "Sousou no Frieren/Sousou no Frieren 28.mkv".to_string(),
+        ];
+        let sizes = vec![1000; 3];
+        assert_eq!(choose_file_for_episode(&paths, &sizes, -1, 1, 1).unwrap(), 0);
+        assert_eq!(choose_file_for_episode(&paths, &sizes, -1, 1, 2).unwrap(), 1);
+        assert_eq!(choose_file_for_episode(&paths, &sizes, -1, 1, 28).unwrap(), 2);
+        assert!(choose_file_for_episode(&paths, &sizes, -1, 1, 29).is_err());
+
+        assert!(file_signal("Show 01 [1080p].mkv", 1, 1) > 0);
+        assert!(file_signal("Show 01-02.mkv", 1, 2) > 0);
+        assert_eq!(file_signal("Show 2024.mkv", 1, 2024), 0);
+        assert_eq!(file_signal("Show 1080.mkv", 1, 1080), 0);
+    }
+
+    #[test]
+    fn test_choose_file_for_episode_pack_discriminating_numbers() {
+        // Middle-of-filename numbers with different episode titles
+        let paths = vec![
+            "Frieren 01 The Journey's End 1080p.mkv".to_string(),
+            "Frieren 02 It Didn't Have to Be Magic [DDP 5.1] 1080p.mkv".to_string(),
+            "Frieren 03 Killing Magic [AAC 2.0] 1080p.mkv".to_string(),
+        ];
+        let sizes = vec![1000; 3];
+        assert_eq!(choose_file_for_episode(&paths, &sizes, -1, 1, 1).unwrap(), 0);
+        assert_eq!(choose_file_for_episode(&paths, &sizes, -1, 1, 2).unwrap(), 1);
+        // Audio channel 5.1 / 2.0 must not be mistaken for episode 5 or 2
+        assert!(choose_file_for_episode(&paths, &sizes, -1, 1, 5).is_err());
+
+        // Underscore-delimited middle numbers and bracketed numbers
+        let paths_under = vec![
+            "Frieren_01_1080p_WEB-DL.mkv".to_string(),
+            "Frieren_02_1080p_WEB-DL.mkv".to_string(),
+        ];
+        let sizes2 = vec![1000; 2];
+        assert_eq!(choose_file_for_episode(&paths_under, &sizes2, -1, 1, 2).unwrap(), 1);
+
+        let paths_paren = vec![
+            "[Group] Frieren (01) [1080p].mkv".to_string(),
+            "[Group] Frieren (02) [1080p].mkv".to_string(),
+        ];
+        assert_eq!(choose_file_for_episode(&paths_paren, &sizes2, -1, 1, 1).unwrap(), 0);
+
+        // Hash and Japanese episode markers
+        assert_eq!(file_signal("Show #04.mkv", 1, 4), 1);
+        assert_eq!(file_signal("葬送のフリーレン 第05話.mkv", 1, 5), 1);
+        assert_eq!(file_signal("葬送のフリーレン 06話.mkv", 1, 6), 1);
+
+        // Non-episode multi-file torrent still rejected
+        let non_ep = vec![
+            "Movie (2024).mkv".to_string(),
+            "Movie Extras.mkv".to_string(),
+        ];
+        assert!(choose_file_for_episode(&non_ep, &sizes2, -1, 1, 1).is_err());
     }
 }
