@@ -133,8 +133,21 @@ pub async fn handle_favicon() -> Response {
         .unwrap()
 }
 
+fn is_valid_stats_key_path(p: &str) -> bool {
+    if let Some(id) = p.strip_prefix("/admin/stats/") {
+        return !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    }
+    false
+}
+
 fn clean_next_path(p: &str) -> String {
-    match p.trim_end_matches('/') {
+    let trimmed = p.trim_end_matches('/');
+    if is_valid_stats_key_path(trimmed) {
+        return trimmed.to_string();
+    }
+    match trimmed {
+        "/admin/stats" => "/admin/stats".to_string(),
+        "/admin/media" => "/admin/media".to_string(),
         "/admin/activity" => "/admin/activity".to_string(),
         "/admin/security" => "/admin/security".to_string(),
         _ => "/admin/keys".to_string(),
@@ -144,8 +157,9 @@ fn clean_next_path(p: &str) -> String {
 pub async fn handle_admin_page(State(app): State<crate::server::App>, headers: HeaderMap, req: axum::extract::Request) -> Response {
     let path = req.uri().path().to_string();
     // path check
-    let p = path.as_str();
-    let ok = matches!(p.trim_end_matches('/'), "/admin" | "/admin/keys" | "/admin/activity" | "/admin/security");
+    let p = path.as_str().trim_end_matches('/');
+    let ok = matches!(p, "/admin" | "/admin/keys" | "/admin/stats" | "/admin/media" | "/admin/activity" | "/admin/security")
+        || is_valid_stats_key_path(p);
     if !ok {
         return crate::server::http_error(404, "not found");
     }
@@ -569,4 +583,129 @@ pub async fn handle_purge_cache(State(app): State<crate::server::App>, headers: 
         "freed_count": freed_count,
         "cache": app.engine.cache_stats().await,
     }))
+}
+
+pub async fn handle_stats(State(app): State<crate::server::App>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
+    if let Some(e) = require_admin_state(&app, &headers).await {
+        return e;
+    }
+    let range = q.get("range").map(|s| s.as_str()).unwrap_or("30d");
+    let recent_page: i64 = q.get("recent_page").and_then(|v| v.parse().ok()).unwrap_or(1).clamp(1, 1_000_000);
+    let recent_per: i64 = q.get("recent_per").and_then(|v| v.parse().ok()).unwrap_or(15).clamp(5, 100);
+    match app.store.global_stats(range, recent_page, recent_per) {
+        Ok(s) => {
+            let mut val = serde_json::to_value(&s).unwrap();
+            val["currently_watching"] = serde_json::to_value(app.active_streams.list(None)).unwrap();
+            crate::server::json_response(200, val)
+        }
+        Err(e) => {
+            tracing::info!("global stats: {e}");
+            crate::server::http_error(500, "store unavailable")
+        }
+    }
+}
+
+pub async fn handle_key_stats(
+    State(app): State<crate::server::App>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if let Some(e) = require_admin_state(&app, &headers).await {
+        return e;
+    }
+    let range = q.get("range").map(|s| s.as_str()).unwrap_or("30d");
+    let typ = q.get("type").map(|s| s.as_str()).unwrap_or("");
+    let qq = q.get("q").map(|s| s.as_str()).unwrap_or("");
+    let page: i64 = q.get("page").and_then(|v| v.parse().ok()).unwrap_or(1).clamp(1, 1_000_000);
+    let per: i64 = q.get("per").and_then(|v| v.parse().ok()).unwrap_or(25).clamp(5, 100);
+    match app.store.key_stats(&id, range, typ, qq, page, per) {
+        Ok(Some(s)) => {
+            let mut val = serde_json::to_value(&s).unwrap();
+            val["currently_watching"] = serde_json::to_value(app.active_streams.list(Some(&id))).unwrap();
+            crate::server::json_response(200, val)
+        }
+        Ok(None) => crate::server::http_error(404, "not found"),
+        Err(e) => {
+            tracing::info!("key stats {id}: {e}");
+            crate::server::http_error(500, "store unavailable")
+        }
+    }
+}
+
+pub async fn handle_media_stats(
+    State(app): State<crate::server::App>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if let Some(e) = require_admin_state(&app, &headers).await {
+        return e;
+    }
+    let typ = q.get("type").map(|s| s.as_str()).unwrap_or("");
+    let imdb = q.get("imdb").map(|s| s.as_str()).unwrap_or("");
+    let title = q.get("title").map(|s| s.as_str()).unwrap_or("");
+    let infohash = q.get("infohash").map(|s| s.as_str()).unwrap_or("");
+    let range = q.get("range").map(|s| s.as_str()).unwrap_or("30d");
+    let page: i64 = q.get("page").and_then(|v| v.parse().ok()).unwrap_or(1).clamp(1, 1_000_000);
+    let per: i64 = q.get("per").and_then(|v| v.parse().ok()).unwrap_or(25).clamp(5, 100);
+    match app.store.media_stats(typ, imdb, title, infohash, range, page, per) {
+        Ok(Some(s)) => {
+            let active: Vec<_> = app
+                .active_streams
+                .list(None)
+                .into_iter()
+                .filter(|w| {
+                    if !s.imdb_id.is_empty() && !w.imdb_id.is_empty() {
+                        w.imdb_id == s.imdb_id && (s.media_type.is_empty() || w.media_type == s.media_type)
+                    } else if !s.title.is_empty() {
+                        (w.title == s.title || w.release_name == s.title)
+                            && (s.media_type.is_empty() || w.media_type == s.media_type)
+                    } else {
+                        !infohash.is_empty() && w.infohash == infohash
+                    }
+                })
+                .collect();
+            let mut val = serde_json::to_value(&s).unwrap();
+            val["currently_watching"] = serde_json::to_value(active).unwrap();
+            crate::server::json_response(200, val)
+        }
+        Ok(None) => crate::server::http_error(404, "not found"),
+        Err(e) => {
+            tracing::info!("media stats: {e}");
+            crate::server::http_error(500, "store unavailable")
+        }
+    }
+}
+
+pub async fn handle_reset_stats(State(app): State<crate::server::App>, headers: HeaderMap) -> Response {
+    if let Some(e) = require_admin_state(&app, &headers).await {
+        return e;
+    }
+    match app.store.reset_all_stats() {
+        Ok(()) => {
+            tracing::info!("admin reset all watch & key stats");
+            crate::server::json_response(200, serde_json::json!({"ok": true}))
+        }
+        Err(e) => {
+            tracing::info!("reset all stats failed: {e}");
+            crate::server::http_error(500, "store unavailable")
+        }
+    }
+}
+
+pub async fn handle_reset_key_stats(State(app): State<crate::server::App>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    if let Some(e) = require_admin_state(&app, &headers).await {
+        return e;
+    }
+    match app.store.reset_key_stats(&id) {
+        Ok(true) => {
+            tracing::info!("admin reset stats for key {id}");
+            crate::server::json_response(200, serde_json::json!({"ok": true}))
+        }
+        Ok(false) => crate::server::http_error(404, "not found"),
+        Err(e) => {
+            tracing::info!("reset key stats {id} failed: {e}");
+            crate::server::http_error(500, "store unavailable")
+        }
+    }
 }

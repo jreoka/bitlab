@@ -325,7 +325,18 @@ pub async fn handle_stream(
             title.clone()
         };
         let (tk, exp) = app.signed_play_token(&k.id, &ih, season, ep);
-        let mut link = format!("{base}/k/{}/play/{ih}?n={}&tk={tk}&exp={exp}", k.token, url::form_urlencoded::byte_serialize(truncate(&res.title, 120).as_bytes()).collect::<String>());
+        let mut link = format!(
+            "{base}/k/{}/play/{ih}?n={}&tk={tk}&exp={exp}&id={}&mt={}&mtit={}&q={}",
+            k.token,
+            url::form_urlencoded::byte_serialize(truncate(&res.title, 120).as_bytes()).collect::<String>(),
+            url::form_urlencoded::byte_serialize(base_id.as_bytes()).collect::<String>(),
+            url::form_urlencoded::byte_serialize(typ.as_bytes()).collect::<String>(),
+            url::form_urlencoded::byte_serialize(truncate(&title, 120).as_bytes()).collect::<String>(),
+            url::form_urlencoded::byte_serialize(q.as_bytes()).collect::<String>(),
+        );
+        if year > 0 {
+            link.push_str(&format!("&my={year}"));
+        }
         if typ == "series" && season > 0 {
             link.push_str(&format!("&s={season}&e={ep}"));
         }
@@ -509,16 +520,69 @@ async fn handle_play_inner(
         }
     };
 
+    // Record watch session in analytics
+    let imdb_id = q.get("id").filter(|s| is_valid_imdb(s)).cloned().unwrap_or_default();
+    let media_type = match q.get("mt").map(|s| s.as_str()) {
+        Some("series") => "series".to_string(),
+        Some("movie") => "movie".to_string(),
+        _ if season_wanted > 0 || ep_wanted > 0 => "series".to_string(),
+        _ => "movie".to_string(),
+    };
+    let watch_title = q
+        .get("mtit")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| titles.first().cloned())
+        .or_else(|| (!hint.trim().is_empty()).then(|| hint.trim().to_string()))
+        .unwrap_or_else(|| fname.to_string());
+    let watch_year = q.get("my").and_then(|v| v.parse::<i32>().ok()).unwrap_or(0);
+    let watch_quality = q
+        .get("q")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| release_label(&hint).1);
+    let watch_title_tr = truncate(&watch_title, 200);
+    let watch_rel_tr = truncate(if !hint.is_empty() { &hint } else { fname }, 200);
+    let watch_qual_tr = truncate(&watch_quality, 32);
+    app.store.record_watch_start(crate::store::WatchRecordInput {
+        key_id: k.id.clone(),
+        imdb_id: imdb_id.clone(),
+        media_type: media_type.clone(),
+        title: watch_title_tr.clone(),
+        year: watch_year,
+        season: season_wanted,
+        episode: ep_wanted,
+        infohash: ih.clone(),
+        release_name: watch_rel_tr.clone(),
+        quality: watch_qual_tr.clone(),
+    });
+
     // Wrap to count bytes and touch activity
+    let now_unix = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
     let written = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
     let written2 = written.clone();
     let app3 = app.clone();
     let ih3 = ih.clone();
     let closed2 = closed.clone();
-    let last_touch = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(
-        SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0),
-    ));
+    let last_touch = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(now_unix));
     let last_touch2 = last_touch.clone();
+    app.active_streams.insert(crate::server::ActiveStreamEntry {
+        reader_id,
+        key_id: k.id.clone(),
+        key_label: k.label.clone(),
+        imdb_id,
+        media_type,
+        title: watch_title_tr,
+        year: watch_year,
+        season: season_wanted,
+        episode: ep_wanted,
+        infohash: ih.clone(),
+        release_name: watch_rel_tr,
+        quality: watch_qual_tr,
+        written: written.clone(),
+        started_at: now_unix,
+        last_active_at: last_touch,
+    });
     let s = raw_stream.map(move |chunk| {
         if let Ok(b) = &chunk {
             written2.fetch_add(b.len() as i64, std::sync::atomic::Ordering::Relaxed);
@@ -543,10 +607,40 @@ async fn handle_play_inner(
         reader_id: u64,
         closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
         key_id: String,
+        season: i32,
+        ep: i32,
         idx: usize,
         range: String,
         written: std::sync::Arc<std::sync::atomic::AtomicI64>,
         done: bool,
+    }
+    impl<S> GuardStream<S> {
+        fn finish(&mut self, dropped: bool) {
+            if self.done {
+                return;
+            }
+            self.done = true;
+            self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.app.active_streams.remove(self.reader_id);
+            let app = self.app.clone();
+            let ih = self.ih.clone();
+            let reader_id = self.reader_id;
+            let key_id = self.key_id.clone();
+            let season = self.season;
+            let ep = self.ep;
+            let idx = self.idx;
+            let range = self.range.clone();
+            let written = self.written.load(std::sync::atomic::Ordering::Relaxed);
+            tokio::spawn(async move {
+                app.engine.dec_reader(&ih, reader_id).await;
+                if written > 0 {
+                    app.store.add_key_bytes(&key_id, written);
+                    app.store.add_watch_bytes(&key_id, &ih, season, ep, written);
+                }
+                let suffix = if dropped { " (dropped)" } else { "" };
+                tracing::info!("play {} key={key_id} file={idx} served={} range={range:?}{suffix}", &ih[..8.min(ih.len())], crate::util::human_bytes(written));
+            });
+        }
     }
     impl<S> GuardStream<S>
     where
@@ -557,22 +651,7 @@ async fn handle_play_inner(
             let mut inner = std::pin::Pin::new(&mut this.inner);
             match futures::Stream::poll_next(inner.as_mut(), cx) {
                 std::task::Poll::Ready(None) => {
-                    if !this.done {
-                        this.done = true;
-                        this.closed.store(true, std::sync::atomic::Ordering::SeqCst);
-                        let app = this.app.clone();
-                        let ih = this.ih.clone();
-                        let reader_id = this.reader_id;
-                        let key_id = this.key_id.clone();
-                        let idx = this.idx;
-                        let range = this.range.clone();
-                        let written = this.written.load(std::sync::atomic::Ordering::Relaxed);
-                        tokio::spawn(async move {
-                            app.engine.dec_reader(&ih, reader_id).await;
-                            app.store.add_key_bytes(&key_id, written);
-                            tracing::info!("play {} key={key_id} file={idx} served={} range={range:?}", &ih[..8.min(ih.len())], crate::util::human_bytes(written));
-                        });
-                    }
+                    this.finish(false);
                     std::task::Poll::Ready(None)
                 }
                 other => other,
@@ -595,6 +674,8 @@ async fn handle_play_inner(
         reader_id,
         closed,
         key_id: k.id.clone(),
+        season: season_wanted,
+        ep: ep_wanted,
         idx,
         range: range_hdr.clone(),
         written,
@@ -602,24 +683,7 @@ async fn handle_play_inner(
     };
     impl<S> Drop for GuardStream<S> {
         fn drop(&mut self) {
-            if !self.done {
-                self.done = true;
-                self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
-                let app = self.app.clone();
-                let ih = self.ih.clone();
-                let reader_id = self.reader_id;
-                let key_id = self.key_id.clone();
-                let idx = self.idx;
-                let range = self.range.clone();
-                let written = self.written.load(std::sync::atomic::Ordering::Relaxed);
-                tokio::spawn(async move {
-                    app.engine.dec_reader(&ih, reader_id).await;
-                    if written > 0 {
-                        app.store.add_key_bytes(&key_id, written);
-                    }
-                    tracing::info!("play {} key={key_id} file={idx} served={} range={range:?} (dropped)", &ih[..8.min(ih.len())], crate::util::human_bytes(written));
-                });
-            }
+            self.finish(true);
         }
     }
 

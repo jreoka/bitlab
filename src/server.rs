@@ -21,6 +21,7 @@ pub struct App {
     pub totp_mu: Arc<tokio::sync::Mutex<()>>,
     pub ix_cache: Arc<dashmap_like::IxCache>,
     pub ep_cache: Arc<dashmap_like::EpCache>,
+    pub active_streams: Arc<ActiveStreams>,
 }
 
 pub const MAX_HTTP_BODY: usize = 16 * 1024 * 1024;
@@ -130,6 +131,123 @@ pub mod dashmap_like {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ActiveWatch {
+    pub key_id: String,
+    pub key_label: String,
+    pub imdb_id: String,
+    pub media_type: String,
+    pub title: String,
+    pub year: i32,
+    pub season: i32,
+    pub episode: i32,
+    pub infohash: String,
+    pub release_name: String,
+    pub quality: String,
+    pub bytes_served: i64,
+    pub started_at: i64,
+    pub last_active_at: i64,
+    pub connections: usize,
+}
+
+pub struct ActiveStreamEntry {
+    pub reader_id: u64,
+    pub key_id: String,
+    pub key_label: String,
+    pub imdb_id: String,
+    pub media_type: String,
+    pub title: String,
+    pub year: i32,
+    pub season: i32,
+    pub episode: i32,
+    pub infohash: String,
+    pub release_name: String,
+    pub quality: String,
+    pub written: Arc<std::sync::atomic::AtomicI64>,
+    pub started_at: i64,
+    pub last_active_at: Arc<std::sync::atomic::AtomicI64>,
+}
+
+pub struct ActiveStreams {
+    inner: std::sync::RwLock<std::collections::HashMap<u64, ActiveStreamEntry>>,
+}
+
+impl ActiveStreams {
+    pub fn new() -> Self {
+        Self {
+            inner: std::sync::RwLock::new(std::collections::HashMap::new()),
+        }
+    }
+
+    pub fn insert(&self, entry: ActiveStreamEntry) {
+        self.inner.write().unwrap().insert(entry.reader_id, entry);
+    }
+
+    pub fn remove(&self, reader_id: u64) {
+        self.inner.write().unwrap().remove(&reader_id);
+    }
+
+    pub fn list(&self, key_filter: Option<&str>) -> Vec<ActiveWatch> {
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        self.list_at(key_filter, now)
+    }
+
+    fn list_at(&self, key_filter: Option<&str>, now: i64) -> Vec<ActiveWatch> {
+        use std::sync::atomic::Ordering;
+        let r = self.inner.read().unwrap();
+        let mut grouped: std::collections::HashMap<(String, String, i32, i32), ActiveWatch> = std::collections::HashMap::new();
+        for e in r.values() {
+            if let Some(kid) = key_filter {
+                if e.key_id != kid {
+                    continue;
+                }
+            }
+            let last = e.last_active_at.load(Ordering::Relaxed);
+            if now - last >= 45 {
+                continue;
+            }
+            let bytes = e.written.load(Ordering::Relaxed);
+            let k = (e.key_id.clone(), e.infohash.clone(), e.season, e.episode);
+            match grouped.get_mut(&k) {
+                Some(existing) => {
+                    existing.bytes_served = existing.bytes_served.saturating_add(bytes);
+                    existing.started_at = existing.started_at.min(e.started_at);
+                    existing.last_active_at = existing.last_active_at.max(last);
+                    existing.connections += 1;
+                }
+                None => {
+                    grouped.insert(
+                        k,
+                        ActiveWatch {
+                            key_id: e.key_id.clone(),
+                            key_label: e.key_label.clone(),
+                            imdb_id: e.imdb_id.clone(),
+                            media_type: e.media_type.clone(),
+                            title: e.title.clone(),
+                            year: e.year,
+                            season: e.season,
+                            episode: e.episode,
+                            infohash: e.infohash.clone(),
+                            release_name: e.release_name.clone(),
+                            quality: e.quality.clone(),
+                            bytes_served: bytes,
+                            started_at: e.started_at,
+                            last_active_at: last,
+                            connections: 1,
+                        },
+                    );
+                }
+            }
+        }
+        let mut out: Vec<ActiveWatch> = grouped.into_values().collect();
+        out.sort_by(|a, b| b.started_at.cmp(&a.started_at).then_with(|| a.title.cmp(&b.title)));
+        out
+    }
+}
+
 impl App {
     pub fn new(cfg: crate::config::Config, store: Arc<crate::store::Store>, engine: Arc<crate::engine::Engine>, session_key: Vec<u8>) -> Self {
         let allow_private = std::env::var("BITLAB_ALLOW_PRIVATE_INDEXERS").as_deref() == Ok("1");
@@ -149,6 +267,7 @@ impl App {
             totp_mu: Arc::new(tokio::sync::Mutex::new(())),
             ix_cache: Arc::new(dashmap_like::IxCache::new()),
             ep_cache: Arc::new(dashmap_like::EpCache::new()),
+            active_streams: Arc::new(ActiveStreams::new()),
             // cfg stored with original values; readahead atomic holds live value
         }
     }
@@ -572,5 +691,80 @@ mod tests {
         assert_eq!(all[0].size, 1_500_000_000);
         assert_eq!(all[0].trackers.len(), 2);
         assert_eq!(all[0].torrent_url, "https://example.org/movie.torrent");
+    }
+
+    #[test]
+    fn test_active_streams_tracking() {
+        use std::sync::atomic::AtomicI64;
+        let active = ActiveStreams::new();
+        let now = 1_700_000_000i64;
+
+        active.insert(ActiveStreamEntry {
+            reader_id: 1,
+            key_id: "k1".into(),
+            key_label: "Living Room".into(),
+            imdb_id: "tt1375666".into(),
+            media_type: "movie".into(),
+            title: "Inception".into(),
+            year: 2010,
+            season: 0,
+            episode: 0,
+            infohash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            release_name: "Inception.2010.1080p".into(),
+            quality: "1080p".into(),
+            written: Arc::new(AtomicI64::new(1000)),
+            started_at: now - 10,
+            last_active_at: Arc::new(AtomicI64::new(now - 2)),
+        });
+        // Second concurrent range request for the same session
+        active.insert(ActiveStreamEntry {
+            reader_id: 2,
+            key_id: "k1".into(),
+            key_label: "Living Room".into(),
+            imdb_id: "tt1375666".into(),
+            media_type: "movie".into(),
+            title: "Inception".into(),
+            year: 2010,
+            season: 0,
+            episode: 0,
+            infohash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            release_name: "Inception.2010.1080p".into(),
+            quality: "1080p".into(),
+            written: Arc::new(AtomicI64::new(2500)),
+            started_at: now - 5,
+            last_active_at: Arc::new(AtomicI64::new(now)),
+        });
+        // Different key, stale stream (45s+ inactive)
+        active.insert(ActiveStreamEntry {
+            reader_id: 3,
+            key_id: "k2".into(),
+            key_label: "Phone".into(),
+            imdb_id: "tt0903747".into(),
+            media_type: "series".into(),
+            title: "Breaking Bad".into(),
+            year: 2008,
+            season: 1,
+            episode: 1,
+            infohash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            release_name: "Breaking.Bad.S01E01".into(),
+            quality: "1080p".into(),
+            written: Arc::new(AtomicI64::new(500)),
+            started_at: now - 60,
+            last_active_at: Arc::new(AtomicI64::new(now - 50)),
+        });
+
+        let all = active.list_at(None, now);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].title, "Inception");
+        assert_eq!(all[0].bytes_served, 3500);
+        assert_eq!(all[0].connections, 2);
+        assert_eq!(all[0].started_at, now - 10);
+
+        assert_eq!(active.list_at(Some("k1"), now).len(), 1);
+        assert_eq!(active.list_at(Some("k2"), now).len(), 0);
+
+        active.remove(1);
+        active.remove(2);
+        assert!(active.list_at(None, now).is_empty());
     }
 }

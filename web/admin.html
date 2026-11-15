@@ -213,7 +213,7 @@ tr:last-child td{border-bottom:0}
   .chip{display:none}
   .signout{border:0;padding:2px 0;min-height:0;font-size:12.5px;color:var(--faint)}
   nav{
-    grid-column:1/-1;grid-row:2;display:grid;grid-template-columns:repeat(3,1fr);
+    grid-column:1/-1;grid-row:2;display:grid;grid-template-columns:repeat(4,1fr);
     gap:0;margin:0 -14px;border-top:1px solid var(--line);
   }
   .nav{justify-content:center;padding:11px 4px;border-radius:0;font-size:13px;color:var(--faint)}
@@ -275,6 +275,62 @@ tr:last-child td{border-bottom:0}
   .auth-card{padding:22px 18px}
 }
 
+/* ---------- stats ---------- */
+.stats-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 18px;flex-wrap:wrap}
+.seg{display:inline-flex;background:var(--surface);border:1px solid var(--line);border-radius:5px;padding:2px;gap:2px}
+.seg button{background:none;border:0;color:var(--dim);padding:5px 11px;font-size:12.5px;border-radius:3px;min-height:0;font-weight:500}
+.seg button:hover{color:var(--fg);background:#171b21}
+.seg button.on{background:var(--accent);color:#0a0d12;font-weight:600}
+.metric .sub{font-size:11.5px;color:var(--faint);margin-top:2px;font-variant-numeric:tabular-nums}
+.stats-grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:0 0 16px}
+.stat-panel{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:16px 18px}
+.stat-panel-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px}
+.stat-panel-head h3{margin:0;font-size:13.5px;font-weight:600}
+.stat-panel-head .tiny{color:var(--faint)}
+.chart-wrap{position:relative;width:100%;height:168px}
+.chart-svg{width:100%;height:100%;display:block;overflow:visible}
+.chart-bar{fill:var(--accent);opacity:.82;transition:opacity .12s}
+.chart-bar:hover{opacity:1}
+.chart-tip{
+  position:absolute;pointer-events:none;background:#171b21;border:1px solid #2e343d;border-radius:4px;
+  padding:6px 9px;font-size:12px;color:var(--fg);white-space:nowrap;z-index:10;box-shadow:0 8px 24px rgba(0,0,0,.45);
+  transform:translate(-50%,-100%);margin-top:-8px;
+}
+.chart-axis{display:flex;justify-content:space-between;font-size:11px;color:var(--faint);margin-top:6px;font-variant-numeric:tabular-nums}
+.segbar{display:flex;height:8px;border-radius:4px;overflow:hidden;background:#1c2128;margin:4px 0 14px}
+.segbar-movie{background:var(--accent)}
+.segbar-series{background:var(--green)}
+.split-legend{display:grid;gap:9px}
+.split-item{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13px}
+.split-item .lhs{display:flex;align-items:center;gap:8px}
+.swatch{width:9px;height:9px;border-radius:2px;flex:none}
+.q-list{display:grid;gap:10px}
+.q-row{display:grid;grid-template-columns:68px minmax(0,1fr) auto;align-items:center;gap:10px;font-size:12.5px}
+.q-badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 7px;border-radius:3px;background:#181d25;border:1px solid var(--line);color:var(--dim);text-align:center}
+.q-badge.uhd{color:#d8a657;border-color:#3e3320;background:#1b1710}
+.q-badge.fhd{color:var(--accent);border-color:#263452;background:#121824}
+.q-badge.hd{color:var(--green);border-color:#1f3b2e;background:#101d17}
+.badge{display:inline-block;font-size:10px;letter-spacing:.06em;text-transform:uppercase;font-weight:600;padding:2px 6px;border-radius:3px;background:#181d25;border:1px solid var(--line);color:var(--dim);vertical-align:middle}
+.badge.movie{color:var(--accent);border-color:#263452;background:#121824}
+.badge.series{color:var(--green);border-color:#1f3b2e;background:#101d17}
+.badge.ep{color:var(--fg);border-color:#2e343d;background:#1a1f27;font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace}
+.clickable-row{cursor:pointer;transition:background .1s}
+.clickable-row:hover td{background:#141820}
+.user-link{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:4px;background:#171b22;border:1px solid var(--line);color:var(--fg);font-size:12px;font-weight:500;cursor:pointer}
+.user-link:hover{border-color:var(--accent);color:var(--accent);text-decoration:none}
+.key-title-link{color:var(--fg);cursor:pointer;font-weight:600;font-size:14.5px}
+.key-title-link:hover{color:var(--accent);text-decoration:underline}
+.rank-num{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:4px;background:#181c23;color:var(--dim);font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums}
+.rank-num.top{background:#1b2438;color:var(--accent)}
+.key-hero{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:16px 18px;margin-bottom:18px;display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap}
+.key-hero-title{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.key-hero-title h2{margin:0;font-size:18px;font-weight:600}
+.key-hero-meta{color:var(--faint);font-size:12.5px;margin-top:5px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+@media (max-width:760px){
+  .stats-grid-2{grid-template-columns:1fr}
+  .stat-panel{padding:14px}
+}
+
 /* ---------- modal (native dialogs) ---------- */
 .modal-veil{position:fixed;inset:0;background:rgba(4,6,8,.62);display:grid;place-items:center;padding:18px;z-index:80}
 .modal{width:100%;max-width:400px;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:20px;box-shadow:0 18px 50px rgba(0,0,0,.5)}
@@ -320,6 +376,10 @@ tr:last-child td{border-bottom:0}
       <button class="nav on" data-tab="keys" onclick="tab('keys')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M11 12 20 3M15 7l3 3M18 4l3 3"/></svg>
         <span>Manifest keys</span>
+      </button>
+      <button class="nav" data-tab="stats" onclick="tab('stats')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+        <span>Stats</span>
       </button>
       <button class="nav" data-tab="activity" onclick="tab('activity')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
@@ -397,6 +457,354 @@ tr:last-child td{border-bottom:0}
           <button id="k-prev" onclick="keysPage(-1)">← Prev</button>
           <span class="where" id="k-page"></span>
           <button id="k-next" onclick="keysPage(1)">Next →</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- STATS -->
+    <section id="tab-stats" class="hidden">
+      <!-- GLOBAL VIEW -->
+      <div id="stats-global">
+        <div class="stats-bar">
+          <div class="seg" id="gs-range">
+            <button data-r="24h" onclick="setStatsRange('24h')">24h</button>
+            <button data-r="7d" onclick="setStatsRange('7d')">7d</button>
+            <button data-r="30d" class="on" onclick="setStatsRange('30d')">30d</button>
+            <button data-r="all" onclick="setStatsRange('all')">All time</button>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <span class="tiny muted" id="gs-updated"></span>
+            <button class="danger" id="btn-reset-all-stats" style="padding:5px 12px;font-size:12.5px" onclick="resetAllStats()">Reset all stats</button>
+          </div>
+        </div>
+
+        <div class="metrics">
+          <div class="metric"><div class="k">Watch sessions</div><div class="v" id="gs-plays">0</div><div class="sub" id="gs-req-sub"></div></div>
+          <div class="metric"><div class="k">Unique titles</div><div class="v" id="gs-titles">0</div><div class="sub" id="gs-titles-sub"></div></div>
+          <div class="metric"><div class="k">Watch traffic</div><div class="v" id="gs-wbytes">0 B</div><div class="sub" id="gs-kbytes-sub"></div></div>
+          <div class="metric"><div class="k">Active viewers</div><div class="v" id="gs-viewers">0</div><div class="sub" id="gs-keys-sub"></div></div>
+        </div>
+
+        <div class="card" id="gs-watching-card" style="margin-bottom:16px">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:4px">
+            <h2 style="margin:0;display:flex;align-items:center;gap:8px"><span class="dot"></span>Currently watching <span class="badge" id="gs-watching-count">0</span></h2>
+            <span class="tiny muted">Live active streams</span>
+          </div>
+          <p class="hint">Media streams currently playing right now.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Title</th><th>Manifest</th><th>Quality</th><th>Streamed</th><th>Started</th></tr></thead>
+              <tbody id="gs-watching"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="stat-panel" style="margin-bottom:16px">
+          <div class="stat-panel-head">
+            <h3>Streaming activity</h3>
+            <div class="seg" id="gs-metric-toggle">
+              <button data-m="plays" class="on" onclick="setChartMetric('plays')">Plays</button>
+              <button data-m="bytes" onclick="setChartMetric('bytes')">Traffic</button>
+            </div>
+          </div>
+          <div class="chart-wrap" id="gs-chart"></div>
+          <div class="chart-axis" id="gs-chart-axis"></div>
+        </div>
+
+        <div class="stats-grid-2">
+          <div class="stat-panel">
+            <div class="stat-panel-head"><h3>Content split</h3><span class="tiny">Movies vs Series</span></div>
+            <div id="gs-split"></div>
+          </div>
+          <div class="stat-panel">
+            <div class="stat-panel-head"><h3>Quality breakdown</h3><span class="tiny">By watch sessions</span></div>
+            <div id="gs-quality"></div>
+            <div class="pager hidden" id="gsq-pager">
+              <span class="where" id="gsq-count"></span>
+              <span class="spacer"></span>
+              <button id="gsq-prev" onclick="statsListPage('gsQualityPage',-1,false)">← Prev</button>
+              <span class="where" id="gsq-page"></span>
+              <button id="gsq-next" onclick="statsListPage('gsQualityPage',1,false)">Next →</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Manifest users</h2>
+          <p class="hint">Click any manifest key to open its dedicated watch analytics and full playback history.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Manifest</th><th>Plays</th><th>Titles</th><th>Watch traffic</th><th>Total traffic</th><th>Last watched</th><th></th></tr></thead>
+              <tbody id="gs-users"></tbody>
+            </table>
+          </div>
+          <div class="pager hidden" id="gsu-pager">
+            <span class="where" id="gsu-count"></span>
+            <span class="spacer"></span>
+            <button id="gsu-prev" onclick="statsListPage('gsUsersPage',-1,false)">← Prev</button>
+            <span class="where" id="gsu-page"></span>
+            <button id="gsu-next" onclick="statsListPage('gsUsersPage',1,false)">Next →</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Top watched titles</h2>
+          <p class="hint">Most played movies and series across all manifest users in this timeframe.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>#</th><th>Title</th><th>Plays</th><th>Viewers</th><th>Traffic</th><th>Last watched</th></tr></thead>
+              <tbody id="gs-top"></tbody>
+            </table>
+          </div>
+          <div class="pager hidden" id="gst-pager">
+            <span class="where" id="gst-count"></span>
+            <span class="spacer"></span>
+            <button id="gst-prev" onclick="statsListPage('gsTopPage',-1,false)">← Prev</button>
+            <span class="where" id="gst-page"></span>
+            <button id="gst-next" onclick="statsListPage('gsTopPage',1,false)">Next →</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Recent watch activity</h2>
+          <p class="hint">Latest playback sessions across all manifest keys.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Title</th><th>Manifest</th><th>Quality</th><th>Traffic</th><th>When</th></tr></thead>
+              <tbody id="gs-recent"></tbody>
+            </table>
+          </div>
+          <div class="pager hidden" id="gsr-pager">
+            <span class="where" id="gsr-count"></span>
+            <span class="spacer"></span>
+            <button id="gsr-prev" onclick="gsRecentPage(-1)">← Prev</button>
+            <span class="where" id="gsr-page"></span>
+            <button id="gsr-next" onclick="gsRecentPage(1)">Next →</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- PER-KEY VIEW -->
+      <div id="stats-key" class="hidden">
+        <div class="stats-bar">
+          <button class="ghost" onclick="openGlobalStats()" style="padding-left:4px">← All manifest stats</button>
+          <div class="seg" id="ks-range">
+            <button data-r="24h" onclick="setStatsRange('24h')">24h</button>
+            <button data-r="7d" onclick="setStatsRange('7d')">7d</button>
+            <button data-r="30d" class="on" onclick="setStatsRange('30d')">30d</button>
+            <button data-r="all" onclick="setStatsRange('all')">All time</button>
+          </div>
+        </div>
+
+        <div class="key-hero" id="ks-hero"></div>
+
+        <div class="metrics">
+          <div class="metric"><div class="k">Watch sessions</div><div class="v" id="ks-plays">0</div><div class="sub" id="ks-req-sub"></div></div>
+          <div class="metric"><div class="k">Unique titles</div><div class="v" id="ks-titles">0</div><div class="sub" id="ks-titles-sub"></div></div>
+          <div class="metric"><div class="k">Watch traffic</div><div class="v" id="ks-wbytes">0 B</div><div class="sub" id="ks-kbytes-sub"></div></div>
+          <div class="metric"><div class="k">Last watched</div><div class="v" id="ks-last" style="font-size:18px">—</div><div class="sub" id="ks-used-sub"></div></div>
+        </div>
+
+        <div class="card" id="ks-watching-card" style="margin-bottom:16px">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:4px">
+            <h2 style="margin:0;display:flex;align-items:center;gap:8px"><span class="dot"></span>Currently watching <span class="badge" id="ks-watching-count">0</span></h2>
+            <span class="tiny muted">Live active streams</span>
+          </div>
+          <p class="hint">Media streams currently playing on this manifest key.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Title</th><th>Quality</th><th>Streamed</th><th>Started</th></tr></thead>
+              <tbody id="ks-watching"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="stat-panel" style="margin-bottom:16px">
+          <div class="stat-panel-head">
+            <h3>User activity</h3>
+            <div class="seg" id="ks-metric-toggle">
+              <button data-m="plays" class="on" onclick="setChartMetric('plays')">Plays</button>
+              <button data-m="bytes" onclick="setChartMetric('bytes')">Traffic</button>
+            </div>
+          </div>
+          <div class="chart-wrap" id="ks-chart"></div>
+          <div class="chart-axis" id="ks-chart-axis"></div>
+        </div>
+
+        <div class="stats-grid-2">
+          <div class="stat-panel">
+            <div class="stat-panel-head"><h3>Content preferences</h3><span class="tiny">Movies vs Series</span></div>
+            <div id="ks-split"></div>
+          </div>
+          <div class="stat-panel">
+            <div class="stat-panel-head"><h3>Quality preferences</h3><span class="tiny">By watch sessions</span></div>
+            <div id="ks-quality"></div>
+            <div class="pager hidden" id="ksq-pager">
+              <span class="where" id="ksq-count"></span>
+              <span class="spacer"></span>
+              <button id="ksq-prev" onclick="statsListPage('ksQualityPage',-1,true)">← Prev</button>
+              <span class="where" id="ksq-page"></span>
+              <button id="ksq-next" onclick="statsListPage('ksQualityPage',1,true)">Next →</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Most watched by this user</h2>
+          <p class="hint">Favorite movies and shows for this manifest key.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>#</th><th>Title</th><th>Plays</th><th>Episodes</th><th>Traffic</th><th>Last watched</th></tr></thead>
+              <tbody id="ks-top"></tbody>
+            </table>
+          </div>
+          <div class="pager hidden" id="kst-pager">
+            <span class="where" id="kst-count"></span>
+            <span class="spacer"></span>
+            <button id="kst-prev" onclick="statsListPage('ksTopPage',-1,true)">← Prev</button>
+            <span class="where" id="kst-page"></span>
+            <button id="kst-next" onclick="statsListPage('ksTopPage',1,true)">Next →</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Watch history</h2>
+          <p class="hint">Complete playback log for this manifest key.</p>
+          <div class="keys-toolbar">
+            <input id="ks-search" placeholder="Search title, release or IMDb id" autocomplete="off" spellcheck="false">
+            <select id="ks-type" title="Filter by type">
+              <option value="" selected>All types</option>
+              <option value="movie">Movies</option>
+              <option value="series">Series</option>
+            </select>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Title</th><th>Quality</th><th>Release</th><th>Traffic</th><th>Watched</th></tr></thead>
+              <tbody id="ks-history"></tbody>
+            </table>
+          </div>
+          <div class="pager hidden" id="ks-pager">
+            <span class="where" id="ks-count"></span>
+            <span class="spacer"></span>
+            <button id="ks-prev" onclick="keyStatsPage(-1)">← Prev</button>
+            <span class="where" id="ks-page"></span>
+            <button id="ks-next" onclick="keyStatsPage(1)">Next →</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- PER-MEDIA VIEW -->
+      <div id="stats-media" class="hidden">
+        <div class="stats-bar">
+          <button class="ghost" onclick="openGlobalStats()" style="padding-left:4px">← All manifest stats</button>
+          <div class="seg" id="ms-range">
+            <button data-r="24h" onclick="setStatsRange('24h')">24h</button>
+            <button data-r="7d" onclick="setStatsRange('7d')">7d</button>
+            <button data-r="30d" class="on" onclick="setStatsRange('30d')">30d</button>
+            <button data-r="all" onclick="setStatsRange('all')">All time</button>
+          </div>
+        </div>
+
+        <div class="key-hero" id="ms-hero"></div>
+
+        <div class="metrics">
+          <div class="metric"><div class="k">Watch sessions</div><div class="v" id="ms-plays">0</div><div class="sub" id="ms-plays-sub"></div></div>
+          <div class="metric"><div class="k">Unique viewers</div><div class="v" id="ms-viewers">0</div><div class="sub" id="ms-viewers-sub"></div></div>
+          <div class="metric"><div class="k">Watch traffic</div><div class="v" id="ms-wbytes">0 B</div><div class="sub">Streamed across sessions</div></div>
+          <div class="metric"><div class="k">Last watched</div><div class="v" id="ms-last" style="font-size:18px">—</div><div class="sub" id="ms-last-sub"></div></div>
+        </div>
+
+        <div class="card" id="ms-watching-card" style="margin-bottom:16px">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:4px">
+            <h2 style="margin:0;display:flex;align-items:center;gap:8px"><span class="dot"></span>Currently watching <span class="badge" id="ms-watching-count">0</span></h2>
+            <span class="tiny muted">Live active streams</span>
+          </div>
+          <p class="hint">Manifest users currently streaming this title.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Manifest</th><th>Episode</th><th>Quality</th><th>Streamed</th><th>Started</th></tr></thead>
+              <tbody id="ms-watching"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="stat-panel" style="margin-bottom:16px">
+          <div class="stat-panel-head">
+            <h3>Playback activity</h3>
+            <div class="seg" id="ms-metric-toggle">
+              <button data-m="plays" class="on" onclick="setChartMetric('plays')">Plays</button>
+              <button data-m="bytes" onclick="setChartMetric('bytes')">Traffic</button>
+            </div>
+          </div>
+          <div class="chart-wrap" id="ms-chart"></div>
+          <div class="chart-axis" id="ms-chart-axis"></div>
+        </div>
+
+        <div class="stats-grid-2">
+          <div class="stat-panel">
+            <div class="stat-panel-head"><h3>Manifest viewers</h3><span class="tiny">Who watched this title</span></div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Manifest</th><th>Plays</th><th id="ms-viewers-ep-th">Episodes</th><th>Traffic</th><th>Last watched</th></tr></thead>
+                <tbody id="ms-viewers-list"></tbody>
+              </table>
+            </div>
+            <div class="pager hidden" id="msv-pager">
+              <span class="where" id="msv-count"></span>
+              <span class="spacer"></span>
+              <button id="msv-prev" onclick="statsListPage('msViewersPage',-1,'media')">← Prev</button>
+              <span class="where" id="msv-page"></span>
+              <button id="msv-next" onclick="statsListPage('msViewersPage',1,'media')">Next →</button>
+            </div>
+          </div>
+          <div class="stat-panel">
+            <div class="stat-panel-head"><h3>Quality breakdown</h3><span class="tiny">By watch sessions</span></div>
+            <div id="ms-quality"></div>
+            <div class="pager hidden" id="msq-pager">
+              <span class="where" id="msq-count"></span>
+              <span class="spacer"></span>
+              <button id="msq-prev" onclick="statsListPage('msQualityPage',-1,'media')">← Prev</button>
+              <span class="where" id="msq-page"></span>
+              <button id="msq-next" onclick="statsListPage('msQualityPage',1,'media')">Next →</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card hidden" id="ms-episodes-card">
+          <h2>Episode breakdown</h2>
+          <p class="hint">Per-episode plays, viewers, and traffic for this series.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Episode</th><th>Plays</th><th>Viewers</th><th>Traffic</th><th>Last watched</th></tr></thead>
+              <tbody id="ms-episodes"></tbody>
+            </table>
+          </div>
+          <div class="pager hidden" id="mse-pager">
+            <span class="where" id="mse-count"></span>
+            <span class="spacer"></span>
+            <button id="mse-prev" onclick="statsListPage('msEpisodesPage',-1,'media')">← Prev</button>
+            <span class="where" id="mse-page"></span>
+            <button id="mse-next" onclick="statsListPage('msEpisodesPage',1,'media')">Next →</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Watch history</h2>
+          <p class="hint">Playback sessions for this title.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Manifest</th><th id="ms-hist-ep-th">Episode</th><th>Quality</th><th>Release</th><th>Traffic</th><th>Watched</th></tr></thead>
+              <tbody id="ms-history"></tbody>
+            </table>
+          </div>
+          <div class="pager hidden" id="ms-pager">
+            <span class="where" id="ms-count"></span>
+            <span class="spacer"></span>
+            <button id="ms-prev" onclick="mediaStatsPage(-1)">← Prev</button>
+            <span class="where" id="ms-page"></span>
+            <button id="ms-next" onclick="mediaStatsPage(1)">Next →</button>
+          </div>
         </div>
       </div>
     </section>
@@ -508,7 +916,16 @@ tr:last-child td{border-bottom:0}
 </div>
 
 <script>
-let state = {overview:null, security:null, keysQ:'', keysStatus:'all', keysPage:1, keysPer:25, keysTotal:0, torPage:1, torPer:25, sessPage:1, sessPer:25, revealedKeys:new Set()};
+let state = {
+  overview:null, security:null, keysQ:'', keysStatus:'all', keysPage:1, keysPer:25, keysTotal:0,
+  torPage:1, torPer:25, sessPage:1, sessPer:25, revealedKeys:new Set(),
+  statsRange:'30d', statsChartMetric:'plays', statsKeyId:null, statsKeyQ:'', statsKeyType:'', statsKeyPage:1, statsKeyPer:25,
+  statsMedia:null, statsMediaPage:1, statsMediaPer:25,
+  gsQualityPage:1, gsQualityPer:8, gsUsersPage:1, gsUsersPer:15, gsTopPage:1, gsTopPer:15, gsRecentPage:1, gsRecentPer:15,
+  ksQualityPage:1, ksQualityPer:8, ksTopPage:1, ksTopPer:15,
+  msQualityPage:1, msQualityPer:8, msViewersPage:1, msViewersPer:15, msEpisodesPage:1, msEpisodesPer:25,
+  globalStats:null, keyStats:null, mediaStats:null
+};
 const $ = s => document.querySelector(s);
 const esc = s => String(s??'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
@@ -519,10 +936,12 @@ const ICON = {
   eyeOff:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.7 5.1A10.4 10.4 0 0 1 12 5c6.5 0 10 7 10 7a13.4 13.4 0 0 1-2.7 3.4M6.6 6.6A13.7 13.7 0 0 0 2 12s3.5 7 10 7a9.9 9.9 0 0 0 5.4-1.6"/><path d="m2 2 20 20"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>',
   pause:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M9 5v14M15 5v14"/></svg>',
   play:'<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg>',
+  chart:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>',
   trash:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4.5A1.5 1.5 0 0 1 9.5 3h5A1.5 1.5 0 0 1 16 4.5V6m2.5 0 .8 13.1A1.9 1.9 0 0 1 17.4 21H6.6a1.9 1.9 0 0 1-1.9-1.9L5.5 6"/></svg>',
 };
 const titles = {
   keys:['Manifest keys','One addon URL per device, individually revocable.'],
+  stats:['Analytics','What manifest users are watching and streaming across Bitlab.'],
   activity:['Activity','What the torrent engine is doing right now.'],
   security:['Security','Two-factor login and signed-in sessions.']
 };
@@ -609,30 +1028,76 @@ async function doLogin(){
 }
 async function logout(){ await fetch('/admin/api/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}); location.assign('/login'); }
 
-const TABS = ['keys','activity','security'];
-function tabFromPath(){
+const TABS = ['keys','stats','activity','security'];
+function mediaQueryString(m){
+  if (!m) return '';
+  const p = new URLSearchParams();
+  if (m.type) p.set('type', m.type);
+  if (m.imdb) p.set('imdb', m.imdb);
+  if (m.title) p.set('title', m.title);
+  if (m.infohash) p.set('infohash', m.infohash);
+  return p.toString();
+}
+function routeFromPath(){
   const p = location.pathname.replace(/^\/admin\/?/, '').replace(/\/+$/, '');
-  return TABS.includes(p) ? p : 'keys';
+  if (p === 'media') {
+    const q = new URLSearchParams(location.search);
+    const m = {
+      type: q.get('type') || '',
+      imdb: q.get('imdb') || '',
+      title: q.get('title') || '',
+      infohash: q.get('infohash') || '',
+    };
+    if (m.imdb || m.title || m.infohash) return { tab: 'stats', keyId: null, media: m };
+    return { tab: 'stats', keyId: null, media: null };
+  }
+  if (p.startsWith('stats/')) {
+    const id = p.slice(6);
+    if (id) return { tab: 'stats', keyId: id, media: null };
+  }
+  return { tab: TABS.includes(p) ? p : 'keys', keyId: null, media: null };
 }
-function tabPath(name){ return '/admin/' + (TABS.includes(name) ? name : 'keys'); }
+function tabPath(name, keyId, media){
+  if (name === 'stats' && media) {
+    const qs = mediaQueryString(media);
+    return '/admin/media' + (qs ? ('?' + qs) : '');
+  }
+  if (name === 'stats' && keyId) return '/admin/stats/' + encodeURIComponent(keyId);
+  return '/admin/' + (TABS.includes(name) ? name : 'keys');
+}
 function showTabFromPath(){
-  const name = tabFromPath();
-  tab(name, true);
-  // Canonicalise /admin and /admin/ to the tab's own path, so a refresh, a
-  // bookmark and a copied URL all land on the same panel.
-  if (location.pathname !== tabPath(name)) history.replaceState({tab:name}, '', tabPath(name));
+  const r = routeFromPath();
+  state.statsKeyId = r.keyId;
+  state.statsMedia = r.media;
+  tab(r.tab, true, r.keyId, r.media);
+  const canonical = tabPath(r.tab, r.keyId, r.media);
+  if (location.pathname + location.search !== canonical) history.replaceState({tab:r.tab, keyId:r.keyId, media:r.media}, '', canonical);
 }
-function tab(name, silent){
+function tab(name, silent, keyId, media){
   if (!TABS.includes(name)) name = 'keys';
+  if (name === 'stats' && media !== undefined) state.statsMedia = media;
+  else if (name === 'stats' && !silent && media === undefined) state.statsMedia = null;
+  if (name === 'stats' && keyId !== undefined) state.statsKeyId = keyId;
+  else if (name === 'stats' && !silent) state.statsKeyId = null;
   document.querySelectorAll('.nav').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
-  ['keys','activity','security'].forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== name));
+  TABS.forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== name));
   const t = titles[name] || ['Bitlab',''];
   $('#page-title').textContent = t[0]; $('#page-sub').textContent = t[1];
   document.title = t[0] + ' · Bitlab';
-  if (!silent) history.pushState({tab:name}, '', tabPath(name));
+  if (!silent) {
+    const k = name==='stats' ? state.statsKeyId : null;
+    const m = name==='stats' ? state.statsMedia : null;
+    history.pushState({tab:name, keyId:k, media:m}, '', tabPath(name, k, m));
+  }
   if (name === 'security') loadSecurity();
+  if (name === 'stats') loadStats();
 }
-window.addEventListener('popstate', () => tab(tabFromPath(), true));
+window.addEventListener('popstate', () => {
+  const r = routeFromPath();
+  state.statsKeyId = r.keyId;
+  state.statsMedia = r.media;
+  tab(r.tab, true, r.keyId, r.media);
+});
 
 async function refresh(){
   try {
@@ -647,6 +1112,7 @@ async function refresh(){
     renderCache(o.cache || {});
     loadKeys();
     renderTorrents(o.torrents || []);
+    if (!$('#tab-stats').classList.contains('hidden')) loadStats(true);
   } catch(e){
     if (e && e.message && e.message !== 'signed out') toast('Refresh failed: ' + e.message, true);
   }
@@ -752,8 +1218,9 @@ function renderKeys(keys, base){
       : paused ? '<span class="pill paused">paused</span>' : '<span class="pill">active</span>';
     return `<div class="key-card">
       <div class="key-head">
-        <div class="key-title"><span class="${dot}"></span><b>${esc(k.label)}</b>${pill}<span class="idtag mono">${esc(k.id)}</span></div>
+        <div class="key-title"><span class="${dot}"></span><span class="key-title-link" data-id="${esc(k.id)}" onclick="openKeyStats(this.dataset.id)" title="View watch analytics">${esc(k.label)}</span>${pill}<span class="idtag mono">${esc(k.id)}</span></div>
         <div class="key-actions">
+          <button class="icon" title="Watch analytics" data-id="${esc(k.id)}" onclick="openKeyStats(this.dataset.id)">${ICON.chart}</button>
           <button class="icon" title="${paused?'Resume':'Pause'}" data-id="${esc(k.id)}" data-pause="${paused?0:1}" onclick="pauseKey(this.dataset.id,+this.dataset.pause)">${paused?ICON.play:ICON.pause}</button>
           <button class="icon danger" title="Revoke and delete" data-id="${esc(k.id)}" data-label="${esc(k.label)}" onclick="revokeKey(this.dataset.id,this.dataset.label)">${ICON.trash}</button>
         </div>
@@ -958,12 +1425,664 @@ async function revokeOthers(){
   try { await api('/admin/api/sessions/revoke-others', {method:'POST'}); toast('Other sessions signed out'); loadSecurity(); } catch(e){ toast(e.message, true); }
 }
 
+/* ---- stats ---- */
+function openKeyStats(id){
+  if (!id) return;
+  state.statsMedia = null;
+  state.statsKeyId = id;
+  state.statsKeyQ = '';
+  state.statsKeyType = '';
+  state.statsKeyPage = 1;
+  state.ksQualityPage = 1;
+  state.ksTopPage = 1;
+  if ($('#ks-search')) $('#ks-search').value = '';
+  if ($('#ks-type')) $('#ks-type').value = '';
+  tab('stats', false, id, null);
+}
+function openMediaStats(media){
+  if (!media || (!media.imdb && !media.title && !media.infohash)) return;
+  state.statsKeyId = null;
+  state.statsMedia = {
+    type: media.type || '',
+    imdb: media.imdb || '',
+    title: media.title || '',
+    infohash: media.infohash || '',
+  };
+  state.statsMediaPage = 1;
+  state.msQualityPage = 1;
+  state.msViewersPage = 1;
+  state.msEpisodesPage = 1;
+  tab('stats', false, null, state.statsMedia);
+}
+function openMediaFromEl(el){
+  if (!el) return;
+  openMediaStats({
+    type: el.dataset.type || '',
+    imdb: el.dataset.imdb || '',
+    title: el.dataset.title || '',
+    infohash: el.dataset.ih || '',
+  });
+}
+function openGlobalStats(){
+  state.statsKeyId = null;
+  state.statsMedia = null;
+  tab('stats', false, null, null);
+}
+function setStatsRange(r){
+  state.statsRange = r;
+  state.statsKeyPage = 1;
+  state.statsMediaPage = 1;
+  state.gsQualityPage = 1;
+  state.gsUsersPage = 1;
+  state.gsTopPage = 1;
+  state.gsRecentPage = 1;
+  state.ksQualityPage = 1;
+  state.ksTopPage = 1;
+  state.msQualityPage = 1;
+  state.msViewersPage = 1;
+  state.msEpisodesPage = 1;
+  document.querySelectorAll('#gs-range button, #ks-range button, #ms-range button').forEach(b => b.classList.toggle('on', b.dataset.r === r));
+  loadStats();
+}
+function setChartMetric(m){
+  state.statsChartMetric = m;
+  document.querySelectorAll('#gs-metric-toggle button, #ks-metric-toggle button, #ms-metric-toggle button').forEach(b => b.classList.toggle('on', b.dataset.m === m));
+  if (state.statsMedia && state.mediaStats) {
+    renderTimelineChart('#ms-chart', '#ms-chart-axis', state.mediaStats.timeline || [], state.mediaStats.range);
+  } else if (state.statsKeyId && state.keyStats) {
+    renderTimelineChart('#ks-chart', '#ks-chart-axis', state.keyStats.timeline || [], state.keyStats.range);
+  } else if (state.globalStats) {
+    renderTimelineChart('#gs-chart', '#gs-chart-axis', state.globalStats.timeline || [], state.globalStats.range);
+  }
+}
+async function loadStats(silent){
+  const isMedia = !!state.statsMedia;
+  const isKey = !isMedia && !!state.statsKeyId;
+  $('#stats-global').classList.toggle('hidden', isKey || isMedia);
+  $('#stats-key').classList.toggle('hidden', !isKey);
+  $('#stats-media').classList.toggle('hidden', !isMedia);
+  document.querySelectorAll('#gs-range button, #ks-range button, #ms-range button').forEach(b => b.classList.toggle('on', b.dataset.r === state.statsRange));
+  if (isMedia) {
+    await loadMediaStats(silent);
+  } else if (isKey) {
+    await loadKeyStats(silent);
+  } else {
+    await loadGlobalStats(silent);
+  }
+}
+async function loadGlobalStats(silent){
+  try {
+    const url = '/admin/api/stats?range=' + encodeURIComponent(state.statsRange)
+      + '&recent_page=' + state.gsRecentPage
+      + '&recent_per=' + state.gsRecentPer;
+    const s = await api(url);
+    if (!s || s.twofa) return;
+    state.globalStats = s;
+    renderGlobalStats(s);
+  } catch(e){
+    if (!silent && e && e.message !== 'signed out') toast('Stats failed: ' + e.message, true);
+  }
+}
+async function loadKeyStats(silent){
+  try {
+    const url = '/admin/api/stats/' + encodeURIComponent(state.statsKeyId)
+      + '?range=' + encodeURIComponent(state.statsRange)
+      + '&type=' + encodeURIComponent(state.statsKeyType)
+      + '&q=' + encodeURIComponent(state.statsKeyQ)
+      + '&page=' + state.statsKeyPage
+      + '&per=' + state.statsKeyPer;
+    const s = await api(url);
+    if (!s || s.twofa) return;
+    state.keyStats = s;
+    renderKeyStats(s);
+  } catch(e){
+    if (!silent && e && e.message !== 'signed out') {
+      toast('Key stats failed: ' + e.message, true);
+      if (e.message === 'not found') openGlobalStats();
+    }
+  }
+}
+async function loadMediaStats(silent){
+  try {
+    const qs = mediaQueryString(state.statsMedia);
+    const url = '/admin/api/media?' + (qs ? (qs + '&') : '')
+      + 'range=' + encodeURIComponent(state.statsRange)
+      + '&page=' + state.statsMediaPage
+      + '&per=' + state.statsMediaPer;
+    const s = await api(url);
+    if (!s || s.twofa) return;
+    state.mediaStats = s;
+    renderMediaStats(s);
+  } catch(e){
+    if (!silent && e && e.message !== 'signed out') {
+      toast('Media stats failed: ' + e.message, true);
+      if (e.message === 'not found') openGlobalStats();
+    }
+  }
+}
+function mediaStatsPage(delta){
+  const next = state.statsMediaPage + delta;
+  if (next < 1) return;
+  state.statsMediaPage = next;
+  loadMediaStats();
+}
+function keyStatsPage(delta){
+  const next = state.statsKeyPage + delta;
+  if (next < 1) return;
+  state.statsKeyPage = next;
+  loadKeyStats();
+}
+function gsRecentPage(delta){
+  const next = state.gsRecentPage + delta;
+  if (next < 1) return;
+  state.gsRecentPage = next;
+  loadGlobalStats();
+}
+function statsListPage(key, delta, scope){
+  const next = state[key] + delta;
+  if (next < 1) return;
+  state[key] = next;
+  if (scope === 'media' && state.mediaStats) renderMediaStats(state.mediaStats);
+  else if (scope === true && state.keyStats) renderKeyStats(state.keyStats);
+  else if (!scope && state.globalStats) renderGlobalStats(state.globalStats);
+}
+function updatePager(prefix, page, per, total){
+  const pager = $('#' + prefix + '-pager');
+  if (!pager) return;
+  const pages = Math.max(1, Math.ceil(total / per));
+  pager.classList.toggle('hidden', total <= 0 || pages <= 1);
+  if (total <= 0 || pages <= 1) return;
+  const from = (page - 1) * per + 1;
+  const to = Math.min(page * per, total);
+  $('#' + prefix + '-count').textContent = from + '\u2013' + to + ' of ' + total;
+  $('#' + prefix + '-page').textContent = 'page ' + page + ' / ' + pages;
+  $('#' + prefix + '-prev').disabled = page <= 1;
+  $('#' + prefix + '-next').disabled = page >= pages;
+}
+function slicePage(list, stateKey, per){
+  const total = (list && list.length) || 0;
+  const pages = Math.max(1, Math.ceil(total / per));
+  if (state[stateKey] > pages) state[stateKey] = pages;
+  if (state[stateKey] < 1) state[stateKey] = 1;
+  const from = (state[stateKey] - 1) * per;
+  return { from, items: list ? list.slice(from, from + per) : [], total, page: state[stateKey] };
+}
+async function resetAllStats(){
+  if (!await uiConfirm('Reset all stats?', 'This permanently clears all watch history, playback counts, and traffic counters across every manifest key. Your keys will remain active.', 'Reset all stats')) return;
+  const btn = $('#btn-reset-all-stats');
+  if (btn) btn.disabled = true;
+  try {
+    await api('/admin/api/stats/reset', { method: 'POST' });
+    toast('All stats reset');
+    await loadStats();
+    await refresh();
+  } catch(e){
+    toast('Reset failed: ' + e.message, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+async function resetKeyStats(id, label){
+  if (!await uiConfirm('Reset stats for "' + label + '"?', 'This permanently clears watch history, playback counts, and traffic counters for this manifest key. The key URL will keep working.', 'Reset stats')) return;
+  const btn = $('#btn-reset-key-stats');
+  if (btn) btn.disabled = true;
+  try {
+    await api('/admin/api/stats/' + encodeURIComponent(id) + '/reset', { method: 'POST' });
+    toast('Stats reset for ' + label);
+    await loadStats();
+    await refresh();
+  } catch(e){
+    toast('Reset failed: ' + e.message, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function mediaAttrs(m){
+  const typ = esc(m.media_type || '');
+  const imdb = esc(m.imdb_id || '');
+  const title = esc(m.title || m.release_name || '');
+  const ih = esc(m.infohash || '');
+  return `data-type="${typ}" data-imdb="${imdb}" data-title="${title}" data-ih="${ih}"`;
+}
+function fmtTitleCell(w){
+  const ep = (w.media_type === 'series' && w.season > 0 && w.episode > 0)
+    ? `<span class="badge ep">S${String(w.season).padStart(2,'0')}E${String(w.episode).padStart(2,'0')}</span> ` : '';
+  const yr = w.year > 0 ? ` <span class="tiny muted">(${w.year})</span>` : '';
+  const typeBadge = `<span class="badge ${w.media_type === 'series' ? 'series' : 'movie'}">${w.media_type === 'series' ? 'Series' : 'Movie'}</span>`;
+  const title = esc(w.title || w.release_name || w.infohash.slice(0,12));
+  const rel = w.release_name && w.release_name !== w.title ? `<div class="tiny muted" style="max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(w.release_name)}</div>` : '';
+  return `<div>${typeBadge} ${ep}<b class="user-link" ${mediaAttrs(w)} onclick="event.stopPropagation();openMediaFromEl(this)">${title}</b>${yr}</div>${rel}`;
+}
+function fmtQualityBadge(q){
+  const v = (q || 'Unknown').toUpperCase();
+  const cls = v.includes('2160') || v.includes('4K') ? 'uhd' : v.includes('1080') ? 'fhd' : v.includes('720') ? 'hd' : '';
+  return `<span class="q-badge ${cls}">${esc(q || 'Unknown')}</span>`;
+}
+function renderTypeSplit(sel, list){
+  const el = $(sel);
+  const movie = (list || []).find(x => x.media_type === 'movie') || { plays:0, unique_titles:0, bytes_served:0 };
+  const series = (list || []).find(x => x.media_type === 'series') || { plays:0, unique_titles:0, bytes_served:0 };
+  const total = movie.plays + series.plays;
+  if (!total) {
+    el.innerHTML = '<div class="empty" style="padding:14px 0">No watch data in this timeframe.</div>';
+    return;
+  }
+  const mPct = Math.round((movie.plays / total) * 100);
+  const sPct = 100 - mPct;
+  el.innerHTML = `
+    <div class="segbar">
+      <div class="segbar-movie" style="width:${mPct}%"></div>
+      <div class="segbar-series" style="width:${sPct}%"></div>
+    </div>
+    <div class="split-legend">
+      <div class="split-item">
+        <span class="lhs"><span class="swatch" style="background:var(--accent)"></span><b>Movies</b> <span class="tiny muted">(${movie.unique_titles} titles)</span></span>
+        <span class="num">${movie.plays} plays <span class="tiny muted">· ${mPct}% · ${bytes(movie.bytes_served)}</span></span>
+      </div>
+      <div class="split-item">
+        <span class="lhs"><span class="swatch" style="background:var(--green)"></span><b>Series</b> <span class="tiny muted">(${series.unique_titles} shows)</span></span>
+        <span class="num">${series.plays} plays <span class="tiny muted">· ${sPct}% · ${bytes(series.bytes_served)}</span></span>
+      </div>
+    </div>`;
+}
+function renderQualityBreakdown(sel, pagerPrefix, list, pageKey, per){
+  const el = $(sel);
+  if (!list || !list.length) {
+    el.innerHTML = '<div class="empty" style="padding:14px 0">No quality data in this timeframe.</div>';
+    updatePager(pagerPrefix, 1, per, 0);
+    return;
+  }
+  const total = list.reduce((a,b) => a + (b.plays||0), 0) || 1;
+  const max = Math.max(...list.map(x => x.plays||0), 1);
+  const pg = slicePage(list, pageKey, per);
+  el.innerHTML = '<div class="q-list">' + pg.items.map(q => {
+    const pct = Math.round((q.plays / total) * 100);
+    const barW = Math.max(4, Math.round((q.plays / max) * 100));
+    return `<div class="q-row">
+      ${fmtQualityBadge(q.quality)}
+      <span class="bar"><i style="width:${barW}%"></i></span>
+      <span class="num tiny">${q.plays} <span class="muted">(${pct}%)</span></span>
+    </div>`;
+  }).join('') + '</div>';
+  updatePager(pagerPrefix, pg.page, per, pg.total);
+}
+function renderTimelineChart(wrapSel, axisSel, buckets, range){
+  const wrap = $(wrapSel), axis = $(axisSel);
+  if (!buckets || !buckets.length) {
+    wrap.innerHTML = '<div class="empty">No activity data.</div>';
+    axis.innerHTML = '';
+    return;
+  }
+  const isBytes = state.statsChartMetric === 'bytes';
+  const vals = buckets.map(b => isBytes ? b.bytes_served : b.plays);
+  const maxVal = Math.max(...vals, 1);
+  const w = 680, h = 156, padT = 12, padB = 4;
+  const usableH = h - padT - padB;
+  const step = w / buckets.length;
+  const barW = Math.max(4, Math.min(26, step * 0.66));
+
+  let bars = '';
+  for (let i = 0; i < buckets.length; i++) {
+    const b = buckets[i];
+    const v = vals[i];
+    const bh = v > 0 ? Math.max(4, Math.round((v / maxVal) * usableH)) : 2;
+    const x = (i * step + (step - barW) / 2).toFixed(1);
+    const y = (h - padB - bh).toFixed(1);
+    const dt = new Date(b.bucket_ts * 1000);
+    const label = range === '24h'
+      ? dt.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit'})
+      : dt.toLocaleDateString(undefined, {month:'short', day:'numeric'});
+    const opacity = v > 0 ? '' : ' style="opacity:.14"';
+    bars += `<rect class="chart-bar" x="${x}" y="${y}" width="${barW.toFixed(1)}" height="${bh}" rx="2.5"${opacity}
+      data-label="${esc(label)}" data-plays="${b.plays}" data-bytes="${b.bytes_served}" data-x="${(parseFloat(x)+barW/2)/w*100}" data-y="${parseFloat(y)/h*100}"/>`;
+  }
+  const grid = [0.25, 0.5, 0.75].map(f => {
+    const gy = (padT + usableH * (1 - f)).toFixed(1);
+    return `<line x1="0" y1="${gy}" x2="${w}" y2="${gy}" stroke="#1c2128" stroke-width="1"/>`;
+  }).join('');
+
+  wrap.innerHTML = `<svg class="chart-svg" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${grid}${bars}</svg><div class="chart-tip hidden"></div>`;
+  const tip = wrap.querySelector('.chart-tip');
+  wrap.querySelectorAll('.chart-bar').forEach(r => {
+    r.addEventListener('mouseenter', () => {
+      tip.innerHTML = `<b>${r.dataset.label}</b><br>${r.dataset.plays} plays · ${bytes(Number(r.dataset.bytes))}`;
+      tip.style.left = r.dataset.x + '%';
+      tip.style.top = r.dataset.y + '%';
+      tip.classList.remove('hidden');
+    });
+    r.addEventListener('mouseleave', () => tip.classList.add('hidden'));
+  });
+
+  const first = new Date(buckets[0].bucket_ts * 1000);
+  const mid = new Date(buckets[Math.floor(buckets.length/2)].bucket_ts * 1000);
+  const last = new Date(buckets[buckets.length-1].bucket_ts * 1000);
+  const fmtAx = d => range === '24h'
+    ? d.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit'})
+    : d.toLocaleDateString(undefined, {month:'short', day:'numeric'});
+  axis.innerHTML = `<span>${fmtAx(first)}</span><span>${fmtAx(mid)}</span><span>${fmtAx(last)}</span>`;
+}
+
+function renderGlobalStats(s){
+  $('#page-title').textContent = 'Analytics';
+  $('#page-sub').textContent = 'What manifest users are watching and streaming across Bitlab.';
+  document.title = 'Analytics · Bitlab';
+  $('#gs-updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+
+  $('#gs-plays').textContent = s.total_plays;
+  $('#gs-req-sub').textContent = s.total_requests + ' total API requests';
+  $('#gs-titles').textContent = s.unique_titles;
+  const mv = (s.type_breakdown||[]).find(x => x.media_type === 'movie');
+  const sr = (s.type_breakdown||[]).find(x => x.media_type === 'series');
+  $('#gs-titles-sub').textContent = `${mv ? mv.unique_titles : 0} movies · ${sr ? sr.unique_titles : 0} series`;
+  $('#gs-wbytes').textContent = bytes(s.total_watch_bytes);
+  $('#gs-kbytes-sub').textContent = bytes(s.total_key_bytes) + ' all-time key traffic';
+  $('#gs-viewers').textContent = s.active_viewers;
+  $('#gs-keys-sub').textContent = s.active_keys + ' active / ' + s.total_keys + ' total keys';
+
+  const cw = s.currently_watching || [];
+  $('#gs-watching-count').textContent = cw.length;
+  const cwTb = $('#gs-watching');
+  if (!cw.length) {
+    cwTb.innerHTML = '<tr><td colspan="5" class="empty">Nothing is being watched right now.</td></tr>';
+  } else {
+    cwTb.innerHTML = cw.map(w => `<tr>
+      <td class="cell-main">${fmtTitleCell(w)}</td>
+      <td data-label="Manifest"><span class="user-link" onclick="openKeyStats('${esc(w.key_id)}')">${esc(w.key_label)}</span></td>
+      <td data-label="Quality">${fmtQualityBadge(w.quality)}</td>
+      <td data-label="Streamed" class="num">${bytes(w.bytes_served)}</td>
+      <td data-label="Started" class="tiny muted" title="${esc(when(w.started_at))}">${ago(w.started_at)}</td>
+    </tr>`).join('');
+  }
+
+  renderTimelineChart('#gs-chart', '#gs-chart-axis', s.timeline || [], s.range);
+  renderTypeSplit('#gs-split', s.type_breakdown || []);
+  renderQualityBreakdown('#gs-quality', 'gsq', s.quality_breakdown || [], 'gsQualityPage', state.gsQualityPer);
+
+  const usersTb = $('#gs-users');
+  const users = s.key_leaderboard || [];
+  if (!users.length) {
+    usersTb.innerHTML = '<tr><td colspan="7" class="empty">No manifest keys created yet.</td></tr>';
+    updatePager('gsu', 1, state.gsUsersPer, 0);
+  } else {
+    const uPg = slicePage(users, 'gsUsersPage', state.gsUsersPer);
+    usersTb.innerHTML = uPg.items.map(u => {
+      const expired = u.expires_at && u.expires_at*1000 < Date.now();
+      const paused = u.status === 'paused';
+      const dot = expired ? 'dot expired' : paused ? 'dot paused' : 'dot';
+      return `<tr class="clickable-row" onclick="openKeyStats('${esc(u.key_id)}')">
+        <td class="cell-main"><div style="display:flex;align-items:center;gap:8px"><span class="${dot}"></span><b>${esc(u.label)}</b><span class="idtag mono">${esc(u.key_id)}</span></div>
+          ${u.note ? `<div class="tiny muted">${esc(u.note)}</div>` : ''}</td>
+        <td data-label="Plays" class="num"><b>${u.plays}</b></td>
+        <td data-label="Titles" class="num"><span class="tiny">${u.movies_count} mov · ${u.series_count} ser</span></td>
+        <td data-label="Watch traffic" class="num">${bytes(u.watch_bytes)}</td>
+        <td data-label="Total traffic" class="num muted">${bytes(u.key_bytes)}</td>
+        <td data-label="Last watched" class="tiny muted">${ago(u.last_watched_at || u.last_used_at)}</td>
+        <td class="cell-action tiny muted">→</td>
+      </tr>`;
+    }).join('');
+    updatePager('gsu', uPg.page, state.gsUsersPer, uPg.total);
+  }
+
+  const topTb = $('#gs-top');
+  const tops = s.top_titles || [];
+  if (!tops.length) {
+    topTb.innerHTML = '<tr><td colspan="6" class="empty">No titles watched in this timeframe yet.</td></tr>';
+    updatePager('gst', 1, state.gsTopPer, 0);
+  } else {
+    const tPg = slicePage(tops, 'gsTopPage', state.gsTopPer);
+    topTb.innerHTML = tPg.items.map((t, i) => {
+      const rank = tPg.from + i;
+      const typeBadge = `<span class="badge ${t.media_type === 'series' ? 'series' : 'movie'}">${t.media_type === 'series' ? 'Series' : 'Movie'}</span>`;
+      const yr = t.year > 0 ? ` <span class="tiny muted">(${t.year})</span>` : '';
+      const imdb = t.imdb_id ? ` <span class="idtag mono">${esc(t.imdb_id)}</span>` : '';
+      return `<tr class="clickable-row" ${mediaAttrs(t)} onclick="openMediaFromEl(this)">
+        <td data-label="#"><span class="rank-num ${rank<3?'top':''}">${rank+1}</span></td>
+        <td class="cell-main">${typeBadge} <b>${esc(t.title)}</b>${yr}${imdb}</td>
+        <td data-label="Plays" class="num"><b>${t.plays}</b></td>
+        <td data-label="Viewers" class="num">${t.unique_viewers} ${t.unique_viewers===1?'user':'users'}</td>
+        <td data-label="Traffic" class="num">${bytes(t.bytes_served)}</td>
+        <td data-label="Last watched" class="tiny muted">${ago(t.last_watched_at)}</td>
+      </tr>`;
+    }).join('');
+    updatePager('gst', tPg.page, state.gsTopPer, tPg.total);
+  }
+
+  const recTb = $('#gs-recent');
+  const rec = s.recent_watches || [];
+  if (!rec.length) {
+    recTb.innerHTML = '<tr><td colspan="5" class="empty">No recent playback activity.</td></tr>';
+    updatePager('gsr', 1, state.gsRecentPer, 0);
+  } else {
+    recTb.innerHTML = rec.map(w => `<tr>
+      <td class="cell-main">${fmtTitleCell(w)}</td>
+      <td data-label="Manifest"><span class="user-link" onclick="openKeyStats('${esc(w.key_id)}')">${esc(w.key_label)}</span></td>
+      <td data-label="Quality">${fmtQualityBadge(w.quality)}</td>
+      <td data-label="Traffic" class="num">${bytes(w.bytes_served)}</td>
+      <td data-label="When" class="tiny muted" title="${esc(when(w.last_watched_at))}">${ago(w.last_watched_at)}</td>
+    </tr>`).join('');
+    updatePager('gsr', s.recent_page || 1, s.recent_per || state.gsRecentPer, s.recent_total || 0);
+  }
+}
+
+function renderKeyStats(s){
+  const k = s.key;
+  $('#page-title').textContent = k.label + ' · Analytics';
+  $('#page-sub').textContent = 'Dedicated watch history and streaming breakdown for manifest key ' + k.id + '.';
+  document.title = k.label + ' · Analytics · Bitlab';
+
+  const expired = k.expires_at && k.expires_at*1000 < Date.now();
+  const paused = k.status === 'paused';
+  const dot = expired ? 'dot expired' : paused ? 'dot paused' : 'dot';
+  const pill = expired ? '<span class="pill expired">expired</span>'
+    : paused ? '<span class="pill paused">paused</span>' : '<span class="pill">active</span>';
+
+  $('#ks-hero').innerHTML = `
+    <div>
+      <div class="key-hero-title"><span class="${dot}"></span><h2>${esc(k.label)}</h2>${pill}<span class="idtag mono">${esc(k.id)}</span></div>
+      <div class="key-hero-meta">
+        <span>${esc(k.note || 'no note')}</span><span class="sep">·</span>
+        <span>Created ${when(k.created_at)}</span><span class="sep">·</span>
+        <span>${expiry(k.expires_at)}</span>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button onclick="tab('keys')">Manage keys</button>
+      <button class="danger" id="btn-reset-key-stats" data-id="${esc(k.id)}" data-label="${esc(k.label)}" onclick="resetKeyStats(this.dataset.id,this.dataset.label)">Reset stats</button>
+    </div>`;
+
+  $('#ks-plays').textContent = s.total_plays;
+  $('#ks-req-sub').textContent = k.requests + ' total API requests';
+  $('#ks-titles').textContent = s.unique_titles;
+  $('#ks-titles-sub').textContent = s.movies_count + ' movies · ' + s.series_count + ' series';
+  $('#ks-wbytes').textContent = bytes(s.total_watch_bytes);
+  $('#ks-kbytes-sub').textContent = bytes(k.bytes) + ' all-time key traffic';
+  $('#ks-last').textContent = ago(s.last_watched_at || k.last_used_at);
+  $('#ks-used-sub').textContent = s.last_watched_at ? when(s.last_watched_at) : 'no watch sessions yet';
+
+  const kw = s.currently_watching || [];
+  $('#ks-watching-count').textContent = kw.length;
+  const kwTb = $('#ks-watching');
+  if (!kw.length) {
+    kwTb.innerHTML = '<tr><td colspan="4" class="empty">Nothing is being watched on this key right now.</td></tr>';
+  } else {
+    kwTb.innerHTML = kw.map(w => `<tr>
+      <td class="cell-main">${fmtTitleCell(w)}</td>
+      <td data-label="Quality">${fmtQualityBadge(w.quality)}</td>
+      <td data-label="Streamed" class="num">${bytes(w.bytes_served)}</td>
+      <td data-label="Started" class="tiny muted" title="${esc(when(w.started_at))}">${ago(w.started_at)}</td>
+    </tr>`).join('');
+  }
+
+  renderTimelineChart('#ks-chart', '#ks-chart-axis', s.timeline || [], s.range);
+  renderTypeSplit('#ks-split', s.type_breakdown || []);
+  renderQualityBreakdown('#ks-quality', 'ksq', s.quality_breakdown || [], 'ksQualityPage', state.ksQualityPer);
+
+  const topTb = $('#ks-top');
+  const tops = s.top_titles || [];
+  if (!tops.length) {
+    topTb.innerHTML = '<tr><td colspan="6" class="empty">No titles watched by this key in this timeframe.</td></tr>';
+    updatePager('kst', 1, state.ksTopPer, 0);
+  } else {
+    const tPg = slicePage(tops, 'ksTopPage', state.ksTopPer);
+    topTb.innerHTML = tPg.items.map((t, i) => {
+      const rank = tPg.from + i;
+      const typeBadge = `<span class="badge ${t.media_type === 'series' ? 'series' : 'movie'}">${t.media_type === 'series' ? 'Series' : 'Movie'}</span>`;
+      const yr = t.year > 0 ? ` <span class="tiny muted">(${t.year})</span>` : '';
+      return `<tr class="clickable-row" ${mediaAttrs(t)} onclick="openMediaFromEl(this)">
+        <td data-label="#"><span class="rank-num ${rank<3?'top':''}">${rank+1}</span></td>
+        <td class="cell-main">${typeBadge} <b>${esc(t.title)}</b>${yr}</td>
+        <td data-label="Plays" class="num"><b>${t.plays}</b></td>
+        <td data-label="Episodes" class="num">${t.media_type==='series' ? (t.episodes_watched + ' eps') : '—'}</td>
+        <td data-label="Traffic" class="num">${bytes(t.bytes_served)}</td>
+        <td data-label="Last watched" class="tiny muted">${ago(t.last_watched_at)}</td>
+      </tr>`;
+    }).join('');
+    updatePager('kst', tPg.page, state.ksTopPer, tPg.total);
+  }
+
+  const hTb = $('#ks-history');
+  const hist = s.history || [];
+  if (!hist.length) {
+    hTb.innerHTML = '<tr><td colspan="5" class="empty">No watch history matches this filter.</td></tr>';
+    updatePager('ks', 1, state.statsKeyPer, 0);
+  } else {
+    hTb.innerHTML = hist.map(w => `<tr>
+      <td class="cell-main">${fmtTitleCell(w)}</td>
+      <td data-label="Quality">${fmtQualityBadge(w.quality)}</td>
+      <td data-label="Release" class="tiny muted" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(w.release_name || w.infohash.slice(0,12))}</td>
+      <td data-label="Traffic" class="num">${bytes(w.bytes_served)}</td>
+      <td data-label="Watched" class="tiny muted" title="${esc(when(w.last_watched_at))}">${ago(w.last_watched_at)}</td>
+    </tr>`).join('');
+    updatePager('ks', s.history_page, s.history_per, s.history_total);
+  }
+}
+
+function renderMediaStats(s){
+  const isSeries = s.media_type === 'series';
+  const typeLabel = isSeries ? 'Series' : 'Movie';
+  const yr = s.year > 0 ? ` (${s.year})` : '';
+  $('#page-title').textContent = (s.title || 'Media') + yr + ' · Analytics';
+  $('#page-sub').textContent = `${typeLabel} breakdown${s.imdb_id ? ' · ' + s.imdb_id : ''}`;
+  document.title = (s.title || 'Media') + ' · Analytics · Bitlab';
+
+  const typeBadge = `<span class="badge ${isSeries ? 'series' : 'movie'}">${typeLabel}</span>`;
+  const imdbTag = s.imdb_id ? `<span class="idtag mono">${esc(s.imdb_id)}</span>` : '';
+  $('#ms-hero').innerHTML = `
+    <div>
+      <div class="key-hero-title">${typeBadge}<h2>${esc(s.title || 'Unknown title')}</h2>${s.year > 0 ? `<span class="tiny muted">${s.year}</span>` : ''}${imdbTag}</div>
+      <div class="key-hero-meta">
+        <span>${s.first_watched_at ? 'First watched ' + when(s.first_watched_at) : 'No sessions in timeframe'}</span>
+        ${isSeries ? `<span class="sep">·</span><span>${s.episodes_watched} ${s.episodes_watched === 1 ? 'episode' : 'episodes'} watched</span>` : ''}
+      </div>
+    </div>`;
+
+  $('#ms-plays').textContent = s.total_plays;
+  $('#ms-plays-sub').textContent = isSeries ? `${s.episodes_watched} unique episodes` : 'Movie playback sessions';
+  $('#ms-viewers').textContent = s.unique_viewers;
+  $('#ms-viewers-sub').textContent = s.unique_viewers === 1 ? '1 manifest key' : `${s.unique_viewers} manifest keys`;
+  $('#ms-wbytes').textContent = bytes(s.total_watch_bytes);
+  $('#ms-last').textContent = ago(s.last_watched_at);
+  $('#ms-last-sub').textContent = s.last_watched_at ? when(s.last_watched_at) : 'no watch sessions in timeframe';
+
+  const mw = s.currently_watching || [];
+  $('#ms-watching-count').textContent = mw.length;
+  const mwTb = $('#ms-watching');
+  if (!mw.length) {
+    mwTb.innerHTML = '<tr><td colspan="5" class="empty">Nobody is watching this title right now.</td></tr>';
+  } else {
+    mwTb.innerHTML = mw.map(w => {
+      const ep = (w.media_type === 'series' && w.season > 0 && w.episode > 0)
+        ? `<span class="badge ep">S${String(w.season).padStart(2,'0')}E${String(w.episode).padStart(2,'0')}</span>` : '—';
+      return `<tr>
+        <td class="cell-main"><span class="user-link" onclick="openKeyStats('${esc(w.key_id)}')">${esc(w.key_label)}</span></td>
+        <td data-label="Episode">${ep}</td>
+        <td data-label="Quality">${fmtQualityBadge(w.quality)}</td>
+        <td data-label="Streamed" class="num">${bytes(w.bytes_served)}</td>
+        <td data-label="Started" class="tiny muted" title="${esc(when(w.started_at))}">${ago(w.started_at)}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  renderTimelineChart('#ms-chart', '#ms-chart-axis', s.timeline || [], s.range);
+  renderQualityBreakdown('#ms-quality', 'msq', s.quality_breakdown || [], 'msQualityPage', state.msQualityPer);
+
+  const vEpTh = $('#ms-viewers-ep-th');
+  if (vEpTh) vEpTh.classList.toggle('hidden', !isSeries);
+  const vTb = $('#ms-viewers-list');
+  const viewers = s.viewer_breakdown || [];
+  if (!viewers.length) {
+    vTb.innerHTML = `<tr><td colspan="${isSeries ? 5 : 4}" class="empty">No viewers in this timeframe.</td></tr>`;
+    updatePager('msv', 1, state.msViewersPer, 0);
+  } else {
+    const vPg = slicePage(viewers, 'msViewersPage', state.msViewersPer);
+    vTb.innerHTML = vPg.items.map(v => `<tr class="clickable-row" onclick="openKeyStats('${esc(v.key_id)}')">
+      <td class="cell-main"><span class="user-link">${esc(v.key_label)}</span> <span class="idtag mono">${esc(v.key_id)}</span></td>
+      <td data-label="Plays" class="num"><b>${v.plays}</b></td>
+      ${isSeries ? `<td data-label="Episodes" class="num">${v.episodes_watched} eps</td>` : ''}
+      <td data-label="Traffic" class="num">${bytes(v.bytes_served)}</td>
+      <td data-label="Last watched" class="tiny muted">${ago(v.last_watched_at)}</td>
+    </tr>`).join('');
+    updatePager('msv', vPg.page, state.msViewersPer, vPg.total);
+  }
+
+  const epCard = $('#ms-episodes-card');
+  const eps = s.episode_breakdown || [];
+  epCard.classList.toggle('hidden', !isSeries);
+  if (isSeries) {
+    const epTb = $('#ms-episodes');
+    if (!eps.length) {
+      epTb.innerHTML = '<tr><td colspan="5" class="empty">No episode breakdown in this timeframe.</td></tr>';
+      updatePager('mse', 1, state.msEpisodesPer, 0);
+    } else {
+      const ePg = slicePage(eps, 'msEpisodesPage', state.msEpisodesPer);
+      epTb.innerHTML = ePg.items.map(ep => `<tr>
+        <td class="cell-main"><span class="badge ep">S${String(ep.season).padStart(2,'0')}E${String(ep.episode).padStart(2,'0')}</span></td>
+        <td data-label="Plays" class="num"><b>${ep.plays}</b></td>
+        <td data-label="Viewers" class="num">${ep.unique_viewers} ${ep.unique_viewers===1?'user':'users'}</td>
+        <td data-label="Traffic" class="num">${bytes(ep.bytes_served)}</td>
+        <td data-label="Last watched" class="tiny muted">${ago(ep.last_watched_at)}</td>
+      </tr>`).join('');
+      updatePager('mse', ePg.page, state.msEpisodesPer, ePg.total);
+    }
+  }
+
+  const hEpTh = $('#ms-hist-ep-th');
+  if (hEpTh) hEpTh.classList.toggle('hidden', !isSeries);
+  const hTb = $('#ms-history');
+  const hist = s.history || [];
+  if (!hist.length) {
+    hTb.innerHTML = `<tr><td colspan="${isSeries ? 6 : 5}" class="empty">No watch history in this timeframe.</td></tr>`;
+    updatePager('ms', 1, state.statsMediaPer, 0);
+  } else {
+    hTb.innerHTML = hist.map(w => {
+      const ep = (w.season > 0 && w.episode > 0)
+        ? `<span class="badge ep">S${String(w.season).padStart(2,'0')}E${String(w.episode).padStart(2,'0')}</span>` : '—';
+      return `<tr>
+        <td class="cell-main"><span class="user-link" onclick="openKeyStats('${esc(w.key_id)}')">${esc(w.key_label)}</span></td>
+        ${isSeries ? `<td data-label="Episode">${ep}</td>` : ''}
+        <td data-label="Quality">${fmtQualityBadge(w.quality)}</td>
+        <td data-label="Release" class="tiny muted" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(w.release_name || w.infohash.slice(0,12))}</td>
+        <td data-label="Traffic" class="num">${bytes(w.bytes_served)}</td>
+        <td data-label="Watched" class="tiny muted" title="${esc(when(w.last_watched_at))}">${ago(w.last_watched_at)}</td>
+      </tr>`;
+    }).join('');
+    updatePager('ms', s.history_page, s.history_per, s.history_total);
+  }
+}
+
 let searchTimer = null;
+let ksSearchTimer = null;
 document.addEventListener('input', e => {
   if (e.target && e.target.id === 'k-search') {
     clearTimeout(searchTimer);
     const v = e.target.value;
     searchTimer = setTimeout(() => { state.keysQ = v.trim(); state.keysPage = 1; loadKeys(); }, 220);
+  }
+  if (e.target && e.target.id === 'ks-search') {
+    clearTimeout(ksSearchTimer);
+    const v = e.target.value;
+    ksSearchTimer = setTimeout(() => { state.statsKeyQ = v.trim(); state.statsKeyPage = 1; loadKeyStats(); }, 220);
   }
 });
 document.addEventListener('change', e => {
@@ -976,6 +2095,11 @@ document.addEventListener('change', e => {
     state.keysStatus = e.target.value;
     state.keysPage = 1;
     loadKeys();
+  }
+  if (e.target && e.target.id === 'ks-type') {
+    state.statsKeyType = e.target.value;
+    state.statsKeyPage = 1;
+    loadKeyStats();
   }
 });
 
