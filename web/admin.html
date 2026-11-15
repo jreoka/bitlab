@@ -474,7 +474,7 @@ tr:last-child td{border-bottom:0}
           </div>
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
             <span class="tiny muted" id="gs-updated"></span>
-            <button class="danger" id="btn-reset-all-stats" style="padding:5px 12px;font-size:12.5px" onclick="resetAllStats()">Reset all stats</button>
+            <button class="danger" id="btn-purge-stats" style="padding:5px 12px;font-size:12.5px" onclick="purgeStatsHistory()">Purge history</button>
           </div>
         </div>
 
@@ -1607,32 +1607,33 @@ function slicePage(list, stateKey, per){
   const from = (state[stateKey] - 1) * per;
   return { from, items: list ? list.slice(from, from + per) : [], total, page: state[stateKey] };
 }
-async function resetAllStats(){
-  if (!await uiConfirm('Reset all stats?', 'This permanently clears all watch history, playback counts, and traffic counters across every manifest key. Your keys will remain active.', 'Reset all stats')) return;
-  const btn = $('#btn-reset-all-stats');
-  if (btn) btn.disabled = true;
-  try {
-    await api('/admin/api/stats/reset', { method: 'POST' });
-    toast('All stats reset');
-    await loadStats();
-    await refresh();
-  } catch(e){
-    toast('Reset failed: ' + e.message, true);
-  } finally {
-    if (btn) btn.disabled = false;
+async function purgeStatsHistory(id, label){
+  const title = id ? ('Purge history for "' + label + '"') : 'Purge stats history';
+  const msg = 'Delete watch history older than the entered duration (e.g. 30d, 2w, 10m for months, 2y).';
+  const raw = await uiDialog({
+    title,
+    message: msg,
+    input: { type: 'text', placeholder: 'e.g. 30d, 10m, 2y' },
+    okLabel: 'Purge',
+    danger: true,
+  });
+  if (raw === null) return;
+  const olderThan = raw.trim();
+  if (!olderThan) {
+    toast('Enter a duration like 30d, 10m, or 2y', true);
+    return;
   }
-}
-async function resetKeyStats(id, label){
-  if (!await uiConfirm('Reset stats for "' + label + '"?', 'This permanently clears watch history, playback counts, and traffic counters for this manifest key. The key URL will keep working.', 'Reset stats')) return;
-  const btn = $('#btn-reset-key-stats');
+  const btn = id ? $('#btn-purge-key-stats') : $('#btn-purge-stats');
   if (btn) btn.disabled = true;
   try {
-    await api('/admin/api/stats/' + encodeURIComponent(id) + '/reset', { method: 'POST' });
-    toast('Stats reset for ' + label);
+    const url = id ? ('/admin/api/stats/' + encodeURIComponent(id) + '/purge') : '/admin/api/stats/purge';
+    const res = await api(url, { method: 'POST', body: JSON.stringify({ older_than: olderThan }) });
+    const n = res.deleted || 0;
+    toast(n > 0 ? ('Purged ' + n + ' history ' + (n === 1 ? 'entry' : 'entries') + ' older than ' + olderThan) : ('No history older than ' + olderThan));
     await loadStats();
     await refresh();
   } catch(e){
-    toast('Reset failed: ' + e.message, true);
+    toast('Purge failed: ' + e.message, true);
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -1888,7 +1889,7 @@ function renderKeyStats(s){
     </div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <button onclick="tab('keys')">Manage keys</button>
-      <button class="danger" id="btn-reset-key-stats" data-id="${esc(k.id)}" data-label="${esc(k.label)}" onclick="resetKeyStats(this.dataset.id,this.dataset.label)">Reset stats</button>
+      <button class="danger" id="btn-purge-key-stats" data-id="${esc(k.id)}" data-label="${esc(k.label)}" onclick="purgeStatsHistory(this.dataset.id,this.dataset.label)">Purge history</button>
     </div>`;
 
   $('#ks-plays').textContent = s.total_plays;

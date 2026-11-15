@@ -677,35 +677,49 @@ pub async fn handle_media_stats(
     }
 }
 
-pub async fn handle_reset_stats(State(app): State<crate::server::App>, headers: HeaderMap) -> Response {
-    if let Some(e) = require_admin_state(&app, &headers).await {
+#[derive(serde::Deserialize)]
+pub struct PurgeStatsBody {
+    older_than: String,
+}
+
+async fn purge_stats_inner(app: &crate::server::App, headers: &HeaderMap, older_than: &str, key_id: Option<&str>) -> Response {
+    if let Some(e) = require_admin_state(app, headers).await {
         return e;
     }
-    match app.store.reset_all_stats() {
-        Ok(()) => {
-            tracing::info!("admin reset all watch & key stats");
-            crate::server::json_response(200, serde_json::json!({"ok": true}))
+    let trimmed = older_than.trim();
+    let secs = match crate::security::parse_duration_secs(trimmed) {
+        Ok(s) => s,
+        Err(e) => return crate::server::http_error(400, &e.to_string()),
+    };
+    match app.store.purge_stats_history(secs, key_id) {
+        Ok(Some(deleted)) => {
+            match key_id {
+                Some(id) => tracing::info!("admin purged {deleted} watch history entries for key {id} older than {trimmed}"),
+                None => tracing::info!("admin purged {deleted} watch history entries older than {trimmed}"),
+            }
+            crate::server::json_response(200, serde_json::json!({"ok": true, "deleted": deleted}))
         }
+        Ok(None) => crate::server::http_error(404, "not found"),
         Err(e) => {
-            tracing::info!("reset all stats failed: {e}");
+            tracing::info!("purge stats history failed: {e}");
             crate::server::http_error(500, "store unavailable")
         }
     }
 }
 
-pub async fn handle_reset_key_stats(State(app): State<crate::server::App>, headers: HeaderMap, Path(id): Path<String>) -> Response {
-    if let Some(e) = require_admin_state(&app, &headers).await {
-        return e;
-    }
-    match app.store.reset_key_stats(&id) {
-        Ok(true) => {
-            tracing::info!("admin reset stats for key {id}");
-            crate::server::json_response(200, serde_json::json!({"ok": true}))
-        }
-        Ok(false) => crate::server::http_error(404, "not found"),
-        Err(e) => {
-            tracing::info!("reset key stats {id} failed: {e}");
-            crate::server::http_error(500, "store unavailable")
-        }
-    }
+pub async fn handle_purge_stats(
+    State(app): State<crate::server::App>,
+    headers: HeaderMap,
+    axum::Json(b): axum::Json<PurgeStatsBody>,
+) -> Response {
+    purge_stats_inner(&app, &headers, &b.older_than, None).await
+}
+
+pub async fn handle_purge_key_stats(
+    State(app): State<crate::server::App>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    axum::Json(b): axum::Json<PurgeStatsBody>,
+) -> Response {
+    purge_stats_inner(&app, &headers, &b.older_than, Some(&id)).await
 }

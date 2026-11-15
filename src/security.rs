@@ -458,6 +458,12 @@ pub fn parse_ttl(v: &str) -> anyhow::Result<i64> {
         return validate_ttl_bounds(dt.and_utc().timestamp() - now_unix());
     }
     // duration
+    parse_duration_secs(&raw)
+}
+
+/// Parses a human duration such as `30d`, `2w`, `10m` (months), or `2y` into seconds.
+pub fn parse_duration_secs(v: &str) -> anyhow::Result<i64> {
+    let raw = v.trim().to_lowercase();
     let mut i = 0;
     let b = raw.as_bytes();
     while i < b.len() && (b[i] == b'.' || b[i].is_ascii_digit()) {
@@ -465,7 +471,7 @@ pub fn parse_ttl(v: &str) -> anyhow::Result<i64> {
     }
     let (num, unit) = (raw[..i].trim(), raw[i..].trim());
     if num.is_empty() || unit.is_empty() {
-        anyhow::bail!("use a duration like 3d, 2w, 3m, 1y or a date like 2027-06-01");
+        anyhow::bail!("use a duration like 30d, 2w, 10m (months) or 2y");
     }
     let n: f64 = num.parse().map_err(|_| anyhow::anyhow!("invalid amount {num:?}"))?;
     if !n.is_finite() || n <= 0.0 {
@@ -508,5 +514,15 @@ mod tests {
         assert!(parse_ttl("51y").is_err());
         assert!(parse_ttl("2999-01-01").is_err());
         assert!(parse_ttl("2000-01-01").is_err());
+    }
+
+    #[test]
+    fn test_parse_duration_secs() {
+        assert_eq!(parse_duration_secs("30d").unwrap(), 30 * 24 * 3600);
+        assert_eq!(parse_duration_secs("10m").unwrap(), 10 * 30 * 24 * 3600);
+        assert_eq!(parse_duration_secs("2y").unwrap(), 2 * 365 * 24 * 3600);
+        assert!(parse_duration_secs("").is_err());
+        assert!(parse_duration_secs("0d").is_err());
+        assert!(parse_duration_secs("never").is_err());
     }
 }

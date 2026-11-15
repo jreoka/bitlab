@@ -353,25 +353,23 @@ CREATE INDEX IF NOT EXISTS idx_watch_key_ih_ep ON watch_history(key_id, infohash
         Ok(n > 0)
     }
 
-    pub fn reset_all_stats(&self) -> anyhow::Result<()> {
+    /// Deletes watch_history rows older than `older_than_secs` (optionally scoped to `key_id`).
+    /// Returns `Ok(None)` when `key_id` is `Some` and does not exist.
+    pub fn purge_stats_history(&self, older_than_secs: i64, key_id: Option<&str>) -> anyhow::Result<Option<u64>> {
         self.flush_writes();
+        let cutoff = now_unix() - older_than_secs;
         let c = self.conn.lock().unwrap();
-        c.execute("DELETE FROM watch_history", [])?;
-        c.execute("UPDATE keys SET requests=0, bytes=0, last_used_at=0", [])?;
-        self.key_cache.lock().unwrap().clear();
-        Ok(())
-    }
-
-    pub fn reset_key_stats(&self, id: &str) -> anyhow::Result<bool> {
-        self.flush_writes();
-        let c = self.conn.lock().unwrap();
-        let n = c.execute("UPDATE keys SET requests=0, bytes=0, last_used_at=0 WHERE id=?", params![id])?;
-        if n == 0 {
-            return Ok(false);
-        }
-        c.execute("DELETE FROM watch_history WHERE key_id=?", params![id])?;
-        self.key_cache.lock().unwrap().clear();
-        Ok(true)
+        let n = match key_id {
+            Some(id) => {
+                let exists: i64 = c.query_row("SELECT count(*) FROM keys WHERE id=?", params![id], |r| r.get(0))?;
+                if exists == 0 {
+                    return Ok(None);
+                }
+                c.execute("DELETE FROM watch_history WHERE key_id=? AND last_watched_at<?", params![id, cutoff])?
+            }
+            None => c.execute("DELETE FROM watch_history WHERE last_watched_at<?", params![cutoff])?,
+        };
+        Ok(Some(n as u64))
     }
 
     pub fn delete_expired_keys(&self) -> i64 {
@@ -1780,5 +1778,46 @@ mod tests {
         assert_eq!(ms.quality_breakdown.len(), 2);
 
         assert!(store.media_stats("movie", "tt9999999", "", "", "30d", 1, 25).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_purge_stats_history() {
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let k1 = store.create_key("Alice", "", 0).unwrap();
+        let k2 = store.create_key("Bob", "", 0).unwrap();
+
+        let now = now_unix();
+        let old_ts = now - 40 * 24 * 3600;
+        let recent_ts = now - 5 * 24 * 3600;
+
+        {
+            let c = store.conn.lock().unwrap();
+            c.execute(
+                "INSERT INTO watch_history (key_id, imdb_id, media_type, title, year, season, episode, infohash, release_name, quality, bytes_served, started_at, last_watched_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                params![k1.id, "tt1", "movie", "Old Movie", 2020, 0, 0, "ih1", "Old", "1080p", 100, old_ts, old_ts],
+            ).unwrap();
+            c.execute(
+                "INSERT INTO watch_history (key_id, imdb_id, media_type, title, year, season, episode, infohash, release_name, quality, bytes_served, started_at, last_watched_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                params![k1.id, "tt2", "movie", "Recent Movie", 2024, 0, 0, "ih2", "Recent", "1080p", 200, recent_ts, recent_ts],
+            ).unwrap();
+            c.execute(
+                "INSERT INTO watch_history (key_id, imdb_id, media_type, title, year, season, episode, infohash, release_name, quality, bytes_served, started_at, last_watched_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                params![k2.id, "tt3", "movie", "Bob Old Movie", 2020, 0, 0, "ih3", "BobOld", "1080p", 300, old_ts, old_ts],
+            ).unwrap();
+        }
+
+        // Purge k1 older than 30d: removes k1's old entry, keeps k1's recent and k2's old entry
+        let deleted_k1 = store.purge_stats_history(30 * 24 * 3600, Some(&k1.id)).unwrap().unwrap();
+        assert_eq!(deleted_k1, 1);
+
+        // Non-existent key returns None
+        assert!(store.purge_stats_history(30 * 24 * 3600, Some("missing")).unwrap().is_none());
+
+        // Global purge older than 30d: removes k2's old entry, keeps k1's recent entry
+        let deleted_global = store.purge_stats_history(30 * 24 * 3600, None).unwrap().unwrap();
+        assert_eq!(deleted_global, 1);
+
+        let gs = store.global_stats("all", 1, 25).unwrap();
+        assert_eq!(gs.total_plays, 1);
     }
 }
