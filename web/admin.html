@@ -444,8 +444,9 @@ tr:last-child td{border-bottom:0}
             <option value="paused">Paused</option>
           </select>
           <select id="k-per" title="Per page">
+            <option value="6" selected>6 / page</option>
             <option value="10">10 / page</option>
-            <option value="25" selected>25 / page</option>
+            <option value="25">25 / page</option>
             <option value="50">50 / page</option>
             <option value="100">100 / page</option>
           </select>
@@ -917,13 +918,13 @@ tr:last-child td{border-bottom:0}
 
 <script>
 let state = {
-  overview:null, security:null, keysQ:'', keysStatus:'all', keysPage:1, keysPer:25, keysTotal:0,
-  torPage:1, torPer:25, sessPage:1, sessPer:25, revealedKeys:new Set(),
-  statsRange:'30d', statsChartMetric:'plays', statsKeyId:null, statsKeyQ:'', statsKeyType:'', statsKeyPage:1, statsKeyPer:25,
-  statsMedia:null, statsMediaPage:1, statsMediaPer:25,
-  gsQualityPage:1, gsQualityPer:8, gsUsersPage:1, gsUsersPer:15, gsTopPage:1, gsTopPer:15, gsRecentPage:1, gsRecentPer:15,
-  ksQualityPage:1, ksQualityPer:8, ksTopPage:1, ksTopPer:15,
-  msQualityPage:1, msQualityPer:8, msViewersPage:1, msViewersPer:15, msEpisodesPage:1, msEpisodesPer:25,
+  overview:null, security:null, keysQ:'', keysStatus:'all', keysPage:1, keysPer:6, keysTotal:0,
+  torPage:1, torPer:6, sessPage:1, sessPer:6, revealedKeys:new Set(),
+  statsRange:'30d', statsChartMetric:'plays', statsKeyId:null, statsKeyQ:'', statsKeyType:'', statsKeyPage:1, statsKeyPer:6,
+  statsMedia:null, statsMediaPage:1, statsMediaPer:6,
+  gsQualityPage:1, gsQualityPer:6, gsUsersPage:1, gsUsersPer:6, gsTopPage:1, gsTopPer:6, gsRecentPage:1, gsRecentPer:6,
+  ksQualityPage:1, ksQualityPer:6, ksTopPage:1, ksTopPer:6,
+  msQualityPage:1, msQualityPer:6, msViewersPage:1, msViewersPer:6, msEpisodesPage:1, msEpisodesPer:6,
   globalStats:null, keyStats:null, mediaStats:null
 };
 const $ = s => document.querySelector(s);
@@ -2088,7 +2089,7 @@ document.addEventListener('input', e => {
 });
 document.addEventListener('change', e => {
   if (e.target && e.target.id === 'k-per') {
-    state.keysPer = parseInt(e.target.value, 10) || 25;
+    state.keysPer = parseInt(e.target.value, 10) || 6;
     state.keysPage = 1;
     loadKeys();
   }

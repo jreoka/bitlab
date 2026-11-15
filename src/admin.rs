@@ -363,7 +363,7 @@ pub async fn handle_list_keys(State(app): State<crate::server::App>, headers: He
     let status = q.get("status").cloned().unwrap_or_default();
     let mut page: i64 = q.get("page").and_then(|v| v.parse().ok()).unwrap_or(1);
     page = page.clamp(1, 1_000_000);
-    let mut per: i64 = q.get("per").and_then(|v| v.parse().ok()).unwrap_or(25);
+    let mut per: i64 = q.get("per").and_then(|v| v.parse().ok()).unwrap_or(6);
     per = per.clamp(5, 100);
     let offset = (page - 1).saturating_mul(per);
     match app.store.list_keys_page(&qq, &status, per, offset) {
@@ -591,7 +591,7 @@ pub async fn handle_stats(State(app): State<crate::server::App>, headers: Header
     }
     let range = q.get("range").map(|s| s.as_str()).unwrap_or("30d");
     let recent_page: i64 = q.get("recent_page").and_then(|v| v.parse().ok()).unwrap_or(1).clamp(1, 1_000_000);
-    let recent_per: i64 = q.get("recent_per").and_then(|v| v.parse().ok()).unwrap_or(15).clamp(5, 100);
+    let recent_per: i64 = q.get("recent_per").and_then(|v| v.parse().ok()).unwrap_or(6).clamp(5, 100);
     match app.store.global_stats(range, recent_page, recent_per) {
         Ok(s) => {
             let mut val = serde_json::to_value(&s).unwrap();
@@ -618,7 +618,7 @@ pub async fn handle_key_stats(
     let typ = q.get("type").map(|s| s.as_str()).unwrap_or("");
     let qq = q.get("q").map(|s| s.as_str()).unwrap_or("");
     let page: i64 = q.get("page").and_then(|v| v.parse().ok()).unwrap_or(1).clamp(1, 1_000_000);
-    let per: i64 = q.get("per").and_then(|v| v.parse().ok()).unwrap_or(25).clamp(5, 100);
+    let per: i64 = q.get("per").and_then(|v| v.parse().ok()).unwrap_or(6).clamp(5, 100);
     match app.store.key_stats(&id, range, typ, qq, page, per) {
         Ok(Some(s)) => {
             let mut val = serde_json::to_value(&s).unwrap();
@@ -647,7 +647,7 @@ pub async fn handle_media_stats(
     let infohash = q.get("infohash").map(|s| s.as_str()).unwrap_or("");
     let range = q.get("range").map(|s| s.as_str()).unwrap_or("30d");
     let page: i64 = q.get("page").and_then(|v| v.parse().ok()).unwrap_or(1).clamp(1, 1_000_000);
-    let per: i64 = q.get("per").and_then(|v| v.parse().ok()).unwrap_or(25).clamp(5, 100);
+    let per: i64 = q.get("per").and_then(|v| v.parse().ok()).unwrap_or(6).clamp(5, 100);
     match app.store.media_stats(typ, imdb, title, infohash, range, page, per) {
         Ok(Some(s)) => {
             let active: Vec<_> = app
